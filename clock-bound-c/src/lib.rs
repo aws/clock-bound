@@ -34,7 +34,7 @@
 mod error;
 
 use crate::error::ClockBoundCError;
-use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
+use byteorder::{ByteOrder, NetworkEndian};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::fs;
@@ -185,15 +185,11 @@ impl ClockBoundClient {
     /// };
     /// ```
     pub fn now(&self) -> Result<ResponseNow, ClockBoundCError> {
-        let mut request: Vec<u8> = Vec::new();
-
         // Header
-        // Version
-        request.push(1);
-        // Command Type
-        request.push(1);
-        request.push(0);
-        request.push(0);
+        // 1st - Version
+        // 2nd - Command Type
+        // 3rd, 4th - Reserved
+        let mut request: [u8; 4] = [1, 1, 0, 0];
 
         match self.socket.send(&mut request) {
             Err(e) => return Err(ClockBoundCError::SendMessageError(e)),
@@ -251,20 +247,15 @@ impl ClockBoundClient {
     /// };
     /// ```
     pub fn before(&self, before_time: u64) -> Result<ResponseBefore, ClockBoundCError> {
-        let mut request: Vec<u8> = Vec::new();
-
         // Header
-        // Version
-        request.push(1);
-        // Command Type
-        request.push(2);
-        request.push(0);
-        request.push(0);
+        // 1st - Version
+        // 2nd - Command Type
+        // 3rd, 4th - Reserved
+        let mut request: [u8; 12] = [1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
         // Body
-        match request.write_u64::<NetworkEndian>(before_time) {
-            Err(e) => return Err(ClockBoundCError::WriteRequestError(e)),
-            _ => {}
-        }
+        NetworkEndian::write_u64(&mut request[4..12], before_time);
+
         match self.socket.send(&mut request) {
             Err(e) => return Err(ClockBoundCError::SendMessageError(e)),
             _ => {}
@@ -317,21 +308,15 @@ impl ClockBoundClient {
     /// };
     /// ```
     pub fn after(&self, after_time: u64) -> Result<ResponseAfter, ClockBoundCError> {
-        let mut request: Vec<u8> = Vec::new();
         // Header
-        // Version
-        request.push(1);
-        // Command Type
-        request.push(3);
-        // Reserved
-        request.push(0);
-        request.push(0);
+        // 1st - Version
+        // 2nd - Command Type
+        // 3rd, 4th - Reserved
+        let mut request: [u8; 12] = [1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
         // Body
-        match request.write_u64::<NetworkEndian>(after_time) {
-            Err(e) => return Err(ClockBoundCError::WriteRequestError(e)),
-            _ => {}
-        }
+        NetworkEndian::write_u64(&mut request[4..12], after_time);
+
         match self.socket.send(&mut request) {
             Err(e) => return Err(ClockBoundCError::SendMessageError(e)),
             _ => {}
