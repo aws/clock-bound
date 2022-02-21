@@ -26,6 +26,7 @@ different socket location if desired:
 cargo run --example now /run/clockboundd/clockboundd.sock
 cargo run --example before /run/clockboundd/clockboundd.sock
 cargo run --example after /run/clockboundd/clockboundd.sock
+cargo run --example timing /run/clockboundd/clockboundd.sock
 ```
 
 ## Updating README
