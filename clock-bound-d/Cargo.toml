@@ -20,6 +20,7 @@ clap = "2.33"
 tokio = { version = "1.12", features = ["sync"] }
 chrono = "0.4.19"
 byteorder = "1.4.3"
+uds = "0.2.6"
 
 [[bin]]
 name = "clockboundd"
@@ -27,4 +28,4 @@ path = "src/main.rs"
 doc = false
 
 [badges]
-github = { repository = "aws/clock-bound-d"}
+github = { repository = "aws/clock-bound"}

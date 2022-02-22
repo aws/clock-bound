@@ -6,6 +6,7 @@ use chrony_candm::reply::Tracking;
 use log::warn;
 use std::io;
 use tokio::sync::watch::Receiver;
+use uds::UnixDatagramExt;
 
 /// The Unix Datagram Socket file for ClockBoundD
 pub const CLOCKBOUND_SERVER_SOCKET: &str = "clockboundd.sock";
@@ -56,7 +57,7 @@ impl ClockBoundServer {
     ) -> Result<(), io::Error> {
         let mut request: [u8; 12] = [0; 12];
 
-        let (request_size, client) = match self.socket.recv_from(&mut request) {
+        let (request_size, client) = match self.socket.recv_from_unix_addr(&mut request) {
             Ok(result) => result,
             Err(e) => return Err(e),
         };
@@ -78,15 +79,9 @@ impl ClockBoundServer {
             max_clock_error,
         );
 
-        if let Some(client_path) = client.as_pathname() {
-            match self.socket.send_to(&mut response, client_path) {
-                Ok(..) => return Ok(()),
-                Err(e) => warn!("Failed to send response to client. Error: {:?}", e),
-            }
-        } else {
-            // Getting the pathname may fail if an unbound socket tries to communicate with the
-            // daemon. In that case, we will drop the packet instead of attempting to reply.
-            warn!("Failed to get client pathname. Dropping packet.");
+        match self.socket.send_to_unix_addr(&mut response, &client) {
+            Ok(_) => return Ok(()),
+            Err(e) => warn!("Failed to send response to client. Error: {:?}", e),
         }
 
         Ok(())
