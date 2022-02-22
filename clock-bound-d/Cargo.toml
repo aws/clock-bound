@@ -28,4 +28,4 @@ path = "src/main.rs"
 doc = false
 
 [badges]
-github = { repository = "aws/clock-bound"}
+github = { repository = "aws/clock-bound-d"}
