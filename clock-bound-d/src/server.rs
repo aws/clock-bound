@@ -57,10 +57,7 @@ impl ClockBoundServer {
     ) -> Result<(), io::Error> {
         let mut request: [u8; 12] = [0; 12];
 
-        let (request_size, client) = match self.socket.recv_from_unix_addr(&mut request) {
-            Ok(result) => result,
-            Err(e) => return Err(e),
-        };
+        let (request_size, client) = self.socket.recv_from_unix_addr(&mut request)?;
 
         // Get tracking data from chrony poller thread
         let tracking = *rx_tracking.borrow();
@@ -79,9 +76,8 @@ impl ClockBoundServer {
             max_clock_error,
         );
 
-        match self.socket.send_to_unix_addr(&mut response, &client) {
-            Ok(_) => return Ok(()),
-            Err(e) => warn!("Failed to send response to client. Error: {:?}", e),
+        if let Err(e) = self.socket.send_to_unix_addr(&mut response, &client) {
+            warn!("Failed to send response to client. Error: {:?}", e);
         }
 
         Ok(())
