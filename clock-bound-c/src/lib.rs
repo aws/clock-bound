@@ -53,7 +53,7 @@ pub const CLOCKBOUNDD_SOCKET_ADDRESS_PATH: &str = "/run/clockboundd/clockboundd.
 pub const CLOCKBOUNDC_SOCKET_NAME_PREFIX: &str = "clockboundc";
 
 /// Setting clock frequency to 1ppm to match chrony
-pub const DEFAULT_CLOCK_FREQUENCY: f64 = 1.0; //1ppm
+pub const FREQUENCY_ERROR: u64 = 1; //1ppm
 
 /// A structure for containing the error bounds returned from ClockBoundD. The values represent
 /// the time since the Unix Epoch in nanoseconds.
@@ -413,10 +413,12 @@ impl ClockBoundClient {
 
         // Calculates duration between the two midpoints
         let execution_time = end_midpoint - start_midpoint;
-        let error_rate = execution_time as f64 * DEFAULT_CLOCK_FREQUENCY * 1e-6;
+        let error_rate = (execution_time * FREQUENCY_ERROR) / 1_000_000 +
+            //Ugly way of saying .div_ceil() until it stabilizes
+            if (execution_time * FREQUENCY_ERROR) % 1_000_000 == 0 { 0 } else { 1 };
 
-        let min_execution_time = Duration::from_nanos((execution_time as f64 - error_rate) as u64);
-        let max_execution_time = Duration::from_nanos((execution_time as f64 + error_rate) as u64);
+        let min_execution_time = Duration::from_nanos(execution_time - error_rate);
+        let max_execution_time = Duration::from_nanos(execution_time + error_rate);
 
         Ok((TimingResult{
             earliest_start,
