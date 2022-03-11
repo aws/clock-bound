@@ -1,6 +1,6 @@
 [package]
 name = "clock-bound-c"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Jacob Wisniewski <wisnjaco@amazon.com>"]
 description = "A client library to communicate with ClockBoundD."
 edition = "2021"
