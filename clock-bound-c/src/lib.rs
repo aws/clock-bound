@@ -100,15 +100,15 @@ pub struct ResponseAfter {
 #[derive(Debug)]
 pub struct TimingResult {
     /// Callback began executing no earlier than this time
-    pub earliest_start : SystemTime,
+    pub earliest_start: SystemTime,
     /// Callback finished executing no later than this time
-    pub latest_finish : SystemTime,
+    pub latest_finish: SystemTime,
     /// No less than this amount of time elapsed from when timing() was called
     /// to when it returned.
-    pub min_execution_time : Duration,
+    pub min_execution_time: Duration,
     /// No more than this amount of time elapsed when the callback was invoked
     /// to when it returned.
-    pub max_execution_time : Duration
+    pub max_execution_time: Duration,
 }
 
 /// A structure for holding a client to communicate with ClockBoundD.
@@ -363,9 +363,10 @@ impl ClockBoundClient {
     }
 
     ///Execute `f` and return bounds on execution time
-    pub fn timing<A, F>(&self, f: F) -> Result<(TimingResult, A), (ClockBoundCError, Result<A,F>)>
-        where F: FnOnce() -> A {
-
+    pub fn timing<A, F>(&self, f: F) -> Result<(TimingResult, A), (ClockBoundCError, Result<A, F>)>
+    where
+        F: FnOnce() -> A,
+    {
         // Get the first timestamps
 
         // Header
@@ -404,8 +405,8 @@ impl ClockBoundClient {
         let latest_finish = NetworkEndian::read_u64(&response[12..20]);
 
         // Calculate midpoints of start and finish
-        let start_midpoint = (earliest_start + latest_start)/2;
-        let end_midpoint = (earliest_finish + latest_finish)/2;
+        let start_midpoint = (earliest_start + latest_start) / 2;
+        let end_midpoint = (earliest_finish + latest_finish) / 2;
 
         // Convert to SystemTime
         let earliest_start = UNIX_EPOCH + Duration::from_nanos(earliest_start);
@@ -420,12 +421,15 @@ impl ClockBoundClient {
         let min_execution_time = Duration::from_nanos(execution_time - error_rate);
         let max_execution_time = Duration::from_nanos(execution_time + error_rate);
 
-        Ok((TimingResult{
-            earliest_start,
-            latest_finish,
-            min_execution_time,
-            max_execution_time
-        }, callback))
+        Ok((
+            TimingResult {
+                earliest_start,
+                latest_finish,
+                min_execution_time,
+                max_execution_time,
+            },
+            callback,
+        ))
     }
 }
 
