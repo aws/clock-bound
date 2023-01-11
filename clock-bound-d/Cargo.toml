@@ -17,7 +17,7 @@ chrony-candm = "0.1"
 log = "0.4.14"
 syslog = "5"
 clap = "2.33"
-tokio = { version = "1.12", features = ["sync"] }
+tokio = { version = "1.18", features = ["sync"] }
 chrono = "0.4.19"
 byteorder = "1.4.3"
 uds = "0.2.6"
