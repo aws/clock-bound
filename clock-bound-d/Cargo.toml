@@ -1,6 +1,6 @@
 [package]
 name = "clock-bound-d"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Jacob Wisniewski <wisnjaco@amazon.com>"]
 description = "A daemon to provide clients with an error bounded timestamp interval."
 edition = "2021"
