@@ -113,6 +113,7 @@ mod response;
 mod server;
 mod socket;
 mod tracking;
+use std::io;
 
 use crate::chrony_poller::start_chrony_poller;
 use crate::server::ClockBoundServer;
@@ -121,12 +122,36 @@ use log::{error, info};
 use tokio::sync::watch;
 use tokio::sync::watch::Receiver;
 
+/// Constant for conversion from nanoseconds to seconds.
+pub const NANOSEC_IN_SEC: u32 = 1_000_000_000;
+
+/// Type alias for f64 for error bound values retrieved from PHC sysfs interface.
+type PhcErrorBound = f64;
+
+/// PhcInfo holds the refid of the PHC in chronyd (i.e. PHC0), and the
+/// interface on which the PHC is enabled.
+pub struct PhcInfo {
+    pub refid: u32,
+    pub interface: String,
+}
+
+/// Helper for converting a string ref_id into a u32 for the chrony command protocol.
+/// 
+/// # Arguments
+/// 
+/// * `ref_id` - The ref_id as a string to be translated to a u32.
+pub fn refid_to_u32(ref_id: &str) -> u32 {
+    let bytes: Vec<u32> = ref_id.bytes().map(|val| val as u32).collect();
+    bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]
+}
+
 /// Start ClockBoundD.
 ///
 /// # Arguments
 ///
 /// * `max_clock_error` - The assumed maximum frequency error that a system clock can gain between updates in ppm.
-pub fn run(max_clock_error: f64) {
+/// * `phc_info` - struct containing info on PHC interface and refid to use for error bound.
+pub fn run(max_clock_error: f64, phc_info: Option<PhcInfo>) -> Result<(), io::Error> {
     info!("Initialized ClockBoundD");
 
     // Do an initial poll to initialize the tracking data before starting the Chrony poller
@@ -140,7 +165,7 @@ pub fn run(max_clock_error: f64) {
     // Set up a channel for sending error flag data between threads
     let (tx_error_flag, rx_error_flag) = watch::channel(error_flag);
     // Initialize the server with initial tracking data
-    let server = ClockBoundServer::new(tracking);
+    let server = ClockBoundServer::new(tracking, phc_info)?;
 
     // Chrony poller thread
     start_chrony_poller(tx_tracking, tx_error_flag);
@@ -148,6 +173,7 @@ pub fn run(max_clock_error: f64) {
 
     // Start main thread
     start_main_thread(server, rx_tracking, rx_error_flag, max_clock_error);
+    Ok(())
 }
 
 /// Start the main thread of ClockBoundD.
