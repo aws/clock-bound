@@ -11,8 +11,7 @@ use std::io::{Error, ErrorKind};
 #[cfg(test)]
 use std::net::IpAddr;
 use std::time::SystemTime;
-
-const NANOSEC_IN_SEC: u32 = 1_000_000_000;
+use crate::NANOSEC_IN_SEC;
 
 /// Compute current root dispersion.
 ///

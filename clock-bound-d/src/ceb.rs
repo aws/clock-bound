@@ -1,6 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: GPL-2.0-only
 use chrony_candm::reply::Tracking;
+use crate::{PhcErrorBound, NANOSEC_IN_SEC};
 
 /// A struct containing the Clock Error Bound. The Clock Error Bound is the bound of error that is
 /// accumulated for a NTP packet.
@@ -23,13 +24,15 @@ pub struct ClockErrorBound {
 }
 
 impl ClockErrorBound {
-    /// Calculate the Clock Error Bound using the Tracking information from Chrony.
-    pub fn from(packet: Tracking) -> ClockErrorBound {
+    /// Calculate the Clock Error Bound using the Tracking information from Chrony and the
+    /// PhcErrorBound from sysfs if Chrony is syncing to it.
+    pub fn from(packet: Tracking, phc_error_bound: PhcErrorBound) -> ClockErrorBound {
         ClockErrorBound {
             ceb: get_clock_error_bound(
                 f64::from(packet.current_correction),
                 f64::from(packet.root_dispersion),
                 f64::from(packet.root_delay),
+                phc_error_bound,
             ),
         }
     }
@@ -49,8 +52,9 @@ pub fn get_clock_error_bound(
     system_time_offset: f64,
     root_dispersion: f64,
     root_delay: f64,
+    phc_error_bound: f64,
 ) -> f64 {
-    round_f64_nanos(system_time_offset.abs() + root_dispersion + (root_delay / 2_f64))
+    round_f64_nanos(system_time_offset.abs() + root_dispersion + (root_delay / 2_f64) + (phc_error_bound / NANOSEC_IN_SEC as f64))
 }
 
 /// Round a f64 to nanosecond precision.
@@ -78,7 +82,7 @@ mod tests {
 
     #[test]
     fn get_clock_error_bound_successful() {
-        let ceb = get_clock_error_bound(0.0002_f64, 0.0001_f64, 0.0004_f64);
-        assert_eq!(ceb, 0.0005_f64);
+        let ceb = get_clock_error_bound(0.0002_f64, 0.0001_f64, 0.0004_f64, 30_000_f64);
+        assert_eq!(ceb, 0.00053_f64);
     }
 }

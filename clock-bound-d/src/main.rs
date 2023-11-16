@@ -1,8 +1,9 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: GPL-2.0-only
 use clap::{value_t, App, Arg};
-use clock_bound_d::run;
-use syslog::Error;
+use clock_bound_d::{run, refid_to_u32, PhcInfo};
+use std::io;
+use log::error;
 
 // Constants that reference package information from Cargo.toml
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -13,7 +14,7 @@ const DESCRIPTION: &'static str = env!("CARGO_PKG_DESCRIPTION");
 pub const DEFAULT_MAX_CLOCK_ERROR: f64 = 1.0; // 1ppm, same value as what chronyd is hard-coded to
 
 // ClockBoundD application entry point.
-fn main() -> Result<(), Error> {
+fn main() -> Result<(), io::Error> {
     // Create CLI options using Cargo.toml package information for reference
     let matches = App::new(NAME)
         .version(VERSION)
@@ -30,6 +31,26 @@ fn main() -> Result<(), Error> {
             .long("max_clock_error")
             .takes_value(true)
             .help("Set the max clock error in ppm. This is the assumed maximum frequency error that a system clock can gain between updates. This should be set to the same value as maxclockerror in chrony's configuration. Default value is 1 ppm."))
+        .arg(Arg::with_name("phc_ref_id")
+            .short("r")
+            .long("phc-ref-id")
+            .takes_value(true)
+            .requires("phc_interface")
+            .validator(|ref_id| {
+                let mut bytes = ref_id.bytes();
+                if bytes.len() == 4 && bytes.all(|b| b.is_ascii()) {
+                    Ok(())
+                } else {
+                    Err(String::from("The PHC reference ID supplied was not a 4 character ASCII string."))
+                }
+            })
+            .help("The PHC reference ID from Chronyd (generally, this is PHC0). Required for configuring ClockBound to sync to PHC."))
+        .arg(Arg::with_name("phc_interface")
+            .short("i")
+            .long("phc-interface")
+            .takes_value(true)
+            .requires("phc_ref_id")
+            .help("The network interface that the ENA driver PHC exists on (e.g. eth0). Required for configuring ClockBound to sync to PHC."))
         .get_matches();
 
     // Validate max_clock_error is a float. Otherwise, use the default value.
@@ -38,6 +59,11 @@ fn main() -> Result<(), Error> {
         value_t!(matches.value_of("max_clock_error"), f64).unwrap_or_else(|e| e.exit())
     } else {
         DEFAULT_MAX_CLOCK_ERROR
+    };
+
+    let phc_info: Option<PhcInfo> = match (matches.value_of("phc_ref_id"), matches.value_of("phc_interface")) {
+        (Some(phc_refid), Some(phc_interface)) => Some(PhcInfo {refid: refid_to_u32(phc_refid), interface: String::from(phc_interface)}),
+        _ => None,
     };
 
     // Default minimum log level is Info
@@ -67,6 +93,12 @@ fn main() -> Result<(), Error> {
         .map(|()| log::set_max_level(log_level))
         .unwrap();
 
-    run(max_clock_error);
+    match run(max_clock_error, phc_info) {
+        Ok(_) => {},
+        Err(e) => {
+            error!("Failed to startup ClockBound: {}", e);
+            return Err(e);
+        }
+    };
     Ok(())
 }

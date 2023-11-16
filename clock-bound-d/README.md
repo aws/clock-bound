@@ -92,6 +92,52 @@ systemctl status clockboundd
 To communicate with ClockBoundD a client is required. A rust client library exists at [ClockBoundC](../clock-bound-c/README.md)
 that an application can use to communicate with ClockBoundD.
 
+### PTP Hardware Clock (PHC) Support on EC2
+
+To get accurate clock error bound values when `chronyd` is synchronizing to the PHC (since `chronyd` assumes the PHC itself has 0 error bound which is not necesarily true), a PHC reference ID and PHC network interface (i.e. ENA interface like eth0) need to be supplied for ClockBound to read the clock error bound of the PHC and add it to `chronyd`'s clock error bound. This can be done via CLI args `-r` (ref ID) and `-i` (interface). Ref ID is seen in `chronyc tracking`, i.e.:
+```
+[ec2-user@ip-172-31-25-217 ~]$ chronyc tracking
+Reference ID    : 50484330 (PHC0) <-- This 4 character ASCII code
+Stratum         : 1
+Ref time (UTC)  : Wed Nov 15 18:24:30 2023
+System time     : 0.000000014 seconds fast of NTP time
+Last offset     : +0.000000000 seconds
+RMS offset      : 0.000000060 seconds
+Frequency       : 6.614 ppm fast
+Residual freq   : +0.000 ppm
+Skew            : 0.019 ppm
+Root delay      : 0.000010000 seconds
+Root dispersion : 0.000001311 seconds
+Update interval : 1.0 seconds
+Leap status     : Normal
+```
+and network interface should be the primary network interface (from `ifconfig`, the interface with index 0) - on Amazon Linux 2 this will generally be `eth0`, and on Amazon Linux 2023 this will generally be `ens5`.
+
+For example:
+```
+/usr/local/bin/clockboundd -r PHC0 -i eth0
+```
+
+To have your systemd unit do this, you'll need to edit the above line to supply the right arguments.
+
+For example:
+```
+[Unit]
+Description=ClockBoundD
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/local/bin/clockboundd -r PHC0 -i eth0
+RuntimeDirectory=clockboundd
+WorkingDirectory=/run/clockboundd
+User=clockbound
+
+[Install]
+WantedBy=multi-user.target
+```
+
 ### Custom Client
 
 If you want to create a custom client see [Custom Client](../README.md#custom-client) for more information.

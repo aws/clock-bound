@@ -1,6 +1,6 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: GPL-2.0-only
-use crate::ceb::ClockErrorBound;
+use crate::{ceb::ClockErrorBound, PhcErrorBound};
 use crate::chrony_poller::LEAP_STATUS_UNSYNCHRONIZED;
 #[cfg(not(test))]
 use crate::tracking::update_root_dispersion;
@@ -92,6 +92,7 @@ pub fn validate_request(request_version: u8, request_type: u8, request_size: usi
 /// * `request` - The request received from a client.
 /// * `request_size` - The amount of bytes read from a request received from a client.
 /// * `tracking` - The tracking information received from Chrony.
+/// * `phc_error_bound` - The PHC error bound retrieved from ENA driver.
 /// * `error_flag` - An error flag indicating if there has been an error when getting the tracking
 /// information from Chrony.
 /// * `max_clock_error` - The assumed maximum frequency error that a system clock can gain between updates in ppm.
@@ -99,6 +100,7 @@ pub fn build_response(
     request: [u8; 12],
     request_size: usize,
     tracking: Tracking,
+    phc_error_bound: PhcErrorBound,
     error_flag: bool,
     max_clock_error: f64,
 ) -> Vec<u8> {
@@ -148,7 +150,7 @@ pub fn build_response(
         build_response_header(request_type, sync_flag)
     };
 
-    let ceb_data = ClockErrorBound::from(tracking);
+    let ceb_data = ClockErrorBound::from(tracking, phc_error_bound);
 
     // Build response based on Request Type
     // Invalid type = Error Response
@@ -334,7 +336,7 @@ mod tests {
         // Command Type
         request[1] = request_type;
 
-        let response = build_response(request, 4, tracking, false, 1.0);
+        let response = build_response(request, 4, tracking, 5_f64, false, 1.0);
 
         let mut rdr = Cursor::new(response);
         assert_eq!(RESPONSE_VERSION, rdr.read_u8().unwrap());
@@ -344,7 +346,7 @@ mod tests {
         // Reserved
         assert_eq!(0, rdr.read_u8().unwrap());
         // Get the CEB from mock tracking data
-        let ceb = ClockErrorBound::from(tracking).ceb;
+        let ceb = ClockErrorBound::from(tracking, 5_f64).ceb;
         let bounds = clockbound_now(ceb);
         // Earliest bound
         assert_eq!(bounds.0, rdr.read_u64::<NetworkEndian>().unwrap());
@@ -372,7 +374,7 @@ mod tests {
         request.push(0);
 
         // Get the CEB from mock tracking data
-        let ceb = ClockErrorBound::from(tracking).ceb;
+        let ceb = ClockErrorBound::from(tracking, 6_f64).ceb;
         let bounds = clockbound_now(ceb);
         // 0 is the Unix Epoch
         let before_time = 0;
@@ -383,6 +385,7 @@ mod tests {
             <[u8; 12]>::try_from(request).unwrap(),
             12,
             tracking,
+            6_f64,
             false,
             1.0,
         );
@@ -420,7 +423,7 @@ mod tests {
         request.push(0);
 
         // Get the CEB from mock tracking data
-        let ceb = ClockErrorBound::from(tracking).ceb;
+        let ceb = ClockErrorBound::from(tracking, 0_f64).ceb;
         let bounds = clockbound_now(ceb);
         // 1000000000000000001 is one nanosecond more than our mock data of 1000000000000000000
         let before_time = 1000000000000000001;
@@ -431,6 +434,7 @@ mod tests {
             <[u8; 12]>::try_from(request).unwrap(),
             12,
             tracking,
+            0_f64,
             false,
             1.0,
         );
@@ -468,7 +472,7 @@ mod tests {
         request.push(0);
 
         // Get the CEB from mock tracking data
-        let ceb = ClockErrorBound::from(tracking).ceb;
+        let ceb = ClockErrorBound::from(tracking, 7_f64).ceb;
         let bounds = clockbound_now(ceb);
         // 1000000000000000001 is one nanosecond more than our mock data of 1000000000000000000
         let after_time = 1000000000000000001;
@@ -479,6 +483,7 @@ mod tests {
             <[u8; 12]>::try_from(request).unwrap(),
             12,
             tracking,
+            7_f64,
             false,
             1.0,
         );
@@ -516,7 +521,7 @@ mod tests {
         request.push(0);
 
         // Get the CEB from mock tracking data
-        let ceb = ClockErrorBound::from(tracking).ceb;
+        let ceb = ClockErrorBound::from(tracking, 8_f64).ceb;
         let bounds = clockbound_now(ceb);
         // 0 is the Unix Epoch
         let after_time = 0;
@@ -527,6 +532,7 @@ mod tests {
             <[u8; 12]>::try_from(request).unwrap(),
             12,
             tracking,
+            8_f64,
             false,
             1.0,
         );
@@ -618,7 +624,7 @@ mod tests {
         // Command Type
         request[1] = request_type;
 
-        let response = build_response(request, 4, tracking, false, 1.0);
+        let response = build_response(request, 4, tracking, 9_f64, false, 1.0);
 
         let mut rdr = Cursor::new(response);
         assert_eq!(RESPONSE_VERSION, rdr.read_u8().unwrap());
@@ -629,7 +635,7 @@ mod tests {
         assert_eq!(0, rdr.read_u8().unwrap());
         // Should still build the body of the response with the sync flag as false
         // Get the CEB from mock tracking data
-        let ceb = ClockErrorBound::from(tracking).ceb;
+        let ceb = ClockErrorBound::from(tracking, 9_f64).ceb;
         let bounds = clockbound_now(ceb);
         // Earliest bound
         assert_eq!(bounds.0, rdr.read_u64::<NetworkEndian>().unwrap());
