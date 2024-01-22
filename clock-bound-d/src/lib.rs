@@ -113,7 +113,6 @@ mod response;
 mod server;
 mod socket;
 mod tracking;
-use std::io;
 
 use crate::chrony_poller::start_chrony_poller;
 use crate::server::ClockBoundServer;
@@ -128,11 +127,12 @@ pub const NANOSEC_IN_SEC: u32 = 1_000_000_000;
 /// Type alias for f64 for error bound values retrieved from PHC sysfs interface.
 type PhcErrorBound = f64;
 
-/// PhcInfo holds the refid of the PHC in chronyd (i.e. PHC0), and the
-/// interface on which the PHC is enabled.
+/// PhcInfo holds the refid of the PHC in chronyd (i.e. PHC0), and the path
+/// of the sysfs error bound file to read from.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PhcInfo {
     pub refid: u32,
-    pub interface: String,
+    pub sysfs_error_bound_path: std::path::PathBuf,
 }
 
 /// Helper for converting a string ref_id into a u32 for the chrony command protocol.
@@ -145,13 +145,68 @@ pub fn refid_to_u32(ref_id: &str) -> u32 {
     bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]
 }
 
+/// Gets the PHC Error Bound sysfs file path given a network interface name.
+///
+/// # Arguments
+///
+/// * `interface` - The network interface to lookup the PHC error bound path for.
+pub fn get_error_bound_sysfs_path(interface: &str) -> Result<std::path::PathBuf, String> {
+    let pci_slot_name = get_pci_slot_name(interface)?;
+    Ok(std::path::PathBuf::from(format!(
+        "/sys/bus/pci/devices/{}/phc_error_bound",
+        pci_slot_name
+    )))
+}
+
+/// Gets the PCI slot name for a given network interface name.
+///
+/// # Arguments
+///
+/// * `interface` - The network interface to lookup the PCI slot name for.
+#[cfg(not(test))]
+fn get_pci_slot_name(interface: &str) -> Result<String, String> {
+    let uevent_path = format!("/sys/class/net/{}/device/uevent", interface);
+    let contents = match std::fs::read_to_string(&uevent_path) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(format!(
+                "Failed to read contents of uevent file {} to string: {}",
+                uevent_path, e
+            ));
+        }
+    };
+    Ok(contents
+        .lines()
+        .find_map(|line| line.strip_prefix("PCI_SLOT_NAME="))
+        .ok_or(format!(
+            "Failed to find PCI_SLOT_NAME for interface {}",
+            interface
+        ))?
+        .to_string())
+}
+
+/// Test specific impl of get_pci_slot_name.
+/// Using this so that we can mock this method that would normally
+/// read into sysfs.
+#[cfg(test)]
+fn get_pci_slot_name(interface: &str) -> Result<String, String> {
+    if interface == "return_error" {
+        Err(format!(
+            "Failed to find PCI_SLOT_NAME for interface {}",
+            interface
+        ))
+    } else {
+        Ok(interface.to_string())
+    }
+}
+
 /// Start ClockBoundD.
 ///
 /// # Arguments
 ///
 /// * `max_clock_error` - The assumed maximum frequency error that a system clock can gain between updates in ppm.
 /// * `phc_info` - struct containing info on PHC interface and refid to use for error bound.
-pub fn run(max_clock_error: f64, phc_info: Option<PhcInfo>) -> Result<(), io::Error> {
+pub fn run(max_clock_error: f64, phc_info: Option<PhcInfo>) {
     info!("Initialized ClockBoundD");
 
     // Do an initial poll to initialize the tracking data before starting the Chrony poller
@@ -165,7 +220,7 @@ pub fn run(max_clock_error: f64, phc_info: Option<PhcInfo>) -> Result<(), io::Er
     // Set up a channel for sending error flag data between threads
     let (tx_error_flag, rx_error_flag) = watch::channel(error_flag);
     // Initialize the server with initial tracking data
-    let server = ClockBoundServer::new(tracking, phc_info)?;
+    let server = ClockBoundServer::new(tracking, phc_info);
 
     // Chrony poller thread
     start_chrony_poller(tx_tracking, tx_error_flag);
@@ -173,7 +228,6 @@ pub fn run(max_clock_error: f64, phc_info: Option<PhcInfo>) -> Result<(), io::Er
 
     // Start main thread
     start_main_thread(server, rx_tracking, rx_error_flag, max_clock_error);
-    Ok(())
 }
 
 /// Start the main thread of ClockBoundD.
@@ -199,5 +253,22 @@ pub fn start_main_thread(
             Err(e) => error!("Failed to communicate with client. Error: {:?}", e),
             _ => {}
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_error_bound_sysfs_path() {
+        assert!(get_error_bound_sysfs_path("return_error").is_err());
+        assert_eq!(
+            get_error_bound_sysfs_path("pci_slot_return_val").unwrap(),
+            std::path::PathBuf::from(format!(
+                "/sys/bus/pci/devices/{}/phc_error_bound",
+                "pci_slot_return_val"
+            ))
+        );
     }
 }

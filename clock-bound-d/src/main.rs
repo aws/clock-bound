@@ -1,9 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: GPL-2.0-only
 use clap::{value_t, App, Arg};
-use clock_bound_d::{run, refid_to_u32, PhcInfo};
-use std::io;
-use log::error;
+use clock_bound_d::{get_error_bound_sysfs_path, refid_to_u32, run, PhcInfo};
 
 // Constants that reference package information from Cargo.toml
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -14,7 +12,7 @@ const DESCRIPTION: &'static str = env!("CARGO_PKG_DESCRIPTION");
 pub const DEFAULT_MAX_CLOCK_ERROR: f64 = 1.0; // 1ppm, same value as what chronyd is hard-coded to
 
 // ClockBoundD application entry point.
-fn main() -> Result<(), io::Error> {
+fn main() -> Result<(), String> {
     // Create CLI options using Cargo.toml package information for reference
     let matches = App::new(NAME)
         .version(VERSION)
@@ -61,8 +59,14 @@ fn main() -> Result<(), io::Error> {
         DEFAULT_MAX_CLOCK_ERROR
     };
 
-    let phc_info: Option<PhcInfo> = match (matches.value_of("phc_ref_id"), matches.value_of("phc_interface")) {
-        (Some(phc_refid), Some(phc_interface)) => Some(PhcInfo {refid: refid_to_u32(phc_refid), interface: String::from(phc_interface)}),
+    let phc_info: Option<PhcInfo> = match (
+        matches.value_of("phc_ref_id"),
+        matches.value_of("phc_interface"),
+    ) {
+        (Some(phc_refid), Some(phc_interface)) => Some(PhcInfo {
+            refid: refid_to_u32(phc_refid),
+            sysfs_error_bound_path: get_error_bound_sysfs_path(phc_interface)?,
+        }),
         _ => None,
     };
 
@@ -92,13 +96,6 @@ fn main() -> Result<(), io::Error> {
     log::set_boxed_logger(Box::new(syslog::BasicLogger::new(logger)))
         .map(|()| log::set_max_level(log_level))
         .unwrap();
-
-    match run(max_clock_error, phc_info) {
-        Ok(_) => {},
-        Err(e) => {
-            error!("Failed to startup ClockBound: {}", e);
-            return Err(e);
-        }
-    };
+    run(max_clock_error, phc_info);
     Ok(())
 }
