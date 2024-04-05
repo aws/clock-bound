@@ -15,6 +15,7 @@ authors = [
   "Julien Ridoux <ridouxj@amazon.com>",
   "Tam Phan <tmpha@amazon.com>",
   "Ryan Luu <rluu@amazon.com>",
-  "Wenhao Piao <wenhaopi@amazon.com>"
+  "Wenhao Piao <wenhaopi@amazon.com>",
+  "Daniel Franke <dff@amazon.com>",
 ]
 edition = "2021"
