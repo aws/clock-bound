@@ -1,7 +1,13 @@
 [package]
 name = "clock-bound-d"
-version = "0.1.4"
-authors = ["Jacob Wisniewski <wisnjaco@amazon.com>"]
+version = "1.0.0"
+authors = [
+  "Julien Ridoux <ridouxj@amazon.com>",
+  "Jacob Wisniewski <wisnjaco@amazon.com>",
+  "Tam Phan <tmpha@amazon.com>",
+  "Ryan Luu <rluu@amazon.com>",
+  "Wenhao Piao <wenhaopi@amazon.com>"
+]
 description = "A daemon to provide clients with an error bounded timestamp interval."
 edition = "2021"
 license = "GPL-2.0-only"
@@ -13,17 +19,19 @@ categories = [ "date-and-time" ]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chrony-candm = "0.1"
-log = "0.4.14"
-syslog = "5"
-clap = "2.33"
-tokio = { version = "1.18", features = ["sync"] }
-chrono = "0.4.19"
-byteorder = "1.4.3"
-uds = "0.2.6"
+byteorder = "1"
+chrony-candm = "0.1.1"
+clap = { version = "4", features = ["derive"] }
+clock-bound-shm = { version = "1.0.0", path = "../clock-bound-shm", features = ["writer"]}
+lazy_static = "1"
+libc = { version = "0.2", default-features = false }
+nix = { version = "0.27", features = ["net", "signal"] }
+socket2 = "0.5"
+tracing = { version = "0.1", features = ["max_level_debug", "release_max_level_info"]}
+tracing-subscriber = { version = "0.3", features = ["std", "fmt", "json"] }
 
 [[bin]]
-name = "clockboundd"
+name = "clockbound"
 path = "src/main.rs"
 doc = false
 
