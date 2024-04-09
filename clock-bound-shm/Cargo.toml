@@ -1,0 +1,30 @@
+[package]
+name = "clock-bound-shm"
+version = "1.0.0"
+authors = [
+  "Julien Ridoux <ridouxj@amazon.com>",
+  "Jacob Wisniewski <wisnjaco@amazon.com>",
+  "Tam Phan <tmpha@amazon.com>",
+  "Ryan Luu <rluu@amazon.com>",
+  "Wenhao Piao <wenhaopi@amazon.com>"
+]
+description = "A library used to interact with shared memory in ClockBound."
+edition = "2021"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/aws/clock-bound"
+keywords = ["aws", "ntp", "ec2", "time"]
+categories = [ "date-and-time" ]
+
+[features]
+writer = []
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+byteorder = "1"
+errno = { version = "=0.3.0", default-features = false }
+libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
+nix = { version = "0.26", features = ["feature", "time"] }
+
+[dev-dependencies]

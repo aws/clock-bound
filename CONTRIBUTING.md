@@ -56,4 +56,4 @@ If you discover a potential security issue in this project we ask that you notif
 
 ## Licensing
 
-See the [ClockBoundC LICENSE](clock-bound-c/LICENSE) and [ClockBoundD LICENSE](clock-bound-d/LICENSE) files for our project's licensing. We will ask you to confirm the licensing of your contribution.
+See the LICENSE files in the respective Rust package subdirectories for the licensing details. We will ask you to confirm the licensing of your contribution.

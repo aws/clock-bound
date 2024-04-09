@@ -1,0 +1,21 @@
+[workspace]
+members = [
+  # NOTE: the order in which the workspaces are listed does matter. It has to follow the dependency
+  # tree, to ensure a crate that is depended upon is built and published first.
+  "clock-bound-shm",
+  "clock-bound-ffi",
+  "clock-bound-client",
+  "clock-bound-d",
+  "examples/rust",
+]
+
+[workspace.package]
+authors = [
+  "Jacob Wisniewski <wisnjaco@amazon.com>",
+  "Julien Ridoux <ridouxj@amazon.com>",
+  "Tam Phan <tmpha@amazon.com>",
+  "Ryan Luu <rluu@amazon.com>",
+  "Wenhao Piao <wenhaopi@amazon.com>",
+  "Daniel Franke <dff@amazon.com>",
+]
+edition = "2021"

@@ -1,102 +1,234 @@
 [![Crates.io](https://img.shields.io/crates/v/clock-bound-d.svg)](https://crates.io/crates/clock-bound-d)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 
-# ClockBoundD
+# ClockBound daemon
 
-A daemon to provide clients with an error bounded timestamp interval.
+## Overview
+
+The `clockbound` daemon interfaces with `chronyd` and the Operating System clock to provide clients with a bound on the
+error of the system clock. The `clockbound` daemon periodically updates a shared memory segment that stores parameters
+to calculate the bound on clock error at any time. Clients leverage the C library (in `clock-bound-ffi/`)
+or the Rust library (in `clock-bound-client/`) to open the shared memory segment and read a timestamp interval
+within which true time exists.
 
 ## Prerequisites
 
-[chronyd](https://chrony.tuxfamily.org/) must be running in order to run ClockBoundD. If running
-on Amazon Linux 2, chronyd is already set as the default NTP daemon for you.
+### The synchronization daemon - chronyd
 
-If running on Amazon EC2, see the [EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/set-time.html) for more information on installing Chrony and syncing
-to the Amazon Time Sync Service.
+The `clockbound` daemon continuously communicates with [chronyd](https://chrony.tuxfamily.org/) to compose the clock
+error bound parameters. The `chronyd` daemon must be running to synchronize the system clock and provide clock
+correction parameters.
+
+#### Chrony installation
+
+- If running on Amazon Linux 2, `chronyd` is already set as the default NTP daemon for you.
+- If running on Amazon EC2, see the [EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/set-time.html)
+  for more information on installing `chronyd` and syncing to the Amazon Time Sync Service.
+
+#### Chrony permissions
+
+The `chronyd` daemon has the ability to drop privileges once initialized. The rest of this guide assumes that `chronyd`
+runs under the `chrony` system user, which is the default for most distributions.
+
+Note that this impacts which process can communicate with `chronyd`. The `clockbound` daemon communicates with `chronyd`
+over `chronyd` Unix Datagram Socket (usually at `/var/run/chrony/chronyd.sock`). The `chronyd` daemon sets permissions
+such that only processes running under `root` or the `chrony` user can write to it.
+
+#### Chrony configuration
+
+**IMPORTANT: configuring the maxclockerror directive**
+
+Several sources of synchronization errors are taken into account by `clockbound` to provide the guarantee that true time
+is within a clock error bound interval. One of these components captures the stability of the local oscillator the
+system clock is built upon. By default, `chronyd` uses a very optimistic value of 1 PPM, which is appropriate for a
+clock error _estimate_ but not for a _bound_. The exact value to use depends on your hardware (you should check),
+otherwise, a value of 50 PPM should be appropriate for most configuration to capture the maximum drift in between clock
+updates.
+
+Update the `/etc/chrony.conf` configuration file and add the following directive to configure a 50 PPM max drift rate:
+
+```text
+# Ensures chronyd grows local dispersion at a rate that is realistic and aligned with clockbound.
+maxclockerror 50
+```
 
 ## Installation
+
 ### Cargo
-ClockBoundD can be installed using Cargo. Instructions on how to install cargo can be found at
+
+ClockBound daemon can be installed using Cargo. Instructions on how to install Cargo can be found at
 [doc.rust-lang.org](https://doc.rust-lang.org/cargo/getting-started/installation.html).
 
 If it's your first time installing Cargo on an AL2 EC2 instance you may need to also install gcc:
-```
+
+```sh
 sudo yum install gcc
 ```
 
-Run cargo install:
-```
-cargo install clock-bound-d
+Run cargo build with the release flag:
+
+```sh
+cargo build --release
 ```
 
-If cargo was installed with the rustup link above the default install location will be at
+Cargo install will place the ClockBound daemon binary in this relative path:
+
+```sh
+target/release/clockbound
 ```
-$HOME/.cargo/bin/clockboundd
-```
+
+## Configuration
 
 ### Systemd configuration
 
-If built from source using cargo, it is recommended to set up systemd to manage ClockBoundD.
+If built from source using cargo, it is recommended to set up systemd to manage the ClockBound daemon.
 
-Configuration Example:
+In the below systemd configuration, please note:
 
-* Move binary to the location you want to run it from
-```
-sudo mv $HOME/.cargo/bin/clockboundd /usr/local/bin/clockboundd
+- The `clockbound` daemon runs as the `chrony` user so that it can access the chronyd UDS socket
+  at `/var/run/chrony/chronyd.sock`.
+- The `RuntimeDirectory` that contains the file backing the shared memory segment needs to be
+  preserved over clockbound restart events. This lets client code run without interruption
+  when the clockbound daemon is restarted.
+- Depending on the version of systemd used (>=235), the `RuntimeDirectory` can be used in combination with
+  `RuntimeDirectoryPreserve`.
+
+Configuration steps:
+
+Move binary to the location you want to run it from:
+
+```sh
+sudo mv target/release/clockbound /usr/local/bin/clockbound
+sudo chown chrony:chrony /usr/local/bin/clockbound
 ```
 
-* Create system user that systemd can use
-```
-sudo useradd -r clockbound
+Create unit file `/usr/lib/systemd/system/clockbound.service`.
+The contents of this file will vary depending on what version of systemd that you are running.
+
+To determine the version of systemd that you are running, run `systemctl --version`.
+
+In the example below, the systemd version is 219.
+
+```sh
+$ systemctl --version
+systemd 219
++PAM +AUDIT +SELINUX +IMA -APPARMOR +SMACK +SYSVINIT +UTMP +LIBCRYPTSETUP +GCRYPT +GNUTLS +ACL +XZ +LZ4 -SECCOMP +BLKID +ELFUTILS +KMOD +IDN
 ```
 
-* Create unit file /usr/lib/systemd/system/clockboundd.service with the following contents
-```
+For systemd version >= 235 create file `/usr/lib/systemd/system/clockbound.service` with the following contents:
+
+```text
 [Unit]
-Description=ClockBoundD
+Description=ClockBound
 
 [Service]
 Type=simple
 Restart=always
 RestartSec=10
-ExecStart=/usr/local/bin/clockboundd
-RuntimeDirectory=clockboundd
-WorkingDirectory=/run/clockboundd
-User=clockbound
+ExecStart=/usr/local/bin/clockbound --max-drift-rate 50
+RuntimeDirectory=clockbound
+RuntimeDirectoryPreserve=yes
+WorkingDirectory=/run/clockbound
+User=chrony
+Group=chrony
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-* Reload systemd
+For systemd version < 235 create file `/usr/lib/systemd/system/clockbound.service` with the following contents:
+
+```text
+[Unit]
+Description=ClockBound
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+PermissionsStartOnly=true
+ExecStartPre=/bin/mkdir -p /run/clockbound
+ExecStartPre=/bin/chmod 775 /run/clockbound
+ExecStartPre=/bin/chown chrony:chrony /run/clockbound
+ExecStartPre=/bin/cd /run/clockbound
+ExecStart=/usr/local/bin/clockbound --max-drift-rate 50
+User=chrony
+Group=chrony
+
+[Install]
+WantedBy=multi-user.target
 ```
+
+Reload systemd:
+
+```sh
 sudo systemctl daemon-reload
 ```
 
-* Enable ClockBoundD to start at boot
-```
-sudo systemctl enable clockboundd
+Enable ClockBound daemon to start at boot:
+
+```sh
+sudo systemctl enable clockbound
 ```
 
-* Start ClockBoundD now
-```
-sudo systemctl start clockboundd
+Start ClockBound daemon:
+
+```sh
+sudo systemctl start clockbound
 ```
 
 You can then check the status of the service with:
+
+```sh
+systemctl status clockbound
 ```
-systemctl status clockboundd
+
+Logs are accessible at `/var/log/daemon.log` or by running the following command:
+
+```sh
+sudo journalctl -u clockbound
+```
+
+### One-off Manual Configuration
+
+The following steps are primarily here for developer or testing purposes.
+
+The ClockBound daemon needs to:
+
+- Write to a shared memory segment that is backed by file `/var/run/clockbound/shm`.
+- Read from and write to chrony UDS socket at `/var/run/chrony/chronyd.sock`.
+  This is permitted if the `clockbound` daemon runs as the user `chrony`.
+- Have a `--max-drift-rate` parameter that matches `chronyd` configuration.
+
+Commands to support that ClockBound daemon setup:
+
+```sh
+sudo mkdir /var/run/clockbound
+sudo chown root:chrony /var/run/clockbound
+sudo chmod g+rwx /var/run/clockbound
+sudo -u chrony /usr/local/bin/clockbound --max-drift-rate 50
 ```
 
 ## Usage
 
-To communicate with ClockBoundD a client is required. A rust client library exists at [ClockBoundC](../clock-bound-c/README.md)
-that an application can use to communicate with ClockBoundD.
+To communicate with the ClockBound daemon, a client is required.
+
+- See [clock-bound-ffi](../clock-bound-ffi/README.md) for a C library that an application can use to communicate with the ClockBound daemon.
+- See [clock-bound-client](../clock-bound-client/README.md) for a Rust client library.
+
+## Clock status
+
+The value of the clock status written to the shared memory segment is driven by the Finite State Machine described below.
+
+Each transition in the FSM is triggered by an update retrieved from chrony with the clock status which can be one of `Unknown`, `Synchronized`, or `FreeRunning`.
+
+![State Diagram for ClockStatus in SHM](../docs/assets/FSM.png)
 
 ### PTP Hardware Clock (PHC) Support on EC2
 
 To get accurate clock error bound values when `chronyd` is synchronizing to the PHC (since `chronyd` assumes the PHC itself has 0 error bound which is not necesarily true), a PHC reference ID and PHC network interface (i.e. ENA interface like eth0) need to be supplied for ClockBound to read the clock error bound of the PHC and add it to `chronyd`'s clock error bound. This can be done via CLI args `-r` (ref ID) and `-i` (interface). Ref ID is seen in `chronyc tracking`, i.e.:
 ```
-[ec2-user@ip-172-31-25-217 ~]$ chronyc tracking
+$ chronyc tracking
 Reference ID    : 50484330 (PHC0) <-- This 4 character ASCII code
 Stratum         : 1
 Ref time (UTC)  : Wed Nov 15 18:24:30 2023
@@ -115,7 +247,7 @@ and network interface should be the primary network interface (from `ifconfig`, 
 
 For example:
 ```
-/usr/local/bin/clockboundd -r PHC0 -i eth0
+/usr/local/bin/clockbound -r PHC0 -i eth0
 ```
 
 To have your systemd unit do this, you'll need to edit the above line to supply the right arguments.
@@ -123,38 +255,21 @@ To have your systemd unit do this, you'll need to edit the above line to supply 
 For example:
 ```
 [Unit]
-Description=ClockBoundD
+Description=ClockBound
 
 [Service]
 Type=simple
 Restart=always
 RestartSec=10
-ExecStart=/usr/local/bin/clockboundd -r PHC0 -i eth0
-RuntimeDirectory=clockboundd
-WorkingDirectory=/run/clockboundd
-User=clockbound
+ExecStart=/usr/local/bin/clockbound -r PHC0 -i eth0
+RuntimeDirectory=clockbound
+RuntimeDirectoryPreserve=yes
+WorkingDirectory=/run/clockbound
+User=chrony
+Group=chrony
 
 [Install]
 WantedBy=multi-user.target
-```
-
-### Custom Client
-
-If you want to create a custom client see [Custom Client](../README.md#custom-client) for more information.
-
-## Logging
-
-By default, ClockBoundD logs to syslog at /var/log/daemon.log.
-
-syslog logs can be viewed with journalctl:
-```
-journalctl -u clockboundd
-```
-## Updating README
-
-This README is generated via [cargo-readme](https://crates.io/crates/cargo-readme). Updating can be done by running:
-```
-cargo readme > README.md
 ```
 
 ## Security
