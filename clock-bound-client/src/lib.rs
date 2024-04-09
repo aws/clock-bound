@@ -103,7 +103,6 @@ impl ClockBoundClient {
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub enum ClockBoundErrorKind {
-    None,
     Syscall,
     SegmentNotInitialized,
     SegmentMalformed,
@@ -144,7 +143,7 @@ impl From<ShmError> for ClockBoundError {
     }
 }
 
-/// Result of the `clockbound_now()` function.
+/// Result of the `ClockBoundClient::now()` method.
 #[derive(PartialEq, Clone, Debug)]
 pub struct ClockBoundNowResult {
     pub earliest: TimeSpec,
