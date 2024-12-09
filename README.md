@@ -8,7 +8,7 @@ Using ClockBound with a consistent, trusted time service will allow you to compa
 
 ## Calculations
 
-Clock accuracy is a measure of clock error, typically defined as the offset to UTC. This clock error is the difference between the observed time on the computer and reference time (also known as true time). In an NTP architecture, this error can be bounded using three measurements that are defined by the protocol:
+Clock accuracy is a measure of clock error, typically defined as the offset to UTC. This clock error is the difference between the observed time on the computer and reference time (also known as true time). In NTP architecture, this error can be bounded using three measurements that are defined by the protocol:
 
 - Local offset (the system time): The residual adjustment to be applied to the operating system clock.
 - Root dispersion: The accumulation of clock drift at each NTP server on the path to the reference clock.
@@ -22,7 +22,7 @@ The clock error bound is calculated using the formula below:
 
 Figure 1: The Clock Error Bound provides a bound on the worst case offset of a clock with regard to “true time”.
 
-The combination of local offset, root dispersion, and root delay provides us with a clock error bound. For a given reading of the clock C(t) at true time t, this bound makes sure that true time exists within the clock error bound. The clock error bound is used as a proxy for clock accuracy and measures the worst case scenario (see Figure 1). Therefore, clock error bound is the main metric used to determine the accuracy of an NTP service.
+The combination of local offset, root dispersion, and root delay provides us with a clock error bound. For a given reading of the clock C(t) at true time t, this bound makes sure that true time exists within the clock error bound. The clock error bound is used as a proxy for clock accuracy and measures the worst case scenario (see Figure 1). Therefore, clock error bound is the main metric used to determine the accuracy of a NTP service.
 
 ClockBound uses this clock error bound to return a bounded range of timestamps. This is calculated by adding and subtracting the clock error bound from the timestamp provided by a system's clock. It also contains functionality to check if a given timestamp is in the past or future. This allows users to have consistency when dealing with time sensitive transactions.
 
@@ -40,7 +40,7 @@ Please see the respective README.md files for information about how to get these
 
 ### Custom Client
 
-The [ClockBound Protocol](PROTOCOL.md) is provided if there is interest in creating a custom client.
+The [ClockBound Protocol](docs/PROTOCOL.md) is provided if there is interest in creating a custom client.
 
 Clients can be created in any programming language that can read from a shared memory segment that is backed by a file.
 

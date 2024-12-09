@@ -15,7 +15,7 @@ within which true time exists.
 
 ### The synchronization daemon - chronyd
 
-The `clockbound` daemon continuously communicates with [chronyd](https://chrony.tuxfamily.org/) to compose the clock
+The `clockbound` daemon continuously communicates with [chronyd](https://chrony-project.org/) to compose the clock
 error bound parameters. The `chronyd` daemon must be running to synchronize the system clock and provide clock
 correction parameters.
 
