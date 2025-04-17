@@ -1,47 +1,15 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
-
-//! This crate implements the FFI for ClockBound. It builds into the libclockbound c library that 
-//! an application can use to communicate with the ClockBound daemon.
-//! 
-//! # Usage
-//! 
-//! clock-bound-ffi requires ClockBound daemon to be running to work.
-//! See [ClockBound daemon documentation](../clock-bound-d/README.md) for installation instructions.
-//! 
-//! ## Building
-//! 
-//! Run the following to build the source code of this crate:
-//! 
-//! ```sh
-//! cargo build --release
-//! ```
-//! 
-//! It produces `libclockbound.a`, `libclockbound.so`
-//! 
-//! - Copy `clock-bound-ffi/include/clockbound.h` to `/usr/include/`
-//! - Copy `target/release/libclockbound.a` to `/usr/lib/`
-//! - Copy `target/release/libclockbound.so` to `/usr/lib/`
-//! 
-//! ## Example
-//! 
-//! Source code of a runnable c example program can be found at [../examples/c](../examples/c).
-//! See the [README.md](../examples/c/README.md) in that directory for more details on how to
-//! build and run the example.
-//! 
-//! # Updating README
-//! 
-//! This README is generated via [cargo-readme](https://crates.io/crates/cargo-readme). Updating can be done by running:
-//! 
-//! ```sh
-//! cargo readme > README.md
-//! ```
+//! ClockBound Foreign Function Interface
+//!
+//! This crate implements the FFI for ClockBound and builds into the libclockbound library.
 
 // Align with C naming conventions
 #![allow(non_camel_case_types)]
 
-use clock_bound_shm::{ClockErrorBound, ClockStatus, ShmError, ShmReader};
+use clock_bound_shm::{ClockStatus, ShmError, ShmReader};
+use clock_bound_vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
+use clock_bound_vmclock::VMClock;
 use core::ptr;
+use nix::sys::time::TimeSpec;
 use std::ffi::{c_char, CStr};
 
 /// Error kind exposed over the FFI.
@@ -54,6 +22,7 @@ pub enum clockbound_err_kind {
     CLOCKBOUND_ERR_SEGMENT_NOT_INITIALIZED,
     CLOCKBOUND_ERR_SEGMENT_MALFORMED,
     CLOCKBOUND_ERR_CAUSALITY_BREACH,
+    CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED,
 }
 
 /// Error struct exposed over the FFI.
@@ -85,6 +54,9 @@ impl From<ShmError> for clockbound_err {
             }
             ShmError::SegmentMalformed => clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_MALFORMED,
             ShmError::CausalityBreach => clockbound_err_kind::CLOCKBOUND_ERR_CAUSALITY_BREACH,
+            ShmError::SegmentVersionNotSupported => {
+                clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED
+            }
         };
 
         let errno = match value {
@@ -112,28 +84,40 @@ impl From<ShmError> for clockbound_err {
 /// This allow to extend the context with extra information if needed.
 pub struct clockbound_ctx {
     err: clockbound_err,
-    reader: ShmReader,
+    clockbound_shm_reader: Option<ShmReader>,
+    vmclock: Option<VMClock>,
 }
 
 impl clockbound_ctx {
-    /// Request a consistent snapshot of the clockbound memory segment.
+    /// Obtain error-bounded timestamps and the ClockStatus.
     ///
-    /// This function leverages the ShmReader open when the context was created to retrieve a
-    /// consistent snapshot of the bound on clock error data.
-    fn snapshot(&mut self) -> Result<&ClockErrorBound, ShmError> {
-        self.reader.snapshot()
+    /// The result on success is a tuple of:
+    /// - TimeSpec: earliest timestamp.
+    /// - TimeSpec: latest timestamp.
+    /// - ClockStatus: Status of the clock.
+    fn now(&mut self) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
+        if let Some(ref mut clockbound_shm_reader) = self.clockbound_shm_reader {
+            match clockbound_shm_reader.snapshot() {
+                Ok(clockerrorbound_snapshot) => clockerrorbound_snapshot.now(),
+                Err(e) => Err(e),
+            }
+        } else if let Some(ref mut vmclock) = self.vmclock {
+            vmclock.now()
+        } else {
+            Err(ShmError::SegmentNotInitialized)
+        }
     }
 }
 
 /// Clock status exposed over the FFI.
-///
-/// These have to match the C header definition.
+///.
 #[repr(C)]
 #[derive(Debug, PartialEq)]
 pub enum clockbound_clock_status {
     CLOCKBOUND_STA_UNKNOWN,
     CLOCKBOUND_STA_SYNCHRONIZED,
     CLOCKBOUND_STA_FREE_RUNNING,
+    CLOCKBOUND_STA_DISRUPTED,
 }
 
 impl From<ClockStatus> for clockbound_clock_status {
@@ -142,6 +126,7 @@ impl From<ClockStatus> for clockbound_clock_status {
             ClockStatus::Unknown => Self::CLOCKBOUND_STA_UNKNOWN,
             ClockStatus::Synchronized => Self::CLOCKBOUND_STA_SYNCHRONIZED,
             ClockStatus::FreeRunning => Self::CLOCKBOUND_STA_FREE_RUNNING,
+            ClockStatus::Disrupted => Self::CLOCKBOUND_STA_DISRUPTED,
         }
     }
 }
@@ -163,15 +148,21 @@ pub struct clockbound_now_result {
 /// caller, and needs to live beyond the scope of this function.
 ///
 /// # Safety
-///
 /// Rely on the caller to pass valid pointers.
+///
 #[no_mangle]
 pub unsafe extern "C" fn clockbound_open(
-    shm_path: *const c_char,
+    clockbound_shm_path: *const c_char,
     err: *mut clockbound_err,
 ) -> *mut clockbound_ctx {
-    let reader: ShmReader = match ShmReader::new(CStr::from_ptr(shm_path)) {
-        Ok(reader) => reader,
+    let clockbound_shm_path_cstr = CStr::from_ptr(clockbound_shm_path);
+    let clockbound_shm_path = clockbound_shm_path_cstr
+        .to_str()
+        .expect("Failed to convert ClockBound shared memory path to str");
+    let vmclock_shm_path = VMCLOCK_SHM_DEFAULT_PATH;
+
+    let vmclock: VMClock = match VMClock::new(clockbound_shm_path, vmclock_shm_path) {
+        Ok(vmclock) => vmclock,
         Err(e) => {
             if !err.is_null() {
                 err.write(e.into())
@@ -182,10 +173,60 @@ pub unsafe extern "C" fn clockbound_open(
 
     let ctx = clockbound_ctx {
         err: Default::default(),
-        reader,
+        clockbound_shm_reader: None,
+        vmclock: Some(vmclock),
     };
 
-    // Go discover the world little context, and live forever ...
+    // Return the clockbound_ctx.
+    //
+    // The caller is responsible for calling clockbound_close() with this context which will
+    // perform memory clean-up.
+    return Box::leak(Box::new(ctx));
+}
+
+/// Open and create a reader to the Clockbound shared memory segment and the VMClock shared memory segment.
+///
+/// Create a VMClock pointing at the paths passed to this call, and package it (and any other side
+/// information) into a `clockbound_ctx`. A reference to the context is passed back to the C
+/// caller, and needs to live beyond the scope of this function.
+///
+/// # Safety
+/// Rely on the caller to pass valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn clockbound_vmclock_open(
+    clockbound_shm_path: *const c_char,
+    vmclock_shm_path: *const c_char,
+    err: *mut clockbound_err,
+) -> *mut clockbound_ctx {
+    let clockbound_shm_path_cstr = CStr::from_ptr(clockbound_shm_path);
+    let clockbound_shm_path = clockbound_shm_path_cstr
+        .to_str()
+        .expect("Failed to convert ClockBound shared memory path to str");
+    let vmclock_shm_path_cstr = CStr::from_ptr(vmclock_shm_path);
+    let vmclock_shm_path = vmclock_shm_path_cstr
+        .to_str()
+        .expect("Failed to convert VMClock shared memory path to str");
+
+    let vmclock: VMClock = match VMClock::new(clockbound_shm_path, vmclock_shm_path) {
+        Ok(vmclock) => vmclock,
+        Err(e) => {
+            if !err.is_null() {
+                err.write(e.into())
+            }
+            return ptr::null_mut();
+        }
+    };
+
+    let ctx = clockbound_ctx {
+        err: Default::default(),
+        clockbound_shm_reader: None,
+        vmclock: Some(vmclock),
+    };
+
+    // Return the clockbound_ctx.
+    //
+    // The caller is responsible for calling clockbound_close() with this context which will
+    // perform memory clean-up.
     return Box::leak(Box::new(ctx));
 }
 
@@ -218,15 +259,8 @@ pub unsafe extern "C" fn clockbound_now(
     output: *mut clockbound_now_result,
 ) -> *const clockbound_err {
     let ctx = &mut *ctx;
-    let ceb_snap = match ctx.snapshot() {
-        Ok(snap) => snap,
-        Err(e) => {
-            ctx.err = e.into();
-            return &ctx.err;
-        }
-    };
 
-    let (earliest, latest, clock_status) = match ceb_snap.now() {
+    let (earliest, latest, clock_status) = match ctx.now() {
         Ok(now) => now,
         Err(e) => {
             ctx.err = e.into();
@@ -235,8 +269,8 @@ pub unsafe extern "C" fn clockbound_now(
     };
 
     output.write(clockbound_now_result {
-        earliest,
-        latest,
+        earliest: *earliest.as_ref(),
+        latest: *latest.as_ref(),
         clock_status: clock_status.into(),
     });
     ptr::null()
@@ -244,26 +278,22 @@ pub unsafe extern "C" fn clockbound_now(
 
 #[cfg(test)]
 mod t_ffi {
-    /// This test module is full of side effects and create local files to test the ffi
-    /// functionality. Tests run concurrently, so each test creates its own dedicated file.
-    /// For now, create files in `/tmp/` and no cleaning is done.
-    ///
-    /// TODO: investigate how to retrieve the target-dir that would work for both brazil package
-    /// and "native" cargo ones to contain artefacts better.
-    ///
-    /// TODO: write more / better tests
-    ///
     use super::*;
-    use byteorder::{NativeEndian, WriteBytesExt};
+    use clock_bound_shm::ClockErrorBound;
+    use byteorder::{LittleEndian, NativeEndian, WriteBytesExt};
     use std::ffi::CString;
-    use std::fs::File;
+    use std::fs::OpenOptions;
     use std::io::Write;
     use std::os::unix::ffi::OsStrExt;
+    /// We make use of tempfile::NamedTempFile to ensure that
+    /// local files that are created during a test get removed
+    /// afterwards.
+    use tempfile::NamedTempFile;
 
     // TODO: this macro is defined in more than one crate, and the code needs to be refactored to
     // remove duplication once most sections are implemented. For now, a bit of redundancy is ok to
     // avoid having to think about dependencies between crates.
-    macro_rules! write_memory_segment {
+    macro_rules! write_clockbound_memory_segment {
         ($file:ident,
          $magic_0:literal,
          $magic_1:literal,
@@ -304,21 +334,84 @@ mod t_ffi {
         };
     }
 
+    macro_rules! write_vmclock_shm_header {
+        ($file:ident,
+         $magic:literal,
+         $size:literal,
+         $version:literal,
+         $counter_id:literal,
+         $time_type:literal,
+         $seq_count:literal) => {
+            $file
+                .write_u32::<LittleEndian>($magic)
+                .expect("Write failed magic");
+            $file
+                .write_u32::<LittleEndian>($size)
+                .expect("Write failed size");
+            $file
+                .write_u16::<LittleEndian>($version)
+                .expect("Write failed version");
+            $file
+                .write_u8($counter_id)
+                .expect("Write failed counter_id");
+            $file.write_u8($time_type).expect("Write failed time_type");
+            $file
+                .write_u32::<LittleEndian>($seq_count)
+                .expect("Write failed seq_count");
+            $file.sync_all().expect("Sync to disk failed");
+        };
+    }
+
     /// Assert that the shared memory segment can be open, read and and closed. Only a sanity test.
     #[test]
-    fn test_sanity_check() {
-        let path_shm = "/tmp/test_ffi";
-        let mut file = File::create(path_shm).expect("create file failed");
+    fn test_clockbound_vmclock_open_sanity_check() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
+        write_clockbound_memory_segment!(clockbound_shm_file, 0x414D5A4E, 0x43420200, 800, 2, 10);
 
-        write_memory_segment!(file, 0x414D5A4E, 0x43420200, 800, 3, 10);
+        let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
+        let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
+        let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
+        let mut vmclock_shm_file = OpenOptions::new()
+            .write(true)
+            .open(vmclock_shm_path)
+            .expect("open vmclock file failed");
+        write_vmclock_shm_header!(
+            vmclock_shm_file,
+            0x4B4C4356,
+            104_u32,
+            1_u16,
+            0_u8,
+            0_u8,
+            0_u32
+        );
 
-        let path_cstring =
-            CString::new(std::path::Path::new(path_shm).as_os_str().as_bytes()).unwrap();
+        let clockbound_path_cstring = CString::new(
+            std::path::Path::new(clockbound_shm_path)
+                .as_os_str()
+                .as_bytes(),
+        )
+        .unwrap();
+        let vmclock_path_cstring = CString::new(
+            std::path::Path::new(vmclock_shm_path)
+                .as_os_str()
+                .as_bytes(),
+        )
+        .unwrap();
         unsafe {
             let mut err: clockbound_err = Default::default();
             let mut now_result: clockbound_now_result = std::mem::zeroed();
 
-            let ctx = clockbound_open(path_cstring.as_ptr(), &mut err);
+            let ctx = clockbound_vmclock_open(
+                clockbound_path_cstring.as_ptr(),
+                vmclock_path_cstring.as_ptr(),
+                &mut err,
+            );
             assert!(!ctx.is_null());
 
             let errptr = clockbound_now(ctx, &mut now_result);
@@ -349,6 +442,10 @@ mod t_ffi {
         assert_eq!(
             clockbound_clock_status::from(ClockStatus::FreeRunning),
             clockbound_clock_status::CLOCKBOUND_STA_FREE_RUNNING
+        );
+        assert_eq!(
+            clockbound_clock_status::from(ClockStatus::Disrupted),
+            clockbound_clock_status::CLOCKBOUND_STA_DISRUPTED
         );
     }
 }

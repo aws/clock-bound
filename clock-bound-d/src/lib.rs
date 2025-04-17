@@ -1,20 +1,34 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: GPL-2.0-only
-
 //! ClockBound Daemon
 //!
 //! This crate implements the ClockBound daemon
 
-pub mod channels;
-mod chrony_poller;
-mod shm_writer;
+mod chrony_client;
+mod clock_bound_runner;
+mod clock_snapshot_poller;
+mod clock_state_fsm;
+mod clock_state_fsm_no_disruption;
+mod phc_utils;
 pub mod signal;
-pub mod thread_manager;
 
-use chrony_candm::reply::Tracking;
+use std::path::Path;
+use std::str::FromStr;
+use std::sync::atomic;
 
-/// Type alias for i64 for error bound values retrieved from PHC sysfs interface.
-type PhcErrorBound = i64;
+#[cfg(any(test, feature = "test"))]
+use crate::phc_utils::MockPhcWithSysfsErrorBound as PhcWithSysfsErrorBound;
+#[cfg(not(any(test, feature = "test")))]
+use crate::phc_utils::PhcWithSysfsErrorBound;
+use clock_bound_shm::ShmWriter;
+use clock_bound_vmclock::{shm::VMCLOCK_SHM_DEFAULT_PATH, shm_reader::VMClockShmReader};
+use chrony_client::UnixDomainSocket;
+use clock_bound_runner::ClockBoundRunner;
+use clock_snapshot_poller::chronyd_snapshot_poller::ChronyDaemonSnapshotPoller;
+use tracing::{debug, error};
+
+pub use phc_utils::get_error_bound_sysfs_path;
+
+// TODO: make this a parameter on the CLI?
+pub const CLOCKBOUND_SHM_DEFAULT_PATH: &str = "/var/run/clockbound/shm0";
 
 /// PhcInfo holds the refid of the PHC in chronyd (i.e. PHC0), and the
 /// interface on which the PHC is enabled.
@@ -24,49 +38,12 @@ pub struct PhcInfo {
     pub sysfs_error_bound_path: std::path::PathBuf,
 }
 
-// The set of unique channel ID for message passing between threads.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum ChannelId {
-    // The main thread
-    MainThread,
+/// Boolean value that tracks whether a manually triggered disruption is pending and need to be
+/// actioned.
+pub static FORCE_DISRUPTION_PENDING: atomic::AtomicBool = atomic::AtomicBool::new(false);
 
-    // The thread in charge of periodically polling chrony for tracking data
-    ClockErrorBoundPoller,
-
-    // The thread listeing to message to write / update the clockbound shared memory segment.
-    ShmWriter,
-}
-
-/// The type of messages exchanged between threads
-///
-/// The variant names loosely follow the convention that the name starts with the thread /
-/// component that originates the message.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Message {
-    // Chrony polling thread sends tracking data and clock error bound.
-    ClockErrorBoundData((Tracking, PhcErrorBound, libc::timespec)),
-
-    // Chrony polling thread signals it failed to reach out to chronyd (within the grace period).
-    ChronyNotRespondingGracePeriod,
-
-    // Chrony polling thread signals it failed to reach out to chronyd and grace period is expired.
-    ChronyNotResponding,
-
-    // Chrony polling thread signals that it failed to retrieve the PHC error bound when syncing to PHC (within the grace period).
-    PhcErrorBoundRetrievalFailedGracePeriod,
-
-    // Chrony polling thread signals that it failed to retrieve the PHC error bound when syncing to PHC.
-    PhcErrorBoundRetrievalFailed,
-
-    // A thread signalling it has terminated.
-    ThreadTerminate(ChannelId),
-
-    // A thread signalling it has panicked.
-    ThreadPanic(ChannelId),
-
-    // Stop all threads and processing.
-    ThreadAbort,
-}
+/// Boolean value that can be toggled to signal periods of forced disruption vs. "normal" periods.
+pub static FORCE_DISRUPTION_STATE: atomic::AtomicBool = atomic::AtomicBool::new(false);
 
 /// The status of the system clock reported by chronyd
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -92,6 +69,45 @@ impl From<u16> for ChronyClockStatus {
     }
 }
 
+/// Enum of possible Clock Disruption States exposed by the daemon.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ClockDisruptionState {
+    Unknown,
+    Reliable,
+    Disrupted,
+}
+
+/// Custom struct used for indicating a parsing error when parsing a
+/// ClockErrorBoundSource or ClockDisruptionNotificationSource
+/// from str.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct ParseError;
+
+/// Enum of possible input sources for obtaining the ClockErrorBound.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ClockErrorBoundSource {
+    /// Chrony.
+    Chrony,
+
+    /// VMClock.
+    VMClock,
+}
+
+/// Performs a case-insensitive conversion from str to enum ClockErrorBoundSource.
+impl FromStr for ClockErrorBoundSource {
+    type Err = ParseError;
+    fn from_str(input: &str) -> Result<ClockErrorBoundSource, Self::Err> {
+        match input.to_lowercase().as_str() {
+            "chrony" => Ok(ClockErrorBoundSource::Chrony),
+            "vmclock" => Ok(ClockErrorBoundSource::VMClock),
+            _ => {
+                error!("ClockErrorBoundSource '{:?}' is not supported", input);
+                Err(ParseError)
+            }
+        }
+    }
+}
+
 /// Helper for converting a string ref_id into a u32 for the chrony command protocol.
 ///
 /// # Arguments
@@ -113,73 +129,104 @@ pub fn refid_to_u32(ref_id: &str) -> Result<u32, String> {
     }
 }
 
-/// Gets the PHC Error Bound sysfs file path given a network interface name.
-///
-/// # Arguments
-///
-/// * `interface` - The network interface to lookup the PHC error bound path for.
-pub fn get_error_bound_sysfs_path(interface: &str) -> Result<std::path::PathBuf, String> {
-    let pci_slot_name = get_pci_slot_name(interface)?;
-    Ok(std::path::PathBuf::from(format!(
-        "/sys/bus/pci/devices/{}/phc_error_bound",
-        pci_slot_name
-    )))
-}
-
-/// Gets the PCI slot name for a given network interface name.
-///
-/// # Arguments
-///
-/// * `interface` - The network interface to lookup the PCI slot name for.
-#[cfg(not(test))]
-fn get_pci_slot_name(interface: &str) -> Result<String, String> {
-    use std::io::Read;
-    let uevent_path = format!("/sys/class/net/{}/device/uevent", interface);
-    let mut contents = String::new();
-    match std::fs::File::open(&uevent_path) {
-        Ok(mut f) => {
-            if let Err(e) = f.read_to_string(&mut contents) {
-                return Err(format!(
-                    "Failed to read contents of uevent file {} to string: {}",
-                    uevent_path, e
-                ));
-            }
+pub fn run(
+    max_drift_ppb: u32,
+    maybe_phc_info: Option<PhcInfo>,
+    clock_error_bound_source: ClockErrorBoundSource,
+    clock_disruption_support_enabled: bool,
+) {
+    // Create a writer to update the clock error bound shared memory segment
+    let mut writer = match ShmWriter::new(Path::new(CLOCKBOUND_SHM_DEFAULT_PATH)) {
+        Ok(writer) => {
+            debug!("Created a new ShmWriter");
+            writer
         }
         Err(e) => {
-            return Err(format!(
-                "Failed to open uevent file {} for PHC network interface specified: {}",
-                uevent_path, e
-            ));
+            error!(
+                "Failed to create the SHM writer at {:?} {}",
+                CLOCKBOUND_SHM_DEFAULT_PATH, e
+            );
+            panic!("Failed to create SHM writer");
         }
     };
-    Ok(contents
-        .lines()
-        .find_map(|line| line.strip_prefix("PCI_SLOT_NAME="))
-        .ok_or(format!(
-            "Failed to find PCI_SLOT_NAME for interface {}",
-            interface
-        ))?
-        .to_string())
-}
-
-/// Test specific impl of get_pci_slot_name.
-/// Using this so that we can mock this method that would normally
-/// read into sysfs.
-#[cfg(test)]
-fn get_pci_slot_name(interface: &str) -> Result<String, String> {
-    if interface == "return_error" {
-        Err(format!(
-            "Failed to find PCI_SLOT_NAME for interface {}",
-            interface
-        ))
+    let clock_status_snapshot_poller = match clock_error_bound_source {
+        ClockErrorBoundSource::Chrony => ChronyDaemonSnapshotPoller::new(
+            Box::new(UnixDomainSocket::default()),
+            maybe_phc_info.map(|phc_info| {
+                PhcWithSysfsErrorBound::new(phc_info.sysfs_error_bound_path, phc_info.refid)
+            }),
+        ),
+        ClockErrorBoundSource::VMClock => {
+            unimplemented!("VMClock ClockErrorBoundSource is not yet implemented");
+        }
+    };
+    let mut vmclock_shm_reader = if !clock_disruption_support_enabled {
+        None
     } else {
-        Ok(interface.to_string())
-    }
+        match VMClockShmReader::new(VMCLOCK_SHM_DEFAULT_PATH) {
+            Ok(reader) => Some(reader),
+            Err(e) => {
+                panic!(
+                    "VMClockPoller: Failed to create VMClockShmReader. Please check if path {:?} exists and is readable. {:?}",
+                    VMCLOCK_SHM_DEFAULT_PATH, e
+                );
+            }
+        }
+    };
+
+    let mut clock_bound_runner =
+        ClockBoundRunner::new(clock_disruption_support_enabled, max_drift_ppb);
+    clock_bound_runner.run(
+        &mut vmclock_shm_reader,
+        &mut writer,
+        clock_status_snapshot_poller,
+        UnixDomainSocket::default(),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_str_to_clockerrorboundsource_conversion() {
+        assert_eq!(
+            ClockErrorBoundSource::from_str("chrony"),
+            Ok(ClockErrorBoundSource::Chrony)
+        );
+        assert_eq!(
+            ClockErrorBoundSource::from_str("Chrony"),
+            Ok(ClockErrorBoundSource::Chrony)
+        );
+        assert_eq!(
+            ClockErrorBoundSource::from_str("CHRONY"),
+            Ok(ClockErrorBoundSource::Chrony)
+        );
+        assert_eq!(
+            ClockErrorBoundSource::from_str("cHrOnY"),
+            Ok(ClockErrorBoundSource::Chrony)
+        );
+        assert_eq!(
+            ClockErrorBoundSource::from_str("vmclock"),
+            Ok(ClockErrorBoundSource::VMClock)
+        );
+        assert_eq!(
+            ClockErrorBoundSource::from_str("VMClock"),
+            Ok(ClockErrorBoundSource::VMClock)
+        );
+        assert_eq!(
+            ClockErrorBoundSource::from_str("VMCLOCK"),
+            Ok(ClockErrorBoundSource::VMClock)
+        );
+        assert_eq!(
+            ClockErrorBoundSource::from_str("vmClock"),
+            Ok(ClockErrorBoundSource::VMClock)
+        );
+        assert!(ClockErrorBoundSource::from_str("other").is_err());
+        assert!(ClockErrorBoundSource::from_str("None").is_err());
+        assert!(ClockErrorBoundSource::from_str("null").is_err());
+        assert!(ClockErrorBoundSource::from_str("").is_err());
+    }
 
     #[test]
     fn test_refid_to_u32() {
@@ -198,17 +245,5 @@ mod tests {
         assert_eq!(refid_to_u32("PHC").unwrap(), 80 << 16 | 72 << 8 | 67);
         assert_eq!(refid_to_u32("PH").unwrap(), 80 << 8 | 72);
         assert_eq!(refid_to_u32("P").unwrap(), 80);
-    }
-
-    #[test]
-    fn test_get_error_bound_sysfs_path() {
-        assert!(get_error_bound_sysfs_path("return_error").is_err());
-        assert_eq!(
-            get_error_bound_sysfs_path("pci_slot_return_val").unwrap(),
-            std::path::PathBuf::from(format!(
-                "/sys/bus/pci/devices/{}/phc_error_bound",
-                "pci_slot_return_val"
-            ))
-        );
     }
 }

@@ -1,6 +1,3 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 // This is an example used to demonstrate how one can use the libclockbound library to retrieve an
 // interval of timestamps within which true time exists.
 
@@ -37,6 +34,11 @@ void print_clockbound_err(char const* detail, const clockbound_err *err) {
                 case CLOCKBOUND_ERR_CAUSALITY_BREACH:
                         fprintf(stderr, "Segment and clock reads out of order\n");
                         break;
+                case CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED:
+                        fprintf(stderr, "Segment version not supported\n");
+                        break;
+                default:
+                        fprintf(stderr, "Unexpected error\n");
         }
 }
 
@@ -51,6 +53,8 @@ char * format_clock_status(clockbound_clock_status status) {
                         return "SYNCHRONIZED";
                 case CLOCKBOUND_STA_FREE_RUNNING:
                         return "FREE_RUNNING";
+                case CLOCKBOUND_STA_DISRUPTED:
+                        return "DISRUPTED";
                 default:
                         return "BAD CLOCK STATUS";
         }
@@ -73,7 +77,8 @@ double duration(struct timespec start, struct timespec end) {
 }
 
 int main(int argc, char *argv[]) {
-        char const* shm_path = CLOCKBOUND_SHM_DEFAULT_PATH;
+        char const* clockbound_shm_path = CLOCKBOUND_SHM_DEFAULT_PATH;
+        char const* vmclock_shm_path = VMCLOCK_SHM_DEFAULT_PATH;
         clockbound_ctx *ctx;
         clockbound_err open_err;
         clockbound_err const* err;
@@ -83,7 +88,7 @@ int main(int argc, char *argv[]) {
         int i;
 
         // Open clockbound and retrieve a context on success.
-        ctx = clockbound_open(shm_path, &open_err);
+        ctx = clockbound_vmclock_open(clockbound_shm_path, vmclock_shm_path, &open_err);
         if (ctx == NULL) {
                 print_clockbound_err("clockbound_open", &open_err);
                 return 1;
@@ -116,7 +121,7 @@ int main(int argc, char *argv[]) {
         }
 
         dur = duration(first.earliest, last.earliest);
-        printf("It took %.9lf seconds to call clock bound %d times (%d tps).",
+        printf("It took %.9lf seconds to call clock bound %d times (%d tps))",
                 dur, CALL_COUNT, (int) (CALL_COUNT / dur));
 
 

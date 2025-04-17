@@ -1,6 +1,3 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 //! ClockBound Shared Memory
 //!
 //! This crate implements the low-level IPC functionality to share ClockErrorBound data and clock
@@ -55,8 +52,11 @@ pub enum ShmError {
     /// The shared memory segment is initialized but malformed.
     SegmentMalformed,
 
-    /// Failed causality check when comparing timestamps
+    /// Failed causality check when comparing timestamps.
     CausalityBreach,
+
+    /// The shared memory segment version is not supported.
+    SegmentVersionNotSupported,
 }
 
 /// Definition of mutually exclusive clock status exposed to the reader.
@@ -71,6 +71,9 @@ pub enum ClockStatus {
 
     /// The clock is free running and not updated by the synchronization daemon.
     FreeRunning = 2,
+
+    /// The clock has been disrupted and the accuracy of time cannot be bounded.
+    Disrupted = 3,
 }
 
 /// Structure that holds the ClockErrorBound data captured at a specific point in time and valid
@@ -92,16 +95,22 @@ pub struct ClockErrorBound {
     /// The CLOCK_MONOTONIC_COARSE timestamp recorded when the bound on clock error was
     /// calculated. The current implementation relies on Chrony tracking data, which accounts for
     /// the dispersion between the last clock processing event, and the reading of tracking data.
-    as_of: libc::timespec,
+    as_of: TimeSpec,
 
     /// The CLOCK_MONOTONIC_COARSE timestamp beyond which the bound on clock error should not be
     /// trusted. This is a useful signal that the communication with the synchronization daemon is
     /// has failed, for example.
-    void_after: libc::timespec,
+    void_after: TimeSpec,
 
     /// An absolute upper bound on the accuracy of the `CLOCK_REALTIME` clock with regards to true
     /// time at the instant represented by `as_of`.
     bound_nsec: i64,
+
+    /// Disruption marker.
+    ///
+    /// This value is incremented (by an unspecified delta) each time the clock has been disrupted.
+    /// This count value is specific to a particular VM/EC2 instance.
+    pub disruption_marker: u64,
 
     /// Maximum drift rate of the clock between updates of the synchronization daemon. The value
     /// stored in `bound_nsec` should increase by the following to account for the clock drift
@@ -109,12 +118,18 @@ pub struct ClockErrorBound {
     /// `bound_nsec += max_drift_ppb * (now - as_of)`
     max_drift_ppb: u32,
 
-    /// Place-holder that is reserved for future use.
-    reserved1: u32,
-
     /// The synchronization daemon status indicates whether the daemon is synchronized,
     /// free-running, etc.
     clock_status: ClockStatus,
+
+    /// Clock disruption support enabled flag.
+    ///
+    /// This indicates whether or not the ClockBound daemon was started with a
+    /// configuration that supports detecting clock disruptions.
+    pub clock_disruption_support_enabled: bool,
+
+    /// Padding.
+    _padding: [u8; 7],
 }
 
 impl Default for ClockErrorBound {
@@ -122,18 +137,14 @@ impl Default for ClockErrorBound {
     /// Equivalent to zero'ing this bit of memory
     fn default() -> Self {
         ClockErrorBound {
-            as_of: libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            },
-            void_after: libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            },
+            as_of: TimeSpec::new(0, 0),
+            void_after: TimeSpec::new(0, 0),
             bound_nsec: 0,
+            disruption_marker: 0,
             max_drift_ppb: 0,
-            reserved1: 0,
             clock_status: ClockStatus::Unknown,
+            clock_disruption_support_enabled: false,
+            _padding: [0u8; 7],
         }
     }
 }
@@ -141,20 +152,23 @@ impl Default for ClockErrorBound {
 impl ClockErrorBound {
     /// Create a new ClockErrorBound struct.
     pub fn new(
-        as_of: libc::timespec,
-        void_after: libc::timespec,
+        as_of: TimeSpec,
+        void_after: TimeSpec,
         bound_nsec: i64,
+        disruption_marker: u64,
         max_drift_ppb: u32,
-        reserved1: u32,
         clock_status: ClockStatus,
+        clock_disruption_support_enabled: bool,
     ) -> ClockErrorBound {
         ClockErrorBound {
             as_of,
             void_after,
             bound_nsec,
+            disruption_marker,
             max_drift_ppb,
-            reserved1,
             clock_status,
+            clock_disruption_support_enabled,
+            _padding: [0u8; 7],
         }
     }
 
@@ -165,7 +179,7 @@ impl ClockErrorBound {
     ///   (earliest, latest) = ((now - ceb), (now + ceb))
     /// The function also returns a clock status to assert that the clock is being synchronized, or
     /// free-running, or ...
-    pub fn now(&self) -> Result<(libc::timespec, libc::timespec, ClockStatus), ShmError> {
+    pub fn now(&self) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
         // Read the clock, start with the REALTIME one to be as close as possible to the event the
         // caller is interested in. The monotonic clock should be read after. It is correct for the
         // process be preempted between the two calls: a delayed read of the monotonic clock will
@@ -185,16 +199,9 @@ impl ClockErrorBound {
     /// may be it only caller, decoupling the two make writing unit tests a bit easier.
     fn compute_bound_at(
         &self,
-        real: libc::timespec,
-        mono: libc::timespec,
-    ) -> Result<(libc::timespec, libc::timespec, ClockStatus), ShmError> {
-        // Take advantage of the TimeSpec implementation in the nix crate to benefit from the
-        // operations on TimeSpec it implements.
-        let real = TimeSpec::from(real);
-        let mono = TimeSpec::from(mono);
-        let as_of = TimeSpec::from(self.as_of);
-        let void_after = TimeSpec::from(self.void_after);
-
+        real: TimeSpec,
+        mono: TimeSpec,
+    ) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
         // Sanity checks:
         // - `now()` should operate on a consistent snapshot of the shared memory segment, and
         //   causality between mono and as_of should be enforced.
@@ -212,19 +219,20 @@ impl ClockErrorBound {
         // TODO: this may not be the most ergonomic decision, putting a pin here to revisit this
         // decision once the client code is fleshed out.
         let clock_status = match self.clock_status {
-            // If the status in the shared memory segment is Unknown, returns that status.
-            ClockStatus::Unknown => self.clock_status,
+            // If the status in the shared memory segment is Unknown or Disrupted, returns that
+            // status.
+            ClockStatus::Unknown | ClockStatus::Disrupted => self.clock_status,
 
             // If the status is Synchronized or FreeRunning, the expectation from the client is
             // that the data is useable. However, if the clockbound daemon died or has not update
             // the shared memory segment in a while, the status written to the shared memory
             // segment may not be reliable anymore.
             ClockStatus::Synchronized | ClockStatus::FreeRunning => {
-                if mono < as_of + CLOCKBOUND_RESTART_GRACE_PERIOD {
+                if mono < self.as_of + CLOCKBOUND_RESTART_GRACE_PERIOD {
                     // Allow for a restart of the daemon, for a short period of time, the status is
                     // trusted to be correct.
                     self.clock_status
-                } else if mono < void_after {
+                } else if mono < self.void_after {
                     // Beyond the grace period, for a free running status.
                     ClockStatus::FreeRunning
                 } else {
@@ -266,11 +274,11 @@ impl ClockErrorBound {
         // resolution). We could use the `clock_getres()` system call to retrieve this value but
         // this makes diagnosing over different platform / OS configurations more complex. Instead
         // settling on an arbitrary default value of 1 millisecond.
-        let causality_blur = as_of - TimeSpec::new(0, 1000);
+        let causality_blur = self.as_of - TimeSpec::new(0, 1000);
 
-        let duration = if mono >= as_of {
+        let duration = if mono >= self.as_of {
             // Happy path, no causality doubt
-            mono - as_of
+            mono - self.as_of
         } else if mono > causality_blur {
             // Causality is "almost" broken. We are within a range that could be due to the clock
             // precision. Let's approximate this to equality between mono and as_of.
@@ -291,7 +299,7 @@ impl ClockErrorBound {
         let earliest = real - updated_bound;
         let latest = real + updated_bound;
 
-        Ok((*earliest.as_ref(), *latest.as_ref(), clock_status))
+        Ok((earliest, latest, clock_status))
     }
 }
 
@@ -299,33 +307,18 @@ impl ClockErrorBound {
 mod t_lib {
     use super::*;
 
-    // Convenience macro to build timespec for unit tests
-    macro_rules! timespec {
-        ($sec:literal, $nsec:literal) => {
-            libc::timespec {
-                tv_sec: $sec,
-                tv_nsec: $nsec,
-            }
-        };
-    }
-
     // Convenience macro to build ClockBoundError for unit tests
     macro_rules! clockbound {
         (($asof_tv_sec:literal, $asof_tv_nsec:literal), ($after_tv_sec:literal, $after_tv_nsec:literal)) => {
-            ClockErrorBound {
-                as_of: libc::timespec {
-                    tv_sec: $asof_tv_sec,
-                    tv_nsec: $asof_tv_nsec,
-                },
-                void_after: libc::timespec {
-                    tv_sec: $after_tv_sec,
-                    tv_nsec: $after_tv_nsec,
-                },
-                bound_nsec: 10000,   // 10 microsec
-                max_drift_ppb: 1000, // 1PPM
-                reserved1: 0,
-                clock_status: ClockStatus::Synchronized,
-            }
+            ClockErrorBound::new(
+                TimeSpec::new($asof_tv_sec, $asof_tv_nsec), // as_of
+                TimeSpec::new($after_tv_sec, $after_tv_nsec), // void_after
+                10000,                                      // bound_nsec
+                0,                                          // disruption_marker
+                1000,                                       // max_drift_ppb
+                ClockStatus::Synchronized,                  // clock_status
+                true,                                       // clock_disruption_support_enabled
+            )
         };
     }
 
@@ -333,8 +326,8 @@ mod t_lib {
     #[test]
     fn compute_bound_ok() {
         let ceb = clockbound!((0, 0), (10, 0));
-        let real = timespec!(2, 0);
-        let mono = timespec!(2, 0);
+        let real = TimeSpec::new(2, 0);
+        let mono = TimeSpec::new(2, 0);
 
         let (earliest, latest, status) = ceb
             .compute_bound_at(real, mono)
@@ -342,10 +335,10 @@ mod t_lib {
 
         // 2 seconds have passed since the bound was snapshot, hence 2 microsec of drift on top of
         // the default 10 microsec put in the ClockBoundError data
-        assert_eq!(earliest.tv_sec, 1);
-        assert_eq!(earliest.tv_nsec, 1_000_000_000 - 12_000);
-        assert_eq!(latest.tv_sec, 2);
-        assert_eq!(latest.tv_nsec, 12_000);
+        assert_eq!(earliest.tv_sec(), 1);
+        assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 12_000);
+        assert_eq!(latest.tv_sec(), 2);
+        assert_eq!(latest.tv_nsec(), 12_000);
         assert_eq!(status, ClockStatus::Synchronized);
     }
 
@@ -354,8 +347,8 @@ mod t_lib {
     #[test]
     fn compute_bound_ok_when_real_ahead() {
         let ceb = clockbound!((0, 0), (10, 0));
-        let real = timespec!(20, 0); // realtime clock way ahead
-        let mono = timespec!(4, 0);
+        let real = TimeSpec::new(20, 0); // realtime clock way ahead
+        let mono = TimeSpec::new(4, 0);
 
         let (earliest, latest, status) = ceb
             .compute_bound_at(real, mono)
@@ -363,10 +356,10 @@ mod t_lib {
 
         // 4 seconds have passed since the bound was snapshot, hence 4 microsec of drift on top of
         // the default 10 microsec put in the ClockBoundError data
-        assert_eq!(earliest.tv_sec, 19);
-        assert_eq!(earliest.tv_nsec, 1_000_000_000 - 14_000);
-        assert_eq!(latest.tv_sec, 20);
-        assert_eq!(latest.tv_nsec, 14_000);
+        assert_eq!(earliest.tv_sec(), 19);
+        assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 14_000);
+        assert_eq!(latest.tv_sec(), 20);
+        assert_eq!(latest.tv_nsec(), 14_000);
         assert_eq!(status, ClockStatus::Synchronized);
     }
 
@@ -375,8 +368,8 @@ mod t_lib {
     #[test]
     fn compute_bound_force_free_running_status() {
         let ceb = clockbound!((0, 0), (100, 0));
-        let real = timespec!(8, 0);
-        let mono = timespec!(8, 0);
+        let real = TimeSpec::new(8, 0);
+        let mono = TimeSpec::new(8, 0);
 
         let (earliest, latest, status) = ceb
             .compute_bound_at(real, mono)
@@ -384,10 +377,10 @@ mod t_lib {
 
         // 8 seconds have passed since the bound was snapshot, hence 8 microsec of drift on top of
         // the default 10 microsec put in the ClockBoundError data
-        assert_eq!(earliest.tv_sec, 7);
-        assert_eq!(earliest.tv_nsec, 1_000_000_000 - 18_000);
-        assert_eq!(latest.tv_sec, 8);
-        assert_eq!(latest.tv_nsec, 18_000);
+        assert_eq!(earliest.tv_sec(), 7);
+        assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 18_000);
+        assert_eq!(latest.tv_sec(), 8);
+        assert_eq!(latest.tv_nsec(), 18_000);
         assert_eq!(status, ClockStatus::FreeRunning);
     }
 
@@ -395,8 +388,8 @@ mod t_lib {
     #[test]
     fn compute_bound_unknown_status_if_expired() {
         let ceb = clockbound!((0, 0), (5, 0));
-        let real = timespec!(10, 0);
-        let mono = timespec!(10, 0); // Passed void_after
+        let real = TimeSpec::new(10, 0);
+        let mono = TimeSpec::new(10, 0); // Passed void_after
 
         let (earliest, latest, status) = ceb
             .compute_bound_at(real, mono)
@@ -404,10 +397,10 @@ mod t_lib {
 
         // 10 seconds have passed since the bound was snapshot, hence 10 microsec of drift on top of
         // the default 10 microsec put in the ClockBoundError data
-        assert_eq!(earliest.tv_sec, 9);
-        assert_eq!(earliest.tv_nsec, 1_000_000_000 - 20_000);
-        assert_eq!(latest.tv_sec, 10);
-        assert_eq!(latest.tv_nsec, 20_000);
+        assert_eq!(earliest.tv_sec(), 9);
+        assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 20_000);
+        assert_eq!(latest.tv_sec(), 10);
+        assert_eq!(latest.tv_nsec(), 20_000);
         assert_eq!(status, ClockStatus::Unknown);
     }
 
@@ -415,8 +408,8 @@ mod t_lib {
     #[test]
     fn compute_bound_bad_drift() {
         let mut ceb = clockbound!((0, 0), (10, 0));
-        let real = timespec!(5, 0);
-        let mono = timespec!(5, 0);
+        let real = TimeSpec::new(5, 0);
+        let mono = TimeSpec::new(5, 0);
         ceb.max_drift_ppb = 2_000_000_000;
 
         assert!(ceb.compute_bound_at(real, mono).is_err());
@@ -427,8 +420,8 @@ mod t_lib {
     #[test]
     fn compute_bound_causality_break() {
         let ceb = clockbound!((5, 0), (10, 0));
-        let real = timespec!(1, 0);
-        let mono = timespec!(1, 0);
+        let real = TimeSpec::new(1, 0);
+        let mono = TimeSpec::new(1, 0);
 
         let res = ceb.compute_bound_at(real, mono);
 
