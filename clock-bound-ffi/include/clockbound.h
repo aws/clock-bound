@@ -1,12 +1,11 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
 
 #ifndef _CLOCKBOUND_H
 #define _CLOCKBOUND_H
 
 #include <time.h>
 
-#define CLOCKBOUND_SHM_DEFAULT_PATH "/var/run/clockbound/shm"
+#define CLOCKBOUND_SHM_DEFAULT_PATH "/var/run/clockbound/shm0"
+#define VMCLOCK_SHM_DEFAULT_PATH "/dev/vmclock0"
 
 /*
  * ClockBound context structure (opaque).
@@ -30,6 +29,8 @@ typedef enum clockbound_err_kind {
         CLOCKBOUND_ERR_SEGMENT_MALFORMED,
         /* The system clock and shared memory segment reads do match expected order. */
         CLOCKBOUND_ERR_CAUSALITY_BREACH,
+        /* A shared memory segment has a version format that is not supported. */
+        CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED,
 } clockbound_err_kind;
 
 /*
@@ -54,6 +55,8 @@ typedef enum clockbound_clock_status {
 	CLOCKBOUND_STA_SYNCHRONIZED,
 	/* The clock has lost synchronization but time can still be trusted. */
 	CLOCKBOUND_STA_FREE_RUNNING,
+	/* The clock has been disrupted, time should not be trusted. */
+	CLOCKBOUND_STA_DISRUPTED,
 } clockbound_clock_status;
 
 /*
@@ -66,12 +69,22 @@ typedef struct clockbound_now_result {
 } clockbound_now_result;
 
 /*
- * Open a new context using the daemon-client segment at `shm_path`.
+ * Open a new context using the ClockBound daemon-client segment at `clockbound_shm_path`
+ * and the VMClock segment at the default VMClock segment path.
  *
  * Returns a newly-allocated context on success, and NULL on failure. If err is
  * non-null, fills `*err` with error details.
  */
-clockbound_ctx* clockbound_open(char const* shm_path, clockbound_err *err);
+clockbound_ctx* clockbound_open(char const* clockbound_shm_path, clockbound_err *err);
+
+/*
+ * Open a new context using the ClockBound daemon-client segment at `clockbound_shm_path`
+ * and the VMClock segment at `vmclock_shm_path`.
+ *
+ * Returns a newly-allocated context on success, and NULL on failure. If err is
+ * non-null, fills `*err` with error details.
+ */
+clockbound_ctx* clockbound_vmclock_open(char const* clockbound_shm_path, char const* vmclock_shm_path, clockbound_err *err);
 
 /*
  * Close and deallocates the context.

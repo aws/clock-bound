@@ -1,0 +1,29 @@
+[package]
+name = "vmclock-updater"
+description = "A test program that writes to the VMClock shared memory segment."
+license = "Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "vmclock-updater"
+path = "src/main.rs"
+
+[dependencies]
+clock-bound-vmclock = { version = "2.0", path = "../../clock-bound-vmclock" }
+byteorder = "1"
+clap = { version = "4", features = ["derive"] }
+errno = { version = "0.3.0", default-features = false }
+libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
+nix = { version = "0.26", features = ["feature", "time"] }
+tracing = { version = "0.1", features = ["max_level_debug", "release_max_level_info"]}
+tracing-subscriber = { version = "0.3", features = ["std", "fmt", "json"] }
+
+[dev-dependencies]

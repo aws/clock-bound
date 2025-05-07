@@ -1,13 +1,10 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 use errno::{errno, Errno};
 use std::ffi::{c_void, CStr};
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic;
 
-use crate::shm_header::ShmHeader;
+use crate::shm_header::{ShmHeader, CLOCKBOUND_SHM_SUPPORTED_VERSION};
 use crate::{syserror, ClockErrorBound, ShmError};
 
 /// A guard tracking an open file descriptor.
@@ -47,6 +44,7 @@ impl Drop for FdGuard {
 ///
 /// Creating the MmapGuard maps an open file descriptor.
 /// The file is unmap'ed when the guard is dropped.
+#[derive(Debug)]
 struct MmapGuard {
     /// A pointer to the head of the segment
     segment: *mut c_void,
@@ -113,6 +111,7 @@ impl Drop for MmapGuard {
 /// increment it again, from odd to even, after finishing the update. Readers must check the
 /// `generation` field before and after each read, and verify that they obtain the same, even,
 /// value. Otherwise, the read was dirty and must be retried.
+#[derive(Debug)]
 pub struct ShmReader {
     // Explicitly make the ShmReader be !Send and !Sync, since it is not thread safe. A bit ugly to
     // use a phantom raw pointer, but effective and free at runtime.
@@ -174,6 +173,7 @@ impl ShmReader {
         if mmap_guard.segsize < size_of::<ShmHeader>() + size_of::<ClockErrorBound>() {
             return Err(ShmError::SegmentMalformed);
         }
+
         // SAFETY: segment size has been checked to ensure `cursor` move leads to a valid cast
         cursor = unsafe { cursor.add(size_of::<ShmHeader>()) };
         let ceb_shm = unsafe { ptr::addr_of!(*cursor.cast::<ClockErrorBound>()) };
@@ -213,6 +213,9 @@ impl ShmReader {
         // returned to the caller to take appropriate action (e.g. assert clock status).
         if version == 0 {
             return Ok(&self.snapshot_ceb);
+        } else if version != CLOCKBOUND_SHM_SUPPORTED_VERSION {
+            eprintln!("ClockBound shared memory segment has version {:?} which is not supported by this software.", version);
+            return Err(ShmError::SegmentVersionNotSupported);
         }
 
         // Atomically read the current generation in the shared memory segment
@@ -291,21 +294,18 @@ impl ShmReader {
 
 #[cfg(test)]
 mod t_reader {
-    /// This test module is full of side effects and create local files to test the ShmHeader
-    /// functionality. Tests run concurrently, so each test creates its own dedicated file.
-    /// For now, create files in `/tmp/` and no cleaning is done.
-    ///
-    /// TODO: investigate how to retrieve the target-dir that would work for both brazil package
-    /// and "native" cargo ones to contain artefacts better.
-    ///
-    /// TODO: write more / better tests
-    ///
     use super::*;
     use crate::ClockStatus;
     use byteorder::{NativeEndian, WriteBytesExt};
+    use nix::sys::time::TimeSpec;
     use std::ffi::CString;
-    use std::fs::File;
+    use std::fs::OpenOptions;
+    use std::io::Seek;
     use std::io::Write;
+    /// We make use of tempfile::NamedTempFile to ensure that
+    /// local files that are created during a test get removed
+    /// afterwards.
+    use tempfile::NamedTempFile;
 
     macro_rules! write_memory_segment {
         ($file:ident,
@@ -319,20 +319,15 @@ mod t_reader {
          $bound_nsec:literal,
          $max_drift: literal) => {
             // Build the bound on clock error data
-            let ceb = ClockErrorBound {
-                as_of: libc::timespec {
-                    tv_sec: $as_of_sec,
-                    tv_nsec: $as_of_nsec,
-                },
-                void_after: libc::timespec {
-                    tv_sec: $void_after_sec,
-                    tv_nsec: $void_after_nsec,
-                },
-                bound_nsec: $bound_nsec,
-                max_drift_ppb: $max_drift,
-                reserved1: 0,
-                clock_status: ClockStatus::Synchronized,
-            };
+            let ceb = ClockErrorBound::new(
+                TimeSpec::new($as_of_sec, $as_of_nsec), // as_of
+                TimeSpec::new($void_after_sec, $void_after_nsec), // void_after
+                $bound_nsec,                            // bound_nsec
+                0,                                      // disruption_marker
+                $max_drift,                             // max_drift_ppb
+                ClockStatus::Synchronized,              // clock_status
+                true,                                   // clock_disruption_support_enabled
+            );
 
             // Convert the ceb struct into a slice so we can write it all out, fairly magic.
             // Definitely needs the #[repr(C)] layout.
@@ -368,15 +363,19 @@ mod t_reader {
     /// Assert that the reader can map a file.
     #[test]
     fn test_reader_new() {
-        let path_shm = "/tmp/test_reader";
-        let mut file = File::create(path_shm).expect("create file failed");
-
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
         write_memory_segment!(
-            file,
+            clockbound_shm_file,
             0x414D5A4E,
             0x43420200,
             400,
-            3,
+            2,
             10,
             (0, 0),
             (0, 0),
@@ -384,15 +383,108 @@ mod t_reader {
             0
         );
 
-        let path = CString::new(path_shm).expect("CString failed");
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
         let reader = ShmReader::new(&path).expect("Failed to create ShmReader");
 
         let version = unsafe { &*reader.version };
         let generation = unsafe { &*reader.generation };
         let ceb = unsafe { *reader.ceb_shm };
 
-        assert_eq!(version.load(atomic::Ordering::Relaxed), 3);
+        assert_eq!(version.load(atomic::Ordering::Relaxed), 2);
         assert_eq!(generation.load(atomic::Ordering::Relaxed), 10);
         assert_eq!(ceb.bound_nsec, 123);
+    }
+
+    /// Assert that creating a reader when the
+    /// shared memory segment has an unsupported version causes an Err result.
+    #[test]
+    fn test_reader_new_of_unsupported_shm_version() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
+        write_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            400,
+            9999,
+            10,
+            (0, 0),
+            (0, 0),
+            123,
+            0
+        );
+
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
+        let result = ShmReader::new(&path);
+
+        // Assert that creating a reader on an unsupported shared memory segment version
+        // returns Err(ShmError::SegmentVersionNotSupported).
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ShmError::SegmentVersionNotSupported);
+    }
+
+    /// Assert that creating a reader and taking a snapshot when the
+    /// shared memory segment has an unsupported version causes an Err result.
+    #[test]
+    fn test_reader_snapshot_of_unsupported_shm_version() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
+        // Initially, write the current supported version.
+        write_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            400,
+            2,
+            10,
+            (0, 0),
+            (0, 0),
+            123,
+            0
+        );
+
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
+        let mut reader = ShmReader::new(&path).expect("Failed to create ShmReader");
+        let version = unsafe { &*reader.version };
+        assert_eq!(version.load(atomic::Ordering::Relaxed), 2);
+
+        // Assert that snapshot works without an error with this supported version.
+        let result = reader.snapshot();
+        assert!(result.is_ok());
+
+        // Update the shared memory segment so that the version number is an
+        // unsupported number (e.g. 9999).
+        let _ = clockbound_shm_file.rewind();
+        write_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            400,
+            9999,
+            10,
+            (0, 0),
+            (0, 0),
+            123,
+            0
+        );
+
+        let version = unsafe { &*reader.version };
+        assert_eq!(version.load(atomic::Ordering::Relaxed), 9999);
+
+        // Assert that taking a snapshot of an unsupported shared memory segment version
+        // returns Err(ShmError::SegmentVersionNotSupported).
+        let result = reader.snapshot();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ShmError::SegmentVersionNotSupported);
     }
 }

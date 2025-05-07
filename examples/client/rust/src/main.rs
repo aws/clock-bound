@@ -1,15 +1,18 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
-
-use clock_bound_client::{ClockBoundClient, ClockBoundError, ClockStatus};
+use clock_bound_client::{
+    ClockBoundClient, ClockBoundError, ClockStatus, CLOCKBOUND_SHM_DEFAULT_PATH,
+    VMCLOCK_SHM_DEFAULT_PATH,
+};
 use nix::sys::time::TimeSpec;
 use std::process;
 
 fn main() {
-    let mut clockbound = match ClockBoundClient::new() {
+    let mut clockbound = match ClockBoundClient::new_with_paths(
+        CLOCKBOUND_SHM_DEFAULT_PATH,
+        VMCLOCK_SHM_DEFAULT_PATH,
+    ) {
         Ok(c) => c,
         Err(e) => {
-            print_error("ClockBoundClient::new() failed", &e);
+            print_error("ClockBoundClient::new_with_paths() failed", &e);
             process::exit(1);
         }
     };
@@ -44,7 +47,7 @@ fn main() {
         calculate_duration_seconds(&now_result_first.earliest, &now_result_last.earliest);
 
     println!(
-        "It took {duration_seconds} seconds to call clock bound {call_count} times ({} tps).",
+        "It took {duration_seconds} seconds to call clock bound {call_count} times ({} tps))",
         (call_count as f64 / duration_seconds) as i32
     );
 }
@@ -58,6 +61,7 @@ fn format_clock_status(clock_status: &ClockStatus) -> &str {
         ClockStatus::Unknown => "Unknown",
         ClockStatus::Synchronized => "Synchronized",
         ClockStatus::FreeRunning => "FreeRunning",
+        ClockStatus::Disrupted => "Disrupted",
     }
 }
 
@@ -107,6 +111,9 @@ mod tests {
 
         let formatted_str = format_clock_status(&ClockStatus::FreeRunning);
         assert_eq!(formatted_str, "FreeRunning");
+
+        let formatted_str = format_clock_status(&ClockStatus::Disrupted);
+        assert_eq!(formatted_str, "Disrupted");
     }
 
     #[test]

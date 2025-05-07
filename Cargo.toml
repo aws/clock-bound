@@ -1,13 +1,18 @@
 [workspace]
 members = [
-  # NOTE: the order in which the workspaces are listed does matter. It has to follow the dependency
-  # tree, to ensure a crate that is depended upon is built and published first.
+  # NOTE: the order in which the workspaces are listed does matter. It has to
+  # follow the dependency tree, to ensure a crate that is depended upon is
+  # built and published first.
   "clock-bound-shm",
+  "clock-bound-vmclock",
   "clock-bound-ffi",
   "clock-bound-client",
   "clock-bound-d",
-  "examples/rust",
+  "examples/client/rust",
+  "test/clock-bound-vmclock-client-test",
+  "test/vmclock-updater",
 ]
+resolver = "2"
 
 [workspace.package]
 authors = [
@@ -18,4 +23,10 @@ authors = [
   "Wenhao Piao <wenhaopi@amazon.com>",
   "Daniel Franke <dff@amazon.com>",
 ]
+categories = [ "date-and-time" ]
 edition = "2021"
+exclude = []
+keywords = ["aws", "ntp", "ec2", "time"]
+publish = true
+repository = "https://github.com/aws/clock-bound"
+version = "2.0.0"

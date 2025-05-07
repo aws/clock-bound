@@ -7,36 +7,22 @@ A client library to communicate with ClockBound daemon. This client library is w
 
 ## Usage
 
-The ClockBound client library requires ClockBound daemon to be running to work. See [ClockBound daemon documentation](../clock-bound-d/README.md) for installation instructions.
+The ClockBound client library requires ClockBound daemon to be running to work.
 
-For Rust programs built with Cargo, add "clock-bound-client" as a dependency in your Cargo.toml.
-
-For example:
-
-```
-[dependencies]
-clock-bound-client = "1.0.0"
-```
+See [ClockBound daemon documentation](../clock-bound-d/README.md) for installation instructions.
 
 ### Examples
 
 Source code of a runnable example program can be found at [../examples/rust](../examples/rust).
+
 See the [README.md](../examples/rust/README.md) in that directory for more details on how to build and run the example.
 
-## Building
+### Building
 
-Run the following to build the source code of this crate:
+Run the following to build the source code of this crate using Cargo:
 
-```
-cargo build
-```
-
-## Updating README
-
-This README is generated via [cargo-readme](https://crates.io/crates/cargo-readme). Updating can be done by running:
-
-```
-cargo readme > README.md
+```sh
+cargo build --release
 ```
 
 ## Security

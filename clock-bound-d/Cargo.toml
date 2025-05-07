@@ -1,39 +1,45 @@
 [package]
 name = "clock-bound-d"
-version = "1.0.0"
-authors = [
-  "Julien Ridoux <ridouxj@amazon.com>",
-  "Jacob Wisniewski <wisnjaco@amazon.com>",
-  "Tam Phan <tmpha@amazon.com>",
-  "Ryan Luu <rluu@amazon.com>",
-  "Wenhao Piao <wenhaopi@amazon.com>"
-]
 description = "A daemon to provide clients with an error bounded timestamp interval."
-edition = "2021"
 license = "GPL-2.0-only"
 readme = "README.md"
-repository = "https://github.com/aws/clock-bound"
-keywords = ["aws", "ntp", "ec2", "time"]
-categories = [ "date-and-time" ]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-byteorder = "1"
-chrony-candm = "0.1.1"
-clap = { version = "4", features = ["derive"] }
-clock-bound-shm = { version = "1.0.0", path = "../clock-bound-shm", features = ["writer"]}
-lazy_static = "1"
-libc = { version = "0.2", default-features = false }
-nix = { version = "0.27", features = ["net", "signal"] }
-socket2 = "0.5"
-tracing = { version = "0.1", features = ["max_level_debug", "release_max_level_info"]}
-tracing-subscriber = { version = "0.3", features = ["std", "fmt", "json"] }
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
 
 [[bin]]
 name = "clockbound"
 path = "src/main.rs"
-doc = false
 
-[badges]
-github = { repository = "aws/clock-bound-d"}
+[dependencies]
+clock-bound-shm = { version = "2.0", path = "../clock-bound-shm", features = ["writer"]}
+clock-bound-vmclock = { version = "2.0", path = "../clock-bound-vmclock"}
+anyhow = "1"
+byteorder = "1"
+chrony-candm = "0.1.1"
+clap = { version = "4", features = ["derive"] }
+lazy_static = "1"
+libc = { version = "0.2", default-features = false }
+mockall = { version = "0.13", optional = true }
+nix = { version = "0.26", features = ["feature", "time"] }
+retry = "2.0.0"
+socket2 = "0.5"
+tracing = { version = "0.1", features = ["max_level_debug", "release_max_level_info"]}
+tracing-subscriber = { version = "0.3", features = ["std", "fmt", "json"] }
+
+[dev-dependencies]
+bon = "2.3"
+mockall = "0.13"
+mockall_double = "0.3.1"
+rstest = "0.22"
+serial_test = { version = "3" }
+tempfile = {version = "3.13" }
+
+[features]
+test = ["dep:mockall"]

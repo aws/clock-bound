@@ -1,7 +1,3 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
-
-
 use byteorder::{NativeEndian, WriteBytesExt};
 use std::ffi::{c_void, CString};
 use std::io::{Error, ErrorKind};
@@ -15,7 +11,7 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 
 use crate::reader::ShmReader;
-use crate::shm_header::{ShmHeader, SHM_MAGIC};
+use crate::shm_header::{ShmHeader, CLOCKBOUND_SHM_SUPPORTED_VERSION, SHM_MAGIC};
 use crate::{ClockErrorBound, ShmError};
 
 /// Trait that a writer to the shared memory segment has to implement.
@@ -116,7 +112,7 @@ impl ShmWriter {
         // SAFETY: segment has been validated to be usable, can use pointers.
         unsafe {
             let version = &*writer.version;
-            version.store(1_u16, atomic::Ordering::Relaxed);
+            version.store(CLOCKBOUND_SHM_SUPPORTED_VERSION, atomic::Ordering::Relaxed);
         }
 
         Ok(writer)
@@ -316,106 +312,108 @@ impl Drop for ShmWriter {
 mod t_writer {
     use super::*;
     use byteorder::{NativeEndian, ReadBytesExt};
+    use nix::sys::time::TimeSpec;
+    use std::fs::OpenOptions;
     use std::path::Path;
+    /// We make use of tempfile::NamedTempFile to ensure that
+    /// local files that are created during a test get removed
+    /// afterwards.
+    use tempfile::NamedTempFile;
 
     use crate::ClockStatus;
 
     macro_rules! clockerrorbound {
         () => {
-            ClockErrorBound {
-                as_of: libc::timespec {
-                    tv_sec: 1,
-                    tv_nsec: 2,
-                },
-                void_after: libc::timespec {
-                    tv_sec: 3,
-                    tv_nsec: 4,
-                },
-                bound_nsec: 123,
-                max_drift_ppb: 100,
-                reserved1: 10,
-                clock_status: ClockStatus::Synchronized,
-            }
+            ClockErrorBound::new(
+                TimeSpec::new(1, 2),       // as_of
+                TimeSpec::new(3, 4),       // void_after
+                123,                       // bound_nsec
+                10,                        // disruption_marker
+                100,                       // max_drift_ppb
+                ClockStatus::Synchronized, // clock_status
+                true,                      // clock_disruption_support_enabled
+            )
         };
+    }
+
+    fn remove_path_if_exists(path_shm: &str) {
+        let path = Path::new(path_shm);
+        if path.exists() {
+            if path.is_dir() {
+                std::fs::remove_dir_all(path_shm).expect("failed to remove file");
+            } else {
+                std::fs::remove_file(path_shm).expect("failed to remove file");
+            }
+        }
     }
 
     /// Assert that a new memory mapped segment is created it does not exist.
     #[test]
     fn test_writer_create_new_if_not_exist() {
-        let path_shm = "/tmp/test_writer_create_new_if_not_exist";
-
-        // Busy looping on deleting the previous file, good enough for unit test
-        let _path = Path::new(path_shm);
-        while _path.exists() {
-            if _path.is_dir() {
-                std::fs::remove_dir_all(path_shm).expect("failed to remove file");
-            } else {
-                std::fs::remove_file(path_shm).expect("failed to remove file");
-            }
-        }
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        remove_path_if_exists(clockbound_shm_path);
 
         // Create and wipe the memory segment
         let ceb = clockerrorbound!();
-        let mut writer = ShmWriter::new(Path::new(path_shm)).expect("Failed to create a writer");
+        let mut writer =
+            ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
         writer.write(&ceb);
 
         // Read it back into a snapshot
-        let path = CString::new(path_shm).expect("CString failed");
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
         let mut reader = ShmReader::new(&path).expect("Failed to create ShmReader");
         let snapshot = reader
             .snapshot()
             .expect("Failed to take a clock error bound snapshot");
 
         assert_eq!(*snapshot, ceb);
-
-        std::fs::remove_file(path_shm).expect("failed to remove temp file");
     }
 
     /// Assert that an existing memory mapped segment is wiped clean if dirty.
     #[test]
     fn test_writer_wipe_clean_on_new() {
-        let path_shm = "/tmp/test_writer_wipe_clean_on_new";
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
 
         // Let's write some garbage first
-        let mut file = std::fs::File::create(path_shm).expect("create file failed");
-        let _ = file.write(b"foobarbaz");
-        let _ = file.sync_all();
+        let _ = clockbound_shm_file.write(b"foobarbaz");
+        let _ = clockbound_shm_file.sync_all();
 
         // Create and wipe the memory segment
         let ceb = clockerrorbound!();
-        let mut writer = ShmWriter::new(Path::new(path_shm)).expect("Failed to create a writer");
+        let mut writer =
+            ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
         writer.write(&ceb);
 
         // Read it back into a snapshot
-        let path = CString::new(path_shm).expect("CString failed");
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
         let mut reader = ShmReader::new(&path).expect("Failed to create ShmReader");
         let snapshot = reader
             .snapshot()
             .expect("Failed to take a clock error bound snapshot");
 
         assert_eq!(*snapshot, ceb);
-
-        std::fs::remove_file(path_shm).expect("failed to remove temp file");
     }
 
     /// Assert that an existing and valid segment is reused and updated.
     #[test]
     fn test_writer_update_existing() {
-        let path_shm = "/tmp/test_writer_update_existing";
-
-        // Busy looping on deleting the previous file, good enough for unit test
-        let _path = Path::new(path_shm);
-        while _path.exists() {
-            if _path.is_dir() {
-                std::fs::remove_dir_all(path_shm).expect("failed to remove file");
-            } else {
-                std::fs::remove_file(path_shm).expect("failed to remove file");
-            }
-        }
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        remove_path_if_exists(clockbound_shm_path);
 
         // Create a clean memory segment
         let ceb = clockerrorbound!();
-        let mut writer = ShmWriter::new(Path::new(path_shm)).expect("Failed to create a writer");
+        let mut writer =
+            ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
 
         // Push two updates to the shared memory segment, the generation moves from 0, to 2, to 4
         writer.write(&ceb);
@@ -429,14 +427,12 @@ mod t_writer {
 
         // Raw validation in the file
         // A bit brittle, would be more robust not to hardcode the seek to the generation field
-        let mut file = std::fs::File::open(path_shm).expect("create file failed");
+        let mut file = std::fs::File::open(clockbound_shm_path).expect("create file failed");
         file.seek(std::io::SeekFrom::Start(14))
             .expect("Failed to seek to generation offset");
         let gen = file
             .read_u16::<NativeEndian>()
             .expect("Failed to read generation from file");
         assert_eq!(gen, 4);
-
-        std::fs::remove_file(path_shm).expect("failed to remove temp file");
     }
 }

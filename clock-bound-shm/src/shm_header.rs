@@ -1,6 +1,3 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 use std::mem::{size_of, MaybeUninit};
 use std::sync::atomic;
 
@@ -8,6 +5,10 @@ use crate::{syserror, ShmError};
 
 /// The magic number that identifies a ClockErrorBound shared memory segment.
 pub const SHM_MAGIC: [u32; 2] = [0x414D5A4E, 0x43420200];
+
+/// Version of the ClockBound shared memory segment layout that is supported by this
+/// implementation of ClockBound.
+pub const CLOCKBOUND_SHM_SUPPORTED_VERSION: u16 = 2_u16;
 
 /// Header structure to the Shared Memory segment where the ClockErrorBound data is kept.
 ///
@@ -95,6 +96,14 @@ impl ShmHeader {
             return Err(ShmError::SegmentNotInitialized);
         }
 
+        // Check if the ClockBound shared memory segment has a version that is
+        // supported by this implementation of ClockBound.
+        let version = self.version.load(atomic::Ordering::Relaxed);
+        if version != CLOCKBOUND_SHM_SUPPORTED_VERSION {
+            eprintln!("ClockBound shared memory segment has version {:?} which is not supported by this software.", version);
+            return Err(ShmError::SegmentVersionNotSupported);
+        }
+
         if !self.is_well_formed() {
             return Err(ShmError::SegmentMalformed);
         }
@@ -104,17 +113,14 @@ impl ShmHeader {
 
 #[cfg(test)]
 mod t_shm_header {
-    /// This test module is full of side effects and create local files to test the ShmHeader
-    /// functionality. Tests run concurrently, so each test creates its own dedicated file.
-    /// For now, create files in `/tmp/` and no cleaning is done.
-    ///
-    /// TODO: investigate how to retrieve the target-dir that would work for both brazil package
-    /// and "native" cargo ones to contain artefacts better.
-    ///
     use super::*;
     use byteorder::{NativeEndian, WriteBytesExt};
     use std::ffi::CString;
-    use std::fs::File;
+    use std::fs::OpenOptions;
+    /// We make use of tempfile::NamedTempFile to ensure that
+    /// local files that are created during a test get removed
+    /// afterwards.
+    use tempfile::NamedTempFile;
 
     macro_rules! write_shm_header {
         ($file:ident,
@@ -145,29 +151,39 @@ mod t_shm_header {
     /// Assert that a file containing a valid header produces a valid ShmHeader
     #[test]
     fn test_header_valid() {
-        let path_shm = "/tmp/test_header_valid";
-        let mut file = File::create(path_shm).expect("create file failed");
-        write_shm_header!(file, 0x414D5A4E, 0x43420200, 16, 1, 99);
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
+        write_shm_header!(clockbound_shm_file, 0x414D5A4E, 0x43420200, 16, 2, 99);
 
-        let path = CString::new(path_shm).expect("CString failed");
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
 
         let reader = ShmHeader::read(fd).expect("SHM Reader read");
 
         assert_eq!(reader.segsize.into_inner(), 16);
-        assert_eq!(reader.version.into_inner(), 1);
+        assert_eq!(reader.version.into_inner(), 2);
         assert_eq!(reader.generation.into_inner(), 99);
     }
 
     /// Assert that a file with a bad magic returns an error
     #[test]
     fn test_header_bad_magic() {
-        let path_shm = "/tmp/test_header_bad_magic";
-        let mut file = File::create(path_shm).expect("create file failed");
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
         // magic numbers are bogus
-        write_shm_header!(file, 0xdeadbeef, 0x0badcafe, 16, 1, 99);
+        write_shm_header!(clockbound_shm_file, 0xdeadbeef, 0x0badcafe, 16, 2, 99);
 
-        let path = CString::new(path_shm).expect("CString failed");
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
 
         assert!(ShmHeader::read(fd).is_err());
@@ -176,12 +192,17 @@ mod t_shm_header {
     /// Assert that a file with a wrongly truncated header returns an error
     #[test]
     fn test_header_bad_segsize() {
-        let path_shm = "/tmp/test_header_bad_segsize";
-        let mut file = File::create(path_shm).expect("create file failed");
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
         // segsize = 4 instead of 16
-        write_shm_header!(file, 0x414D5A4E, 0x43420200, 4, 1, 99);
+        write_shm_header!(clockbound_shm_file, 0x414D5A4E, 0x43420200, 4, 2, 99);
 
-        let path = CString::new(path_shm).expect("CString failed");
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
 
         assert!(ShmHeader::read(fd).is_err());
@@ -189,13 +210,38 @@ mod t_shm_header {
 
     /// Assert that a file with a version number of 0 returns an error
     #[test]
-    fn test_header_bad_version() {
-        let path_shm = "/tmp/test_header_bad_version";
-        let mut file = File::create(path_shm).expect("create file failed");
+    fn test_header_bad_version_zero() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
         // layout version is 0
-        write_shm_header!(file, 0x414D5A4E, 0x43420200, 16, 0, 99);
+        write_shm_header!(clockbound_shm_file, 0x414D5A4E, 0x43420200, 16, 0, 99);
 
-        let path = CString::new(path_shm).expect("CString failed");
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
+
+        assert!(ShmHeader::read(fd).is_err());
+    }
+
+    /// Assert that a file with an unsupported version number (e.g. 9999)
+    /// returns an error.
+    #[test]
+    fn test_header_bad_version_unsupported() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
+        // layout version is 9999
+        write_shm_header!(clockbound_shm_file, 0x414D5A4E, 0x43420200, 16, 9999, 99);
+
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
 
         assert!(ShmHeader::read(fd).is_err());
@@ -204,12 +250,17 @@ mod t_shm_header {
     /// Assert that a file with a generation number of 0 returns an error
     #[test]
     fn test_header_bad_generation() {
-        let path_shm = "/tmp/test_header_bad_generation";
-        let mut file = File::create(path_shm).expect("create file failed");
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
         // generation number is 0
-        write_shm_header!(file, 0x414D5A4E, 0x43420200, 16, 1, 0);
+        write_shm_header!(clockbound_shm_file, 0x414D5A4E, 0x43420200, 16, 2, 0);
 
-        let path = CString::new(path_shm).expect("CString failed");
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
 
         assert!(ShmHeader::read(fd).is_err());

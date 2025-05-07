@@ -1,6 +1,3 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: GPL-2.0-only
-
 //! Unix signal handler registration.
 //!
 //! Use the nix crate to register signal callbacks, while keeping any specific notion of libc
