@@ -209,7 +209,7 @@ sudo journalctl -f -u clockbound
 
 ## Clock status
 
-The value of the clock status written to the shared memory segment is driven by the Finite State Machine described below. The clock status exposed is a combination of the clock status known by chronyd as well as the disruption status due to LM passed on by the Time Sync service over RusTick.
+The value of the clock status written to the shared memory segment is driven by the Finite State Machine described below. The clock status exposed is a combination of the clock status known by chronyd as well as the disruption status.
 
 Each transition in the FSM is triggered by either:
 
@@ -218,13 +218,9 @@ Each transition in the FSM is triggered by either:
 
 ![graph](../docs/assets/FSM.png)
 
-- [Edit graph](https://plantuml.corp.amazon.com/plantuml/form/encoded.html#encoded=hLLTJ-Cm47pthrZnKWu9tNk48YfIxav0YleXX807Dzq62tTTsGwddkx7uwI9gTj6jAWlIMJDpCwELvjBOxcsnLmoAwn465fk4HB1SytdC5CQhgJAtihZme0W6Fw-WsU2hfHWDISZh51atBV8SzG69alW1CLYMkhCj9f3zgeLBS59ZSJSLLXI1WRrkyYGCMQgWYSNcP9AHxb6f1Z6z4RgBy75p-euFW5kO9pUfFs7DDfDkNQlGK4aA0zfruDUhuLJMYdDYNyu3Kd3n_IgXPG8euk5tMGaVuQ3yVsebqIWw1RvkpCIkQ2WPYyAlP0OQpHewqWQFcDFPozmVXutBR9E_R5-63LA4rbWV5gi8ceqe9icaFP70MZQMFtXOVr1Wp02YNYyeSFMArVH1Oepbu5UfHnK3ZKrIi4d4dUALj46ecRj6hwhkXP_oF8PVARjiJlZRQdsTNATKBVLqIQFbJ4VseJdx1Vd9txdD6qEqzUzUhtzPcHBSEioMTd84HrwkGD2zPozcc8TZp_UJ3E9ETAK-RtngzewrLhsEl-3KjM2XjM6teRKXUgjvNPrAxBUKDsiH7b3pWpKdYxTm_qfFW00)
-
 If ClockBound daemon was started with CLI option `--disable-clock-disruption-support`, then the FSM is as follows:
 
 ![graph](../docs/assets/FSM_clock_disruption_support_disabled.png)
-
-- [Edit graph](https://plantuml.corp.amazon.com/plantuml/form/encoded.html#encoded=ZL9RQy8m67tFhpZuE92zYnJ5wHoR5RmWOzj3RMCNJBz8BewE_VWbrNOhRk1B4ZxEBHzdO6oYhIiaiy9AZgLDBCUTI7AT5DWfZP5KwJwCdO4WBASpR1vMq_bwXITnv9W93xL2qIjXA2MiJiY8C33-BVASQuDjYOJW3bbGtsbL87tNYafuWvKel6z9AGpNHv5onfYfOdJwgP9AztBDEKLOqvxK1w5_MusZ3XA3TVmOppTnxs_An5yBHoGeRzCcY_7u7qw84iA9JvwrISldUDHZxENc3TtC9-b6jJqxtysyqiTPU2iTZtPUNP-YrA8NhCgWnJA_mZGq5jJHlPxGuEjjjIZkjDSQ3SQ2xDNu7_HrdsQIvvmoXXfvN-szQbwJuQibKtKGfn9UGWvE7oIFXcaeNMFZBN1s6lZ3L_mR)
 
 ## PTP Hardware Clock (PHC) Support on EC2
 

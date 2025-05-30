@@ -153,6 +153,10 @@ impl ClockBoundRunner {
     fn handle_vmclock_disruption_marker(&mut self, current_snapshot: &VMClockShmBody) {
         // We've seen a change in our disruption marker, so we should apply "Disrupted" and update our disruption marker.
         if self.disruption_marker != current_snapshot.disruption_marker {
+            debug!(
+                "Disruption marker changed from {:?} to {:?}",
+                self.disruption_marker, current_snapshot.disruption_marker
+            );
             debug!("Current VMClock snapshot: {:?}", current_snapshot);
             self.shm_clock_state = self
                 .shm_clock_state
@@ -239,33 +243,36 @@ impl ClockBoundRunner {
     ) {
         loop {
             self.handle_disruption_sources(shm_writer, vm_clock_reader);
+
             if self.shm_clock_state.value() == ClockStatus::Disrupted {
-                info!("Clock is disrupted, not polling for clock status snapshot");
-            } else {
-                // First, make sure we take a MONOTONIC timestamp *before* getting ClockSyncInfoSnapshot data. This will
-                // slightly inflate the dispersion component of the clock error bound but better be
-                // pessimistic and correct, than greedy and wrong. The actual error added here is expected
-                // to be small. For example, let's assume a 50PPM drift rate. Let's also assume it takes 10
-                // milliseconds for chronyd to respond. This will inflate the CEB by 500 nanoseconds.
-                // Assuming it takes 1 second (the timeout of our requests to chronyd), this would inflate the CEB by 50 microseconds.
-                match clock_gettime_safe(CLOCK_MONOTONIC) {
-                    Ok(as_of) => {
-                        match clock_status_snapshot_poller.retrieve_clock_status_snapshot(as_of) {
-                            Ok(snapshot) => self.apply_clock_status_snapshot(&snapshot),
-                            Err(e) => {
-                                error!(
-                                    error = %e,
-                                    "Failed to get clock status snapshot"
-                                );
-                                self.handle_missing_clock_status_snapshot(as_of);
-                            }
+                info!("Clock is disrupted");
+                self.process_current_fsm_state(&chrony_client);
+            }
+
+            // First, make sure we take a MONOTONIC timestamp *before* getting ClockSyncInfoSnapshot data. This will
+            // slightly inflate the dispersion component of the clock error bound but better be
+            // pessimistic and correct, than greedy and wrong. The actual error added here is expected
+            // to be small. For example, let's assume a 50PPM drift rate. Let's also assume it takes 10
+            // milliseconds for chronyd to respond. This will inflate the CEB by 500 nanoseconds.
+            // Assuming it takes 1 second (the timeout of our requests to chronyd), this would inflate the CEB by 50 microseconds.
+            match clock_gettime_safe(CLOCK_MONOTONIC) {
+                Ok(as_of) => {
+                    match clock_status_snapshot_poller.retrieve_clock_status_snapshot(as_of) {
+                        Ok(snapshot) => self.apply_clock_status_snapshot(&snapshot),
+                        Err(e) => {
+                            error!(
+                                error = ?e,
+                                "Failed to get clock status snapshot"
+                            );
+                            self.handle_missing_clock_status_snapshot(as_of);
                         }
                     }
-                    Err(e) => {
-                        error!("Failed to get current monotonic timestamp {:?}", e);
-                    }
+                }
+                Err(e) => {
+                    error!("Failed to get current monotonic timestamp {:?}", e);
                 }
             }
+
             self.process_current_fsm_state(&chrony_client);
             // Finally, write to Clockbound SHM.
             self.write_clock_error_bound(shm_writer);

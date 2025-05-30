@@ -92,7 +92,7 @@ impl TrackingExt for Tracking {
         // Compute the duration since the last time chronyd updated the system clock.
         let duration_since_update = self.ref_time.elapsed().inspect_err(|e| {
             error!(
-                error = %e,
+                error = ?e,
                 "Failed to get duration since chronyd last clock update",
             );
         })?;
