@@ -64,15 +64,19 @@ pub enum ShmError {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ClockStatus {
     /// The status of the clock is unknown.
+    /// In this clock status, error-bounded timestamps should not be trusted.
     Unknown = 0,
 
     /// The clock is kept accurate by the synchronization daemon.
+    /// In this clock status, error-bounded timestamps can be trusted.
     Synchronized = 1,
 
     /// The clock is free running and not updated by the synchronization daemon.
+    /// In this clock status, error-bounded timestamps can be trusted.
     FreeRunning = 2,
 
     /// The clock has been disrupted and the accuracy of time cannot be bounded.
+    /// In this clock status, error-bounded timestamps should not be trusted.
     Disrupted = 3,
 }
 
