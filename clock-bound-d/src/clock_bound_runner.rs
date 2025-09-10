@@ -276,7 +276,18 @@ impl ClockBoundRunner {
             self.process_current_fsm_state(&chrony_client);
             // Finally, write to Clockbound SHM.
             self.write_clock_error_bound(shm_writer);
-            std::thread::sleep(Duration::from_secs(1));
+
+            // ClockErrorBound increases as the amount of time increases between when Chrony polls
+            // the reference clock and when ClockBound polls Chrony. ClockBound's polling of Chrony
+            // occurs periodically; its timing is independent of Chrony's polling of the
+            // reference clock. This means that ClockBound's polling could occur immediately after
+            // Chrony polls the reference clock (best-case scenario), at a time equal to the time
+            // Chrony last polled + Chrony polling period + ClockBound polling period (worst-case
+            // scenario) or any time in between. ClockBound's polling period can be leveraged to
+            // reduce the impact of the worst case scenario. A lower ClockBound polling period
+            // results in higher system resource utilization with diminishing returns on lowering
+            // the ClockErrorBound inflation. A polling period of 100 milliseconds strikes a good balance.
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }

@@ -22,6 +22,7 @@ authors = [
   "Ryan Luu <rluu@amazon.com>",
   "Wenhao Piao <wenhaopi@amazon.com>",
   "Daniel Franke <dff@amazon.com>",
+  "Thoth Gunter <mtgunter@amazon.com>",
 ]
 categories = [ "date-and-time" ]
 edition = "2021"
@@ -29,4 +30,4 @@ exclude = []
 keywords = ["aws", "ntp", "ec2", "time"]
 publish = true
 repository = "https://github.com/aws/clock-bound"
-version = "2.0.2"
+version = "2.0.3"
