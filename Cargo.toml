@@ -8,6 +8,7 @@ members = [
   "clock-bound-ffi",
   "clock-bound-client",
   "clock-bound-d",
+  "clock-bound",
   "examples/client/rust",
   "test/clock-bound-vmclock-client-test",
   "test/vmclock-updater",
@@ -23,6 +24,7 @@ authors = [
   "Wenhao Piao <wenhaopi@amazon.com>",
   "Daniel Franke <dff@amazon.com>",
   "Thoth Gunter <mtgunter@amazon.com>",
+  "Shamik Chakraborty <shamchak808@gmail.com>",
 ]
 categories = [ "date-and-time" ]
 edition = "2021"

@@ -1,0 +1,15 @@
+[package]
+name = "clock-bound"
+description = "A crate to provide error bounded timestamp intervals."
+license = "MIT OR Apache-2.0"
+
+authors.workspace = true
+categories.workspace = true
+edition = "2024"
+exclude.workspace = true
+keywords.workspace = true
+publish.workspace = true
+repository.workspace = true
+version = "0.1.0-alpha"
+
+[dependencies]
