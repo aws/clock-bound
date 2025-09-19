@@ -30,6 +30,6 @@ categories = [ "date-and-time" ]
 edition = "2021"
 exclude = []
 keywords = ["aws", "ntp", "ec2", "time"]
-publish = true
+publish = false
 repository = "https://github.com/aws/clock-bound"
 version = "2.0.3"
