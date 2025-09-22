@@ -5,9 +5,9 @@
 // Align with C naming conventions
 #![allow(non_camel_case_types)]
 
-use clock_bound_shm::{ClockStatus, ShmError, ShmReader};
-use clock_bound_vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
-use clock_bound_vmclock::VMClock;
+use clock_bound::shm::{ClockStatus, ShmError, ShmReader};
+use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
+use clock_bound::vmclock::VMClock;
 use core::ptr;
 use nix::sys::time::TimeSpec;
 use std::ffi::{c_char, CStr};
@@ -150,12 +150,15 @@ pub struct clockbound_now_result {
 /// # Safety
 /// Rely on the caller to pass valid pointers.
 ///
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_open(
     clockbound_shm_path: *const c_char,
     err: *mut clockbound_err,
 ) -> *mut clockbound_ctx {
-    let clockbound_shm_path_cstr = CStr::from_ptr(clockbound_shm_path);
+    // Safety: Rely on caller to pass valid pointers
+    let clockbound_shm_path_cstr = unsafe {
+        CStr::from_ptr(clockbound_shm_path)
+    };
     let clockbound_shm_path = clockbound_shm_path_cstr
         .to_str()
         .expect("Failed to convert ClockBound shared memory path to str");
@@ -165,7 +168,8 @@ pub unsafe extern "C" fn clockbound_open(
         Ok(vmclock) => vmclock,
         Err(e) => {
             if !err.is_null() {
-                err.write(e.into())
+                // Safety: rely on caller to pass valid pointers
+                unsafe { err.write(e.into()) }
             }
             return ptr::null_mut();
         }
@@ -192,17 +196,21 @@ pub unsafe extern "C" fn clockbound_open(
 ///
 /// # Safety
 /// Rely on the caller to pass valid pointers.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_vmclock_open(
     clockbound_shm_path: *const c_char,
     vmclock_shm_path: *const c_char,
     err: *mut clockbound_err,
 ) -> *mut clockbound_ctx {
-    let clockbound_shm_path_cstr = CStr::from_ptr(clockbound_shm_path);
+    // Safety: Rely on caller to pass valid pointers
+    let clockbound_shm_path_cstr = unsafe { 
+        CStr::from_ptr(clockbound_shm_path)
+    };
     let clockbound_shm_path = clockbound_shm_path_cstr
         .to_str()
         .expect("Failed to convert ClockBound shared memory path to str");
-    let vmclock_shm_path_cstr = CStr::from_ptr(vmclock_shm_path);
+    // Safety: Rely on caller to pass valid pointers
+    let vmclock_shm_path_cstr = unsafe {CStr::from_ptr(vmclock_shm_path) };
     let vmclock_shm_path = vmclock_shm_path_cstr
         .to_str()
         .expect("Failed to convert VMClock shared memory path to str");
@@ -211,7 +219,8 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
         Ok(vmclock) => vmclock,
         Err(e) => {
             if !err.is_null() {
-                err.write(e.into())
+                // Safety: Rely on caller to pass valid pointers
+                unsafe { err.write(e.into()) }
             }
             return ptr::null_mut();
         }
@@ -237,9 +246,10 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
 /// # Safety
 ///
 /// Rely on the caller to pass valid pointers.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_close(ctx: *mut clockbound_ctx) -> *const clockbound_err {
-    std::mem::drop(Box::from_raw(ctx));
+    // Safety: Rely on caller to pass valid pointers
+    std::mem::drop(unsafe { Box::from_raw(ctx) });
     ptr::null()
 }
 
@@ -253,12 +263,13 @@ pub unsafe extern "C" fn clockbound_close(ctx: *mut clockbound_ctx) -> *const cl
 ///
 /// Have no choice but rely on the caller to pass valid pointers.
 #[inline]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_now(
     ctx: *mut clockbound_ctx,
     output: *mut clockbound_now_result,
 ) -> *const clockbound_err {
-    let ctx = &mut *ctx;
+    // Safety: Rely on caller to pass valid pointers
+    let ctx = unsafe { &mut *ctx };
 
     let (earliest, latest, clock_status) = match ctx.now() {
         Ok(now) => now,
@@ -267,19 +278,21 @@ pub unsafe extern "C" fn clockbound_now(
             return &ctx.err;
         }
     };
-
-    output.write(clockbound_now_result {
-        earliest: *earliest.as_ref(),
-        latest: *latest.as_ref(),
-        clock_status: clock_status.into(),
-    });
+    // Safety: Rely on caller to pass valid pointers
+    unsafe {
+        output.write(clockbound_now_result {
+            earliest: *earliest.as_ref(),
+            latest: *latest.as_ref(),
+            clock_status: clock_status.into(),
+        });
+    }
     ptr::null()
 }
 
 #[cfg(test)]
 mod t_ffi {
     use super::*;
-    use clock_bound_shm::ClockErrorBound;
+    use clock_bound::shm::ClockErrorBound;
     use byteorder::{LittleEndian, NativeEndian, WriteBytesExt};
     use std::ffi::CString;
     use std::fs::OpenOptions;

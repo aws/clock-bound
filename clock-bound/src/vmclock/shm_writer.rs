@@ -10,9 +10,9 @@ use std::{fs, ptr};
 
 use tracing::debug;
 
-use crate::shm::{VMClockShmBody, VMClockShmHeader, VMCLOCK_SHM_MAGIC};
-use crate::shm_reader::VMClockShmReader;
-use clock_bound_shm::ShmError;
+use crate::vmclock::shm::{VMClockShmBody, VMClockShmHeader, VMCLOCK_SHM_MAGIC};
+use crate::vmclock::shm_reader::VMClockShmReader;
+use crate::shm::ShmError;
 
 /// Trait that a writer to the shared memory segment has to implement.
 pub trait VMClockShmWrite {
@@ -307,7 +307,7 @@ mod t_writer {
     /// afterwards.
     use tempfile::NamedTempFile;
 
-    use crate::shm::VMClockClockStatus;
+    use crate::vmclock::shm::VMClockClockStatus;
 
     macro_rules! vmclockshmbody {
         () => {

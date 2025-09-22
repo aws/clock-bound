@@ -1,7 +1,7 @@
 [package]
 name = "clock-bound-vmclock-client-test"
 description = "A Rust test program of the ClockBound client communicating with the ClockBound daemon and VMClock."
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 publish = false
 
 authors.workspace = true
@@ -19,7 +19,7 @@ path = "src/main.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clock-bound-client = { version = "2.0", path = "../../clock-bound-client" }
+clock-bound = { version = "2.0", path = "../../clock-bound", features = ["client"] }
 nix = { version = "0.26", features = ["feature", "time"] }
 
 [dev-dependencies]

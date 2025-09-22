@@ -7,8 +7,9 @@ use std::ptr;
 use std::sync::atomic;
 use tracing::{debug, error};
 
-use crate::shm::{VMClockShmBody, VMClockShmHeader};
-use clock_bound_shm::{syserror, ShmError};
+use crate::vmclock::shm::{VMClockShmBody, VMClockShmHeader};
+use crate::syserror;
+use crate::shm::ShmError;
 
 const VMCLOCK_SUPPORTED_VERSION: u16 = 1;
 
@@ -309,7 +310,7 @@ impl VMClockShmReader {
 #[cfg(test)]
 mod t_reader {
     use super::*;
-    use crate::shm::VMClockClockStatus;
+    use crate::vmclock::shm::VMClockClockStatus;
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     use std::path::Path;

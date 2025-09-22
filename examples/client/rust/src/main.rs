@@ -1,4 +1,4 @@
-use clock_bound_client::{
+use clock_bound::client::{
     ClockBoundClient, ClockBoundError, ClockStatus, CLOCKBOUND_SHM_DEFAULT_PATH,
     VMCLOCK_SHM_DEFAULT_PATH,
 };
@@ -81,7 +81,7 @@ fn calculate_duration_seconds(start: &TimeSpec, end: &TimeSpec) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clock_bound_client::ClockBoundErrorKind;
+    use clock_bound::client::ClockBoundErrorKind;
     use errno::Errno;
 
     #[test]

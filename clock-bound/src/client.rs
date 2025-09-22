@@ -1,9 +1,9 @@
 //! A client library to communicate with ClockBound daemon. This client library is written in pure Rust.
 //!
-pub use clock_bound_shm::ClockStatus;
-use clock_bound_shm::ShmError;
-pub use clock_bound_vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
-use clock_bound_vmclock::VMClock;
+pub use crate::shm::ClockStatus;
+use crate::shm::ShmError;
+pub use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
+use crate::vmclock::VMClock;
 use errno::Errno;
 use nix::sys::time::TimeSpec;
 use std::path::Path;
@@ -153,8 +153,8 @@ pub struct ClockBoundNowResult {
 #[cfg(test)]
 mod lib_tests {
     use super::*;
-    use clock_bound_shm::{ClockErrorBound, ShmWrite, ShmWriter};
-    use clock_bound_vmclock::shm::VMClockClockStatus;
+    use crate::shm::{ClockErrorBound, ShmWrite, ShmWriter};
+    use crate::vmclock::shm::VMClockClockStatus;
     use byteorder::{NativeEndian, WriteBytesExt};
     use std::ffi::CStr;
     use std::fs::{File, OpenOptions};

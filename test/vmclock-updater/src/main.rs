@@ -4,8 +4,8 @@ use std::str::FromStr;
 
 use clap::Parser;
 
-use clock_bound_vmclock::shm::{VMClockClockStatus, VMClockShmBody, VMCLOCK_SHM_DEFAULT_PATH};
-use clock_bound_vmclock::shm_writer::{VMClockShmWrite, VMClockShmWriter};
+use clock_bound::vmclock::shm::{VMClockClockStatus, VMClockShmBody, VMCLOCK_SHM_DEFAULT_PATH};
+use clock_bound::vmclock::shm_writer::{VMClockShmWrite, VMClockShmWriter};
 
 /// CLI arguments are the possible field values that can be set in the VMClock shared memory segment.
 #[derive(Parser, Debug)]

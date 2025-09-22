@@ -4,8 +4,8 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic;
 
-use crate::shm_header::{ShmHeader, CLOCKBOUND_SHM_SUPPORTED_VERSION};
-use crate::{syserror, ClockErrorBound, ShmError};
+use crate::shm::shm_header::{ShmHeader, CLOCKBOUND_SHM_SUPPORTED_VERSION};
+use crate::{syserror, shm::{ClockErrorBound, ShmError}};
 
 /// A guard tracking an open file descriptor.
 ///
@@ -295,7 +295,7 @@ impl ShmReader {
 #[cfg(test)]
 mod t_reader {
     use super::*;
-    use crate::ClockStatus;
+    use crate::shm::ClockStatus;
     use byteorder::{NativeEndian, WriteBytesExt};
     use nix::sys::time::TimeSpec;
     use std::ffi::CString;

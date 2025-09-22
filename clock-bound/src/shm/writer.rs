@@ -10,9 +10,9 @@ use std::io::Seek;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 
-use crate::reader::ShmReader;
-use crate::shm_header::{ShmHeader, CLOCKBOUND_SHM_SUPPORTED_VERSION, SHM_MAGIC};
-use crate::{ClockErrorBound, ShmError};
+use crate::shm::reader::ShmReader;
+use crate::shm::shm_header::{ShmHeader, CLOCKBOUND_SHM_SUPPORTED_VERSION, SHM_MAGIC};
+use crate::shm::{ClockErrorBound, ShmError};
 
 /// Trait that a writer to the shared memory segment has to implement.
 pub trait ShmWrite {
@@ -260,20 +260,20 @@ impl ShmWrite for ShmWriter {
         unsafe {
             // Start by reading the generation value stored in the memory segment.
             let generation = &*self.generation;
-            let gen = generation.load(atomic::Ordering::Acquire);
+            let g = generation.load(atomic::Ordering::Acquire);
 
             // Mark the beginning of the update into the memory segment.
             // The producer process may have error'ed or died in the middle of a previous update
             // and left things hanging with an odd generation number. Being a bit fancy, this is
             // our data anti-entropy protection, and make sure we enter the updating section with
             // an odd number.
-            let gen = if gen & 0x0001 == 0 {
+            let g = if g & 0x0001 == 0 {
                 // This should be the most common case
-                gen.wrapping_add(1)
+                g.wrapping_add(1)
             } else {
-                gen
+                g
             };
-            generation.store(gen, atomic::Ordering::Release);
+            generation.store(g, atomic::Ordering::Release);
 
             self.ceb.write(*ceb);
 
@@ -286,12 +286,12 @@ impl ShmWrite for ShmWriter {
             //   4. the writer updates and set version, but it is too late by now.
             //
             // Skipping over a generation equals to 0 avoid this problem.
-            let mut gen = gen.wrapping_add(1);
-            if gen == 0 {
-                gen = 2
+            let mut g = g.wrapping_add(1);
+            if g == 0 {
+                g = 2
             }
 
-            generation.store(gen, atomic::Ordering::Release);
+            generation.store(g, atomic::Ordering::Release);
         }
     }
 }
@@ -320,7 +320,7 @@ mod t_writer {
     /// afterwards.
     use tempfile::NamedTempFile;
 
-    use crate::ClockStatus;
+    use crate::shm::ClockStatus;
 
     macro_rules! clockerrorbound {
         () => {
@@ -421,18 +421,18 @@ mod t_writer {
 
         // Check what the writer says
         let generation = unsafe { &*writer.generation };
-        let gen = generation.load(atomic::Ordering::Acquire);
+        let g = generation.load(atomic::Ordering::Acquire);
         std::mem::drop(writer);
-        assert_eq!(gen, 4);
+        assert_eq!(g, 4);
 
         // Raw validation in the file
         // A bit brittle, would be more robust not to hardcode the seek to the generation field
         let mut file = std::fs::File::open(clockbound_shm_path).expect("create file failed");
         file.seek(std::io::SeekFrom::Start(14))
             .expect("Failed to seek to generation offset");
-        let gen = file
+        let g = file
             .read_u16::<NativeEndian>()
             .expect("Failed to read generation from file");
-        assert_eq!(gen, 4);
+        assert_eq!(g, 4);
     }
 }

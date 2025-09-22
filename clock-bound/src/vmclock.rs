@@ -1,8 +1,8 @@
 use std::ffi::CString;
 use tracing::debug;
 
-use crate::shm_reader::VMClockShmReader;
-use clock_bound_shm::{ClockStatus, ShmError, ShmReader};
+use crate::vmclock::shm_reader::VMClockShmReader;
+use crate::shm::{ClockStatus, ShmError, ShmReader};
 use nix::sys::time::TimeSpec;
 
 pub mod shm;
@@ -97,11 +97,11 @@ impl VMClock {
 mod t_lib {
     use super::*;
 
-    use clock_bound_shm::{ClockErrorBound, ShmWrite, ShmWriter};
+    use crate::shm::{ClockErrorBound, ShmWrite, ShmWriter};
     use std::path::Path;
 
-    use crate::shm::{VMClockClockStatus, VMClockShmBody};
-    use crate::shm_writer::{VMClockShmWrite, VMClockShmWriter};
+    use crate::vmclock::shm::{VMClockClockStatus, VMClockShmBody};
+    use crate::vmclock::shm_writer::{VMClockShmWrite, VMClockShmWriter};
     /// We make use of tempfile::NamedTempFile to ensure that
     /// local files that are created during a test get removed
     /// afterwards.
