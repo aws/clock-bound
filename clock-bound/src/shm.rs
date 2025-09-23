@@ -8,15 +8,15 @@
 // if the write feature is selected. There may be a better way to do that and re-enable the lint.
 #![allow(dead_code)]
 
-// Re-exports reader and writer. The writer is conditionally included under the "writer" feature.
-pub use crate::reader::ShmReader;
-#[cfg(feature = "writer")]
-pub use crate::writer::{ShmWrite, ShmWriter};
 
 pub mod common;
 mod reader;
 mod shm_header;
 mod writer;
+
+// Re-exports reader and writer. The writer is conditionally included under the "writer" feature.
+pub use reader::ShmReader;
+pub use writer::{ShmWrite, ShmWriter};
 
 use errno::Errno;
 use nix::sys::time::{TimeSpec, TimeValLike};
@@ -31,7 +31,7 @@ const CLOCKBOUND_RESTART_GRACE_PERIOD: TimeSpec = TimeSpec::new(5, 0);
 #[macro_export]
 macro_rules! syserror {
     ($origin:expr) => {
-        Err($crate::ShmError::SyscallError(
+        Err($crate::shm::ShmError::SyscallError(
             ::errno::errno(),
             ::std::ffi::CStr::from_bytes_with_nul(concat!($origin, "\0").as_bytes()).unwrap(),
         ))

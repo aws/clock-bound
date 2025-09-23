@@ -1,7 +1,7 @@
 use std::mem::{size_of, MaybeUninit};
 use std::sync::atomic;
 
-use crate::{syserror, ShmError};
+use crate::{syserror, shm::ShmError};
 
 /// The magic number that identifies a ClockErrorBound shared memory segment.
 pub const SHM_MAGIC: [u32; 2] = [0x414D5A4E, 0x43420200];

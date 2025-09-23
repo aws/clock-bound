@@ -12,7 +12,8 @@ use std::mem::size_of;
 use std::str::FromStr;
 use std::sync::atomic;
 
-use clock_bound_shm::{syserror, ShmError};
+use crate::syserror;
+use crate::shm::ShmError;
 use tracing::{debug, error};
 
 pub const VMCLOCK_SHM_DEFAULT_PATH: &str = "/dev/vmclock0";

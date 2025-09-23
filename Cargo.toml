@@ -1,19 +1,12 @@
 [workspace]
 members = [
-  # NOTE: the order in which the workspaces are listed does matter. It has to
-  # follow the dependency tree, to ensure a crate that is depended upon is
-  # built and published first.
-  "clock-bound-shm",
-  "clock-bound-vmclock",
-  "clock-bound-ffi",
-  "clock-bound-client",
-  "clock-bound-d",
   "clock-bound",
+  "clock-bound-ffi",
   "examples/client/rust",
   "test/clock-bound-vmclock-client-test",
   "test/vmclock-updater",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 authors = [
@@ -22,12 +15,11 @@ authors = [
   "Tam Phan <tmpha@amazon.com>",
   "Ryan Luu <rluu@amazon.com>",
   "Wenhao Piao <wenhaopi@amazon.com>",
-  "Daniel Franke <dff@amazon.com>",
   "Thoth Gunter <mtgunter@amazon.com>",
   "Shamik Chakraborty <shamchak808@gmail.com>",
 ]
 categories = [ "date-and-time" ]
-edition = "2021"
+edition = "2024"
 exclude = []
 keywords = ["aws", "ntp", "ec2", "time"]
 publish = false
