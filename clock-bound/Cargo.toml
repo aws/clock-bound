@@ -25,4 +25,5 @@ tempfile = { version = "3.13" }
 
 [features]
 client = []
-default = ["client"]
+daemon = []
+default = ["client", "daemon"]
