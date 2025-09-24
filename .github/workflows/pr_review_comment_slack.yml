@@ -1,0 +1,17 @@
+name: pr_review_comment_slack
+
+on:
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  pr_review_comment_slack:
+    name: Notify slack of pull request review comment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send pr review comment info to slack
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          payload-delimiter: "_"
+          webhook: ${{ secrets.PR_REVIEW_COMMENT_WEBHOOK_URL }}
+          webhook-type: webhook-trigger
