@@ -2,8 +2,8 @@
 //!
 pub use crate::shm::ClockStatus;
 use crate::shm::ShmError;
-pub use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use crate::vmclock::VMClock;
+pub use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use errno::Errno;
 use nix::sys::time::TimeSpec;
 use std::path::Path;

@@ -1,8 +1,8 @@
 use std::ffi::CString;
 use tracing::debug;
 
-use crate::vmclock::shm_reader::VMClockShmReader;
 use crate::shm::{ClockStatus, ShmError, ShmReader};
+use crate::vmclock::shm_reader::VMClockShmReader;
 use nix::sys::time::TimeSpec;
 
 pub mod shm;
@@ -68,9 +68,12 @@ impl VMClock {
                 // Comparing the disruption marker between the VMClock snapshot and the
                 // ClockBound snapshot will tell us if the clock status provided by the
                 // ClockBound daemon is trustworthy.
-                debug!("clock_status: {:?}, vmclock_snapshot.disruption_marker: {:?}, clockbound_snapshot.disruption_marker: {:?}",
-                    clock_status, vmclock_snapshot.disruption_marker,
-                    clockbound_snapshot.disruption_marker);
+                debug!(
+                    "clock_status: {:?}, vmclock_snapshot.disruption_marker: {:?}, clockbound_snapshot.disruption_marker: {:?}",
+                    clock_status,
+                    vmclock_snapshot.disruption_marker,
+                    clockbound_snapshot.disruption_marker
+                );
 
                 if vmclock_snapshot.disruption_marker == clockbound_snapshot.disruption_marker {
                     // ClockBound's shared memory segment has the latest clock disruption status from

@@ -1,6 +1,6 @@
-use crate::{syserror, shm::ShmError};
+use crate::{shm::ShmError, syserror};
 use nix::sys::time::TimeSpec;
-use nix::time::{clock_gettime, ClockId};
+use nix::time::{ClockId, clock_gettime};
 
 pub const CLOCK_REALTIME: ClockId = ClockId::CLOCK_REALTIME;
 

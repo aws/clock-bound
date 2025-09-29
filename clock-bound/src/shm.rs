@@ -8,7 +8,6 @@
 // if the write feature is selected. There may be a better way to do that and re-enable the lint.
 #![allow(dead_code)]
 
-
 pub mod common;
 mod reader;
 mod shm_header;
@@ -22,7 +21,7 @@ use errno::Errno;
 use nix::sys::time::{TimeSpec, TimeValLike};
 use std::ffi::CStr;
 
-use common::{clock_gettime_safe, CLOCK_MONOTONIC, CLOCK_REALTIME};
+use common::{CLOCK_MONOTONIC, CLOCK_REALTIME, clock_gettime_safe};
 
 const CLOCKBOUND_RESTART_GRACE_PERIOD: TimeSpec = TimeSpec::new(5, 0);
 

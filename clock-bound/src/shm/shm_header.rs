@@ -1,7 +1,7 @@
-use std::mem::{size_of, MaybeUninit};
+use std::mem::{MaybeUninit, size_of};
 use std::sync::atomic;
 
-use crate::{syserror, shm::ShmError};
+use crate::{shm::ShmError, syserror};
 
 /// The magic number that identifies a ClockErrorBound shared memory segment.
 pub const SHM_MAGIC: [u32; 2] = [0x414D5A4E, 0x43420200];
@@ -46,7 +46,7 @@ impl ShmHeader {
         } {
             ret if ret < 0 => return syserror!("read SHM segment"),
             ret if (ret as usize) < size_of::<ShmHeader>() => {
-                return Err(ShmError::SegmentNotInitialized)
+                return Err(ShmError::SegmentNotInitialized);
             }
             _ => (),
         };
@@ -100,7 +100,10 @@ impl ShmHeader {
         // supported by this implementation of ClockBound.
         let version = self.version.load(atomic::Ordering::Relaxed);
         if version != CLOCKBOUND_SHM_SUPPORTED_VERSION {
-            eprintln!("ClockBound shared memory segment has version {:?} which is not supported by this software.", version);
+            eprintln!(
+                "ClockBound shared memory segment has version {:?} which is not supported by this software.",
+                version
+            );
             return Err(ShmError::SegmentVersionNotSupported);
         }
 

@@ -1,5 +1,5 @@
 use byteorder::{NativeEndian, WriteBytesExt};
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 use std::io::{Error, ErrorKind};
 use std::mem::size_of;
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 
 use crate::shm::reader::ShmReader;
-use crate::shm::shm_header::{ShmHeader, CLOCKBOUND_SHM_SUPPORTED_VERSION, SHM_MAGIC};
+use crate::shm::shm_header::{CLOCKBOUND_SHM_SUPPORTED_VERSION, SHM_MAGIC, ShmHeader};
 use crate::shm::{ClockErrorBound, ShmError};
 
 /// Trait that a writer to the shared memory segment has to implement.
@@ -163,7 +163,7 @@ impl ShmWriter {
                     return Err(Error::new(
                         ErrorKind::Other,
                         "Failed to extract parent dir name",
-                    ))
+                    ));
                 }
             }
         }
@@ -182,7 +182,7 @@ impl ShmWriter {
                         "Failed to convert segment size {:?} into u32 {:?}",
                         segsize, e
                     ),
-                ))
+                ));
             }
         };
 

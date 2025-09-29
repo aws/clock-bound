@@ -10,9 +10,9 @@ use std::{fs, ptr};
 
 use tracing::debug;
 
-use crate::vmclock::shm::{VMClockShmBody, VMClockShmHeader, VMCLOCK_SHM_MAGIC};
-use crate::vmclock::shm_reader::VMClockShmReader;
 use crate::shm::ShmError;
+use crate::vmclock::shm::{VMCLOCK_SHM_MAGIC, VMClockShmBody, VMClockShmHeader};
+use crate::vmclock::shm_reader::VMClockShmReader;
 
 /// Trait that a writer to the shared memory segment has to implement.
 pub trait VMClockShmWrite {
@@ -160,7 +160,7 @@ impl VMClockShmWriter {
                     return Err(Error::new(
                         ErrorKind::Other,
                         "Failed to extract parent dir name",
-                    ))
+                    ));
                 }
             }
         }
@@ -179,7 +179,7 @@ impl VMClockShmWriter {
                         "Failed to convert segment size {:?} into u32 {:?}",
                         segsize, e
                     ),
-                ))
+                ));
             }
         };
 

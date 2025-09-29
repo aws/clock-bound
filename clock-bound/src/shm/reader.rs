@@ -1,11 +1,14 @@
-use errno::{errno, Errno};
-use std::ffi::{c_void, CStr};
+use errno::{Errno, errno};
+use std::ffi::{CStr, c_void};
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic;
 
-use crate::shm::shm_header::{ShmHeader, CLOCKBOUND_SHM_SUPPORTED_VERSION};
-use crate::{syserror, shm::{ClockErrorBound, ShmError}};
+use crate::shm::shm_header::{CLOCKBOUND_SHM_SUPPORTED_VERSION, ShmHeader};
+use crate::{
+    shm::{ClockErrorBound, ShmError},
+    syserror,
+};
 
 /// A guard tracking an open file descriptor.
 ///
@@ -214,7 +217,10 @@ impl ShmReader {
         if version == 0 {
             return Ok(&self.snapshot_ceb);
         } else if version != CLOCKBOUND_SHM_SUPPORTED_VERSION {
-            eprintln!("ClockBound shared memory segment has version {:?} which is not supported by this software.", version);
+            eprintln!(
+                "ClockBound shared memory segment has version {:?} which is not supported by this software.",
+                version
+            );
             return Err(ShmError::SegmentVersionNotSupported);
         }
 

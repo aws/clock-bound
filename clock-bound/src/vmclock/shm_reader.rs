@@ -7,9 +7,9 @@ use std::ptr;
 use std::sync::atomic;
 use tracing::{debug, error};
 
-use crate::vmclock::shm::{VMClockShmBody, VMClockShmHeader};
-use crate::syserror;
 use crate::shm::ShmError;
+use crate::syserror;
+use crate::vmclock::shm::{VMClockShmBody, VMClockShmHeader};
 
 const VMCLOCK_SUPPORTED_VERSION: u16 = 1;
 
@@ -44,7 +44,11 @@ impl MmapGuard {
             error!("MmapGuard: Read zero bytes.");
             return Err(ShmError::SegmentNotInitialized);
         } else if bytes_read < size_of::<VMClockShmHeader>() {
-            error!("MmapGuard: Number of bytes read ({:?}) is less than the size of VMClockShmHeader ({:?}).", bytes_read, size_of::<VMClockShmHeader>());
+            error!(
+                "MmapGuard: Number of bytes read ({:?}) is less than the size of VMClockShmHeader ({:?}).",
+                bytes_read,
+                size_of::<VMClockShmHeader>()
+            );
             return Err(ShmError::SegmentMalformed);
         }
 
@@ -187,7 +191,10 @@ impl VMClockShmReader {
         let version = unsafe { &*version_ptr };
         let version_number = version.load(atomic::Ordering::Acquire);
         if version_number != VMCLOCK_SUPPORTED_VERSION {
-            error!("VMClock shared memory segment has version {:?} which is not supported by this version of the VMClockShmReader.", version_number);
+            error!(
+                "VMClock shared memory segment has version {:?} which is not supported by this version of the VMClockShmReader.",
+                version_number
+            );
             return Err(ShmError::SegmentVersionNotSupported);
         }
 
@@ -248,7 +255,10 @@ impl VMClockShmReader {
         // We are validating the version prior to each snapshot to protect
         // against a Hypervisor which has implemented an unsupported VMClock version.
         if version != VMCLOCK_SUPPORTED_VERSION {
-            error!("VMClock shared memory segment has version {:?} which is not supported by this version of the VMClockShmReader.", version);
+            error!(
+                "VMClock shared memory segment has version {:?} which is not supported by this version of the VMClockShmReader.",
+                version
+            );
             return Err(ShmError::SegmentVersionNotSupported);
         }
 
