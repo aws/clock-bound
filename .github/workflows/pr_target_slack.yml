@@ -1,0 +1,21 @@
+name: pr_target_slack
+
+permissions:
+  contents: read
+
+on:
+  pull_request_target: # Runs on main branch as opposed to `pull_request`, so it gets secrets
+    branches:
+      - main
+
+jobs:
+  pr_target_slack:
+    name: Notify slack of pull request actions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send pull request action info to slack
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          payload-delimiter: "_"
+          webhook: ${{ secrets.PR_TARGET_WEBHOOK_URL }}
+          webhook-type: webhook-trigger
