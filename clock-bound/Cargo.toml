@@ -13,16 +13,20 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+anyhow = "1"
 byteorder = "1"
+clap = { version = "4.5.31", features = ["derive"] }
 errno = { version = "0.3.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 nix = { version = "0.26", features = ["feature", "time"] }
 serde = { version = "1.0", features = ["derive"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["std", "fmt", "json"] }
+thiserror = "2.0"
 
 [dev-dependencies]
 approx = "0.5"
+mockall = "0.13.1"
 rstest = "0.26"
 tempfile = "3.13"
 
