@@ -1,4 +1,6 @@
 name: pr_review_comment_slack
+permissions:
+  contents: read
 
 on:
   pull_request_review_comment:

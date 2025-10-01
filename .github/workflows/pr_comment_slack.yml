@@ -1,4 +1,6 @@
 name: pr_comment_slack
+permissions:
+  contents: read
 
 on:
   issue_comment:
