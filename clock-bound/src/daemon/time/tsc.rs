@@ -11,8 +11,6 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const FREQUENCY_TO_TIMEX_SCALE: f64 = (1 << 16) as f64;
-
 /// Marker type to crate a raw timestamp with [`super::inner::Time`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tsc;
@@ -172,15 +170,6 @@ impl Skew {
     /// Get the inner value
     pub fn get(self) -> f64 {
         self.0
-    }
-
-    /// In struct timex, freq, ppsfreq, and stabil are ppm (parts per
-    /// million) with a 16-bit fractional part, which means that a value
-    /// of 1 in one of those fields actually means 2^-16 ppm, and
-    /// 2^16=65536 is 1 ppm.  This is the case for both input values (in
-    /// the case of freq) and output values.
-    pub fn to_timex_freq(self) -> i64 {
-        (FREQUENCY_TO_TIMEX_SCALE * self.0 / Self::PPM) as i64
     }
 }
 
