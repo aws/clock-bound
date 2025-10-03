@@ -1,5 +1,11 @@
+#![expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::cast_precision_loss
+)]
 use clock_bound::client::{
-    ClockBoundClient, ClockBoundError, ClockStatus, CLOCKBOUND_SHM_DEFAULT_PATH,
+    CLOCKBOUND_SHM_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
     VMCLOCK_SHM_DEFAULT_PATH,
 };
 use nix::sys::time::TimeSpec;
@@ -25,10 +31,14 @@ fn main() {
         }
     };
 
-    println!("When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {:?}.",
-             &now_result_first.earliest.tv_sec(), &now_result_first.earliest.tv_nsec(),
-             &now_result_first.latest.tv_sec(), &now_result_first.latest.tv_nsec(),
-             format_clock_status(&now_result_first.clock_status));
+    println!(
+        "When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {:?}.",
+        &now_result_first.earliest.tv_sec(),
+        &now_result_first.earliest.tv_nsec(),
+        &now_result_first.latest.tv_sec(),
+        &now_result_first.latest.tv_nsec(),
+        format_clock_status(&now_result_first.clock_status)
+    );
 
     // Very naive performance benchmark.
     let call_count = 100_000_000;

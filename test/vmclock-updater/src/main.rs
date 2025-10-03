@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use clap::Parser;
 
-use clock_bound::vmclock::shm::{VMClockClockStatus, VMClockShmBody, VMCLOCK_SHM_DEFAULT_PATH};
+use clock_bound::vmclock::shm::{VMCLOCK_SHM_DEFAULT_PATH, VMClockClockStatus, VMClockShmBody};
 use clock_bound::vmclock::shm_writer::{VMClockShmWrite, VMClockShmWriter};
 
 /// CLI arguments are the possible field values that can be set in the VMClock shared memory segment.
@@ -27,7 +27,7 @@ struct Cli {
     /// The clock status indicates whether the clock is synchronized,
     /// free-running, etc.
     ///
-    /// Maps to enum VMClockClockStatus.
+    /// Maps to enum `VMClockClockStatus`.
     #[arg(long)]
     clock_status: Option<String>,
 
@@ -59,7 +59,7 @@ struct Cli {
     #[arg(long)]
     counter_period_maxerror_rate_frac_sec: Option<u64>,
 
-    /// Time: Seconds since time_type epoch.
+    /// Time: Seconds since `time_type` epoch.
     #[arg(long)]
     time_sec: Option<u64>,
 
@@ -152,5 +152,7 @@ fn main() {
 
     // Write to the VMClock shared memory segment.
     vmclock_shm_writer.write(&vmclock_shm_body);
-    println!("Successfully wrote the following VMClockShmBody to the VMClock shared memory segment: {:?}", vmclock_shm_body);
+    println!(
+        "Successfully wrote the following VMClockShmBody to the VMClock shared memory segment: {vmclock_shm_body:?}"
+    );
 }

@@ -15,7 +15,8 @@ pub const CLOCK_MONOTONIC: ClockId = ClockId::CLOCK_MONOTONIC_COARSE;
 /// This function wraps the `clock_gettime()` system call to conveniently return the current time
 /// tracked by a specific clock.
 ///
-/// The clock_id is one of ClockId::CLOCK_REALTIME, ClockId::CLOCK_MONOTONIC, etc.
+/// The `clock_id` is one of `ClockId::CLOCK_REALTIME`, `ClockId::CLOCK_MONOTONIC`, etc.
+#[expect(clippy::missing_errors_doc, reason = "todo")]
 pub fn clock_gettime_safe(clock_id: ClockId) -> Result<TimeSpec, ShmError> {
     match clock_gettime(clock_id) {
         Ok(ts) => Ok(ts),

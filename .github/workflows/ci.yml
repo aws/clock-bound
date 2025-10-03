@@ -1,0 +1,41 @@
+name: ci
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cargo cache
+        uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install ci tooling
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make,cargo-hack
+
+      - name: Run cargo make in ci profile
+        run: cargo make custom-ci-flow --profile custom-ci

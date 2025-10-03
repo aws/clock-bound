@@ -1,6 +1,6 @@
 //! ClockBound Shared Memory
 //!
-//! This crate implements the low-level IPC functionality to share ClockErrorBound data and clock
+//! This crate implements the low-level IPC functionality to share `ClockErrorBound` data and clock
 //! status over a shared memory segment. This crate is meant to be used by the C and Rust versions
 //! of the ClockBound client library.
 
@@ -25,7 +25,7 @@ use common::{CLOCK_MONOTONIC, CLOCK_REALTIME, clock_gettime_safe};
 
 const CLOCKBOUND_RESTART_GRACE_PERIOD: TimeSpec = TimeSpec::new(5, 0);
 
-/// Convenience macro to build a ShmError::SyscallError with extra info from errno and custom
+/// Convenience macro to build a `ShmError::SyscallError` with extra info from errno and custom
 /// origin information.
 #[macro_export]
 macro_rules! syserror {
@@ -79,14 +79,14 @@ pub enum ClockStatus {
     Disrupted = 3,
 }
 
-/// Structure that holds the ClockErrorBound data captured at a specific point in time and valid
+/// Structure that holds the `ClockErrorBound` data captured at a specific point in time and valid
 /// until a subsequent point in time.
 ///
-/// The ClockErrorBound structure supports calculating the actual bound on clock error at any time,
+/// The `ClockErrorBound` structure supports calculating the actual bound on clock error at any time,
 /// using its `now()` method. The internal fields are not meant to be accessed directly.
 ///
-/// Note that the timestamps in between which this ClockErrorBound data is valid are captured using
-/// a CLOCK_MONOTONIC_COARSE clock. The monotonic clock id is required to correctly measure the
+/// Note that the timestamps in between which this `ClockErrorBound` data is valid are captured using
+/// a `CLOCK_MONOTONIC_COARSE` clock. The monotonic clock id is required to correctly measure the
 /// duration during which clock drift possibly accrues, and avoid events when the clock is set,
 /// smeared or affected by leap seconds.
 ///
@@ -95,12 +95,12 @@ pub enum ClockStatus {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct ClockErrorBound {
-    /// The CLOCK_MONOTONIC_COARSE timestamp recorded when the bound on clock error was
+    /// The `CLOCK_MONOTONIC_COARSE` timestamp recorded when the bound on clock error was
     /// calculated. The current implementation relies on Chrony tracking data, which accounts for
     /// the dispersion between the last clock processing event, and the reading of tracking data.
     as_of: TimeSpec,
 
-    /// The CLOCK_MONOTONIC_COARSE timestamp beyond which the bound on clock error should not be
+    /// The `CLOCK_MONOTONIC_COARSE` timestamp beyond which the bound on clock error should not be
     /// trusted. This is a useful signal that the communication with the synchronization daemon is
     /// has failed, for example.
     void_after: TimeSpec,
@@ -136,7 +136,7 @@ pub struct ClockErrorBound {
 }
 
 impl Default for ClockErrorBound {
-    /// Get a default ClockErrorBound struct
+    /// Get a default `ClockErrorBound` struct
     /// Equivalent to zero'ing this bit of memory
     fn default() -> Self {
         ClockErrorBound {
@@ -153,7 +153,7 @@ impl Default for ClockErrorBound {
 }
 
 impl ClockErrorBound {
-    /// Create a new ClockErrorBound struct.
+    /// Create a new `ClockErrorBound` struct.
     pub fn new(
         as_of: TimeSpec,
         void_after: TimeSpec,
@@ -175,13 +175,14 @@ impl ClockErrorBound {
         }
     }
 
-    /// The ClockErrorBound equivalent of clock_gettime(), but with bound on accuracy.
+    /// The `ClockErrorBound` equivalent of `clock_gettime()`, but with bound on accuracy.
     ///
     /// Returns a pair of (earliest, latest) timespec between which current time exists. The
     /// interval width is twice the clock error bound (ceb) such that:
     ///   (earliest, latest) = ((now - ceb), (now + ceb))
     /// The function also returns a clock status to assert that the clock is being synchronized, or
     /// free-running, or ...
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn now(&self) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
         // Read the clock, start with the REALTIME one to be as close as possible to the event the
         // caller is interested in. The monotonic clock should be read after. It is correct for the
@@ -200,6 +201,11 @@ impl ClockErrorBound {
     /// details to correctly work around the "rough" alignment of the timestamps is not something
     /// we want to leave to the user of ClockBound, hence this method is private. Although `now()`
     /// may be it only caller, decoupling the two make writing unit tests a bit easier.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "todo, come back and evaluate impact"
+    )]
     fn compute_bound_at(
         &self,
         real: TimeSpec,
@@ -295,7 +301,7 @@ impl ClockErrorBound {
         // between the snapshot being read and ~now.
         let duration_sec = duration.num_nanoseconds() as f64 / 1_000_000_000_f64;
         let updated_bound = TimeSpec::nanoseconds(
-            self.bound_nsec + (duration_sec * self.max_drift_ppb as f64) as i64,
+            self.bound_nsec + (duration_sec * f64::from(self.max_drift_ppb)) as i64,
         );
 
         // Build the (earliest, latest) interval within which true time exists.

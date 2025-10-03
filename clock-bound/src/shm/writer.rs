@@ -1,6 +1,8 @@
+#![expect(clippy::cast_ptr_alignment, reason = "TODO COME BACK TO THIS")]
+
 use byteorder::{NativeEndian, WriteBytesExt};
 use std::ffi::{CString, c_void};
-use std::io::{Error, ErrorKind};
+use std::io::Error;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic;
@@ -34,22 +36,22 @@ pub struct ShmWriter {
     /// A raw pointer keeping the address of the segment mapped in memory
     addr: *mut c_void,
 
-    /// A raw pointer to the version member of the ShmHeader mapped in memory. The version number
+    /// A raw pointer to the version member of the `ShmHeader` mapped in memory. The version number
     /// identifies the layout of the rest of the segment. A value of 0 indicates the memory segment
     /// is not initialized / not usable.
     version: *mut atomic::AtomicU16,
 
-    /// A raw pointer to the generation member of the ShmHeader mapped in memory. The generation
+    /// A raw pointer to the generation member of the `ShmHeader` mapped in memory. The generation
     /// number is updated by the writer before and after updating the content mapped in memory.
     generation: *mut atomic::AtomicU16,
 
-    /// A raw pointer to the ClockBoundError data mapped in memory. This structure follows the
-    /// ShmHeader and contains the information required to compute a bound on clock error.
+    /// A raw pointer to the `ClockBoundError` data mapped in memory. This structure follows the
+    /// `ShmHeader` and contains the information required to compute a bound on clock error.
     ceb: *mut ClockErrorBound,
 }
 
 impl ShmWriter {
-    /// Create a new ShmWriter referencing the memory segment to write ClockErrorBound data to.
+    /// Create a new `ShmWriter` referencing the memory segment to write `ClockErrorBound` data to.
     ///
     /// There are several cases to consider:
     /// 1. The file backing the memory segment does not exist, or the content is corrupted/wrong.
@@ -62,6 +64,7 @@ impl ShmWriter {
     ///    analog to a cold boot.
     ///
     /// TODO: implement scenario 3 once the readers support a version bump.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(path: &Path) -> std::io::Result<ShmWriter> {
         // Determine the size of the segment.
         let segsize = ShmWriter::segment_size();
@@ -74,7 +77,7 @@ impl ShmWriter {
         if ShmWriter::is_usable_segment(path).is_err() {
             // Note that wiping the file sets the version to 0, which is used to indicate the
             // readers that the memory segment is not usable yet.
-            ShmWriter::wipe(path, segsize)?
+            ShmWriter::wipe(path, segsize)?;
         }
 
         // Memory map the file.
@@ -120,7 +123,7 @@ impl ShmWriter {
 
     /// Check whether the memory segment already exist and is usable.
     ///
-    /// The segment is usable if it can be opened at `path` and it can be read by a ShmReader.
+    /// The segment is usable if it can be opened at `path` and it can be read by a `ShmReader`.
     fn is_usable_segment(path: &Path) -> Result<(), ShmError> {
         let path_cstring = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| ShmError::SegmentNotInitialized)?;
@@ -140,7 +143,7 @@ impl ShmWriter {
         // the size of the data shared is almost two order of magnitude smaller than the minimum
         // system page size (4096), so taking a quick shortcut and ignoring paging alignment
         // questions for now.
-        if size % 8 == 0 {
+        if size.is_multiple_of(8) {
             size
         } else {
             size + (8 - size % 8)
@@ -160,10 +163,7 @@ impl ShmWriter {
                 Some("") => (), // This would be a relative path without parent
                 Some(_) => fs::create_dir_all(parent)?,
                 None => {
-                    return Err(Error::new(
-                        ErrorKind::Other,
-                        "Failed to extract parent dir name",
-                    ));
+                    return Err(Error::other("Failed to extract parent dir name"));
                 }
             }
         }
@@ -176,13 +176,9 @@ impl ShmWriter {
         let size: u32 = match segsize.try_into() {
             Ok(size) => size, // it did fit
             Err(e) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    format!(
-                        "Failed to convert segment size {:?} into u32 {:?}",
-                        segsize, e
-                    ),
-                ));
+                return Err(std::io::Error::other(format!(
+                    "Failed to convert segment size {segsize:?} into u32 {e:?}"
+                )));
             }
         };
 
@@ -201,13 +197,9 @@ impl ShmWriter {
         // Make sure the amount of bytes written matches the segment size
         let pos = file.stream_position()?;
         if pos > size.into() {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
-                format!(
-                    "SHM Writer implementation error: wrote {:?} bytes but segsize is {:?} bytes",
-                    pos, size
-                ),
-            ));
+            return Err(std::io::Error::other(format!(
+                "SHM Writer implementation error: wrote {pos:?} bytes but segsize is {size:?} bytes"
+            )));
         }
 
         // Sync all and drop (close) the descriptor
@@ -288,7 +280,7 @@ impl ShmWrite for ShmWriter {
             // Skipping over a generation equals to 0 avoid this problem.
             let mut g = g.wrapping_add(1);
             if g == 0 {
-                g = 2
+                g = 2;
             }
 
             generation.store(g, atomic::Ordering::Release);
@@ -299,8 +291,8 @@ impl ShmWrite for ShmWriter {
 impl Drop for ShmWriter {
     /// Unmap the memory segment
     ///
-    /// TODO: revisit to see if this can be refactored into the MmapGuard logic implemented on the
-    /// ShmReader.
+    /// TODO: revisit to see if this can be refactored into the `MmapGuard` logic implemented on the
+    /// `ShmReader`.
     fn drop(&mut self) {
         unsafe {
             nix::sys::mman::munmap(self.addr, self.segsize).expect("munmap");

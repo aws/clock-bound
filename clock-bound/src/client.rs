@@ -15,12 +15,12 @@ pub struct ClockBoundClient {
 }
 
 impl ClockBoundClient {
-    /// Creates and returns a new ClockBoundClient.
+    /// Creates and returns a new `ClockBoundClient`.
     ///
     /// The creation process also initializes a shared memory reader
     /// with the shared memory default path that is used by
     /// the ClockBound daemon.
-    ///
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new() -> Result<ClockBoundClient, ClockBoundError> {
         // Validate that the default ClockBound shared memory path exists.
         if !Path::new(CLOCKBOUND_SHM_DEFAULT_PATH).exists() {
@@ -41,10 +41,11 @@ impl ClockBoundClient {
         Ok(ClockBoundClient { vmclock })
     }
 
-    /// Creates and returns a new ClockBoundClient, specifying a shared
+    /// Creates and returns a new `ClockBoundClient`, specifying a shared
     /// memory path that is being used by the ClockBound daemon.
     /// The VMClock will be accessed by reading the default VMClock
     /// shared memory path.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new_with_path(clockbound_shm_path: &str) -> Result<ClockBoundClient, ClockBoundError> {
         // Validate that the provided ClockBound shared memory path exists.
         if !Path::new(clockbound_shm_path).exists() {
@@ -63,9 +64,10 @@ impl ClockBoundClient {
         Ok(ClockBoundClient { vmclock })
     }
 
-    /// Creates and returns a new ClockBoundClient, specifying a shared
+    /// Creates and returns a new `ClockBoundClient`, specifying a shared
     /// memory paths that are being used by the ClockBound daemon and by the VMClock,
     /// respectively.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new_with_paths(
         clockbound_shm_path: &str,
         vmclock_shm_path: &str,
@@ -84,6 +86,7 @@ impl ClockBoundClient {
     }
 
     /// Obtains the clock error bound and clock status at the current moment.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn now(&mut self) -> Result<ClockBoundNowResult, ClockBoundError> {
         let (earliest, latest, clock_status) = self.vmclock.now()?;
 

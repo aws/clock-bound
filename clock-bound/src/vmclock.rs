@@ -25,6 +25,8 @@ impl VMClock {
     /// On error, returns an appropriate `Errno`. If the content of the segment
     /// is uninitialized, unparseable, or otherwise malformed, EPROTO will be
     /// returned.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    #[expect(clippy::missing_panics_doc, reason = "todo")]
     pub fn new(clockbound_shm_path: &str, vmclock_shm_path: &str) -> Result<VMClock, ShmError> {
         let clockbound_shm_path = CString::new(clockbound_shm_path).expect("CString::new failed");
         let mut clockbound_shm_reader = ShmReader::new(clockbound_shm_path.as_c_str())?;
@@ -42,13 +44,14 @@ impl VMClock {
         })
     }
 
-    /// The VMClock equivalent of clock_gettime(), but with bound on accuracy.
+    /// The VMClock equivalent of `clock_gettime()`, but with bound on accuracy.
     ///
     /// Returns a pair of (earliest, latest) timespec between which current time exists. The
     /// interval width is twice the clock error bound (ceb) such that:
     ///   (earliest, latest) = ((now - ceb), (now + ceb))
     /// The function also returns a clock status to assert that the clock is being synchronized, or
     /// free-running, or ...
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn now(&mut self) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
         // Read from the ClockBound shared memory segment.
         let clockbound_snapshot = self.clockbound_shm_reader.snapshot()?;
@@ -60,35 +63,34 @@ impl VMClock {
 
         let (earliest, latest, clock_status) = clockbound_snapshot.now()?;
 
-        if clockbound_snapshot.clock_disruption_support_enabled {
-            if let Some(ref mut vmclock_shm_reader) = self.vmclock_shm_reader {
-                // Read from the VMClock shared memory segment.
-                let vmclock_snapshot = vmclock_shm_reader.snapshot()?;
+        if clockbound_snapshot.clock_disruption_support_enabled
+            && let Some(ref mut vmclock_shm_reader) = self.vmclock_shm_reader
+        {
+            // Read from the VMClock shared memory segment.
+            let vmclock_snapshot = vmclock_shm_reader.snapshot()?;
 
-                // Comparing the disruption marker between the VMClock snapshot and the
-                // ClockBound snapshot will tell us if the clock status provided by the
-                // ClockBound daemon is trustworthy.
-                debug!(
-                    "clock_status: {:?}, vmclock_snapshot.disruption_marker: {:?}, clockbound_snapshot.disruption_marker: {:?}",
-                    clock_status,
-                    vmclock_snapshot.disruption_marker,
-                    clockbound_snapshot.disruption_marker
-                );
+            // Comparing the disruption marker between the VMClock snapshot and the
+            // ClockBound snapshot will tell us if the clock status provided by the
+            // ClockBound daemon is trustworthy.
+            debug!(
+                "clock_status: {:?}, vmclock_snapshot.disruption_marker: {:?}, clockbound_snapshot.disruption_marker: {:?}",
+                clock_status,
+                vmclock_snapshot.disruption_marker,
+                clockbound_snapshot.disruption_marker
+            );
 
-                if vmclock_snapshot.disruption_marker == clockbound_snapshot.disruption_marker {
-                    // ClockBound's shared memory segment has the latest clock disruption status from
-                    // VMClock and this means the clock status here can be trusted.
-                    return Ok((earliest, latest, clock_status));
-                } else {
-                    // ClockBound has stale clock disruption status and it is not up-to-date with
-                    // VMClock.
-
-                    // Override the clock disruption status with ClockStatus::Unknown until
-                    // ClockBound daemon is able to pick up the latest clock disruption status
-                    // from VMClock.
-                    return Ok((earliest, latest, ClockStatus::Unknown));
-                }
+            if vmclock_snapshot.disruption_marker == clockbound_snapshot.disruption_marker {
+                // ClockBound's shared memory segment has the latest clock disruption status from
+                // VMClock and this means the clock status here can be trusted.
+                return Ok((earliest, latest, clock_status));
             }
+            // ClockBound has stale clock disruption status and it is not up-to-date with
+            // VMClock.
+
+            // Override the clock disruption status with ClockStatus::Unknown until
+            // ClockBound daemon is able to pick up the latest clock disruption status
+            // from VMClock.
+            return Ok((earliest, latest, ClockStatus::Unknown));
         }
 
         debug!("clock_status: {:?}", clock_status);

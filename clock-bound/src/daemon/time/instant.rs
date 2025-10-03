@@ -166,6 +166,7 @@ impl Duration {
     ///
     /// Will truncate to the nearest femtosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
+    #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_nanos_f64(nanos: f64) -> Self {
         Self::new((nanos * FEMTOS_PER_NANO as f64) as i128)
     }

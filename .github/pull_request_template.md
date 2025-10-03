@@ -19,5 +19,4 @@ Check with an `x` for what applies and add details as needed:
 - [ ] Unit tests added
 - [ ] Integration tests added
 - [ ] Workflows modified
-- [ ] Ran `cargo build`
-- [ ] Ran `cargo clippy` and `cargo fmt`
+- [ ] Ran `cargo make`

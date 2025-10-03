@@ -1,8 +1,9 @@
+#![expect(clippy::cast_ptr_alignment, reason = "TODO COME BACK TO THIS")]
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::ffi::c_void;
+use std::io::Error;
 use std::io::Seek;
 use std::io::Write;
-use std::io::{Error, ErrorKind};
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic;
@@ -24,7 +25,7 @@ pub trait VMClockShmWrite {
 ///
 /// This writer is expected to be used by a single process writing to a given path. The file
 /// written to is memory mapped by the writer and many (read-only) readers. Updates to the memory
-/// segment are applied in a lock-free manner, using a rolling seq_count number to protect the
+/// segment are applied in a lock-free manner, using a rolling `seq_count` number to protect the
 /// update section.
 #[derive(Debug)]
 pub struct VMClockShmWriter {
@@ -34,23 +35,23 @@ pub struct VMClockShmWriter {
     /// A raw pointer keeping the address of the segment mapped in memory
     addr: *mut c_void,
 
-    /// A raw pointer to the version member of the VMClockShmHeader mapped in memory. The version number
+    /// A raw pointer to the version member of the `VMClockShmHeader` mapped in memory. The version number
     /// identifies the layout of the rest of the segment. A value of 0 indicates the memory segment
     /// is not initialized / not usable.
     version_ptr: *mut atomic::AtomicU16,
 
     /// A raw pointer to the sequence count member of the
-    /// VMClockShmHeader mapped in memory. The sequence count number is updated by the writer
+    /// `VMClockShmHeader` mapped in memory. The sequence count number is updated by the writer
     /// before and after updating the content mapped in memory.
     seq_count_ptr: *mut atomic::AtomicU32,
 
-    /// A raw pointer to the VMClockShmBody data mapped in memory. This structure follows the
-    /// VMClockShmHeader and contains the information required to compute a bound on clock error.
+    /// A raw pointer to the `VMClockShmBody` data mapped in memory. This structure follows the
+    /// `VMClockShmHeader` and contains the information required to compute a bound on clock error.
     vmclock_shm_body: *mut VMClockShmBody,
 }
 
 impl VMClockShmWriter {
-    /// Create a new VMClockShmWriter referencing the memory segment to write VMClockShmBody data to.
+    /// Create a new `VMClockShmWriter` referencing the memory segment to write `VMClockShmBody` data to.
     ///
     /// There are several cases to consider:
     /// 1. The file backing the memory segment does not exist, or the content is corrupted/wrong.
@@ -63,6 +64,7 @@ impl VMClockShmWriter {
     ///    analog to a cold boot.
     ///
     /// TODO: implement scenario 3 once the readers support a version bump.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(path: &Path) -> std::io::Result<VMClockShmWriter> {
         // Determine the size of the segment.
         let segsize = VMClockShmWriter::segment_size();
@@ -75,7 +77,7 @@ impl VMClockShmWriter {
         if VMClockShmWriter::is_usable_segment(path).is_err() {
             // Note that wiping the file sets the version to 0, which is used to indicate the
             // readers that the memory segment is not usable yet.
-            VMClockShmWriter::wipe(path, segsize)?
+            VMClockShmWriter::wipe(path, segsize)?;
         }
 
         // Memory map the file.
@@ -124,7 +126,7 @@ impl VMClockShmWriter {
 
     /// Check whether the memory segment already exist and is usable.
     ///
-    /// The segment is usable if it can be opened at `path` and it can be read by a VMClockShmReader.
+    /// The segment is usable if it can be opened at `path` and it can be read by a `VMClockShmReader`.
     fn is_usable_segment(path: &Path) -> Result<(), ShmError> {
         if let Some(path_str) = path.to_str() {
             match VMClockShmReader::new(path_str) {
@@ -147,7 +149,7 @@ impl VMClockShmWriter {
     /// Initialize the file backing the memory segment.
     ///
     /// Zero out the file up to segsize, but write out header information such the readers can
-    /// access it. Note that both the layout version number and the seq_count number are set to 0,
+    /// access it. Note that both the layout version number and the `seq_count` number are set to 0,
     /// which makes this file not usable to retrieve clock error bound data yet.
     fn wipe(path: &Path, segsize: usize) -> std::io::Result<()> {
         // Attempt at creating intermediate directories, but do expect that the base permissions
@@ -157,10 +159,7 @@ impl VMClockShmWriter {
                 Some("") => (), // This would be a relative path without parent
                 Some(_) => fs::create_dir_all(parent)?,
                 None => {
-                    return Err(Error::new(
-                        ErrorKind::Other,
-                        "Failed to extract parent dir name",
-                    ));
+                    return Err(Error::other("Failed to extract parent dir name"));
                 }
             }
         }
@@ -173,13 +172,9 @@ impl VMClockShmWriter {
         let size: u32 = match segsize.try_into() {
             Ok(size) => size, // it did fit
             Err(e) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    format!(
-                        "Failed to convert segment size {:?} into u32 {:?}",
-                        segsize, e
-                    ),
-                ));
+                return Err(std::io::Error::other(format!(
+                    "Failed to convert segment size {segsize:?} into u32 {e:?}"
+                )));
             }
         };
 
@@ -206,13 +201,9 @@ impl VMClockShmWriter {
         // Make sure the amount of bytes written matches the segment size
         let pos = file.stream_position()?;
         if pos > size.into() {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
-                format!(
-                    "SHM Writer implementation error: wrote {:?} bytes but segsize is {:?} bytes",
-                    pos, size
-                ),
-            ));
+            return Err(std::io::Error::other(format!(
+                "SHM Writer implementation error: wrote {pos:?} bytes but segsize is {size:?} bytes"
+            )));
         }
 
         // Sync all and drop (close) the descriptor
@@ -255,7 +246,7 @@ impl VMClockShmWrite for VMClockShmWriter {
     /// Update the clock error bound data in the memory segment.
     ///
     /// This function implements the lock-free mechanism that lets the writer update the memory
-    /// segment shared with many readers. The seq_count number is set to an odd number before the
+    /// segment shared with many readers. The `seq_count` number is set to an odd number before the
     /// update and an even number when successfully completed.
     ///
     fn write(&mut self, vmclock_shm_body: &VMClockShmBody) {
@@ -288,8 +279,8 @@ impl VMClockShmWrite for VMClockShmWriter {
 impl Drop for VMClockShmWriter {
     /// Unmap the memory segment
     ///
-    /// TODO: revisit to see if this can be refactored into the MmapGuard logic implemented on the
-    /// VMClockShmReader.
+    /// TODO: revisit to see if this can be refactored into the `MmapGuard` logic implemented on the
+    /// `VMClockShmReader`.
     fn drop(&mut self) {
         unsafe {
             nix::sys::mman::munmap(self.addr, self.segsize).expect("munmap");

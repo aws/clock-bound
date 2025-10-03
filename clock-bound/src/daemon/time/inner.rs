@@ -222,10 +222,6 @@ impl<T: Type> DivAssign<usize> for Diff<T> {
 impl<T: Type> Mul<usize> for Diff<T> {
     type Output = Self;
 
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "Multiplying will create this problem anyways"
-    )]
     fn mul(self, rhs: usize) -> Self::Output {
         Self {
             duration: self.duration * rhs as i128,
@@ -243,10 +239,6 @@ impl<T: Type> Mul<Diff<T>> for usize {
     }
 }
 
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "Multiplying will create this problem anyways"
-)]
 impl<T: Type> MulAssign<usize> for Diff<T> {
     fn mul_assign(&mut self, rhs: usize) {
         self.duration *= rhs as i128;

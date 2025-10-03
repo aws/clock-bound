@@ -3,14 +3,14 @@ use std::sync::atomic;
 
 use crate::{shm::ShmError, syserror};
 
-/// The magic number that identifies a ClockErrorBound shared memory segment.
-pub const SHM_MAGIC: [u32; 2] = [0x414D5A4E, 0x43420200];
+/// The magic number that identifies a `ClockErrorBound` shared memory segment.
+pub const SHM_MAGIC: [u32; 2] = [0x414D_5A4E, 0x4342_0200];
 
 /// Version of the ClockBound shared memory segment layout that is supported by this
 /// implementation of ClockBound.
 pub const CLOCKBOUND_SHM_SUPPORTED_VERSION: u16 = 2_u16;
 
-/// Header structure to the Shared Memory segment where the ClockErrorBound data is kept.
+/// Header structure to the Shared Memory segment where the `ClockErrorBound` data is kept.
 ///
 /// Most members are atomic types as they are subject to be updated by the ClockBound daemon.
 #[repr(C, align(8))]
@@ -30,10 +30,11 @@ pub struct ShmHeader {
 }
 
 impl ShmHeader {
-    /// Initialize a ShmHeader from a file descriptor
+    /// Initialize a `ShmHeader` from a file descriptor
     ///
-    /// Read the content of a file, ensures it is meant to contain ClockErrorBound data by
+    /// Read the content of a file, ensures it is meant to contain `ClockErrorBound` data by
     /// validating the magic number and return a valid header.
+    #[expect(clippy::cast_sign_loss, reason = "guarded")]
     pub fn read(fdesc: i32) -> Result<Self, ShmError> {
         let mut header_buf: MaybeUninit<ShmHeader> = MaybeUninit::uninit();
         // SAFETY: `buf` points to `count` bytes of valid memory.
@@ -49,7 +50,7 @@ impl ShmHeader {
                 return Err(ShmError::SegmentNotInitialized);
             }
             _ => (),
-        };
+        }
 
         // SAFETY: we've checked the above return value to ensure header_buf
         // has been completely initialized by the previous read.
@@ -60,6 +61,10 @@ impl ShmHeader {
     }
 
     /// Check whether the magic number matches the expected one.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "bulk expect lints. Can fix later"
+    )]
     fn matches_magic(&self, magic: &[u32; 2]) -> bool {
         self.magic == *magic
     }
@@ -82,7 +87,7 @@ impl ShmHeader {
         segsize as usize >= size_of::<Self>()
     }
 
-    /// Check whether a ShmHeader is valid
+    /// Check whether a `ShmHeader` is valid
     fn is_valid(&self) -> Result<(), ShmError> {
         if !self.matches_magic(&SHM_MAGIC) {
             return Err(ShmError::SegmentNotInitialized);
@@ -101,8 +106,7 @@ impl ShmHeader {
         let version = self.version.load(atomic::Ordering::Relaxed);
         if version != CLOCKBOUND_SHM_SUPPORTED_VERSION {
             eprintln!(
-                "ClockBound shared memory segment has version {:?} which is not supported by this software.",
-                version
+                "ClockBound shared memory segment has version {version:?} which is not supported by this software."
             );
             return Err(ShmError::SegmentVersionNotSupported);
         }

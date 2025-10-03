@@ -1,3 +1,5 @@
+#![expect(clippy::cast_ptr_alignment, reason = "TODO COME BACK TO THIS")]
+
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::Read;
@@ -15,7 +17,7 @@ const VMCLOCK_SUPPORTED_VERSION: u16 = 1;
 
 /// A guard tracking an memory mapped file.
 ///
-/// Creating the MmapGuard maps an open file descriptor.
+/// Creating the `MmapGuard` maps an open file descriptor.
 /// The file is unmap'ed when the guard is dropped.
 struct MmapGuard {
     /// A pointer to the head of the segment
@@ -29,15 +31,14 @@ struct MmapGuard {
 }
 
 impl MmapGuard {
-    /// Create a new MmapGuard.
+    /// Create a new `MmapGuard`.
     ///
     /// Memory map the provided open File.
     fn new(mut file: File) -> Result<Self, ShmError> {
         let mut buffer = vec![];
 
-        let bytes_read = match file.read_to_end(&mut buffer) {
-            Ok(bytes_read) => bytes_read,
-            Err(_) => return syserror!("Failed to read SHM segment"),
+        let Ok(bytes_read) = file.read_to_end(&mut buffer) else {
+            return syserror!("Failed to read SHM segment");
         };
 
         if bytes_read == 0_usize {
@@ -88,7 +89,7 @@ impl MmapGuard {
 }
 
 impl Drop for MmapGuard {
-    /// Drop the MmapGuard and unmap the file it tracks.
+    /// Drop the `MmapGuard` and unmap the file it tracks.
     fn drop(&mut self) {
         // SAFETY: `segment` was previously returned from `mmap`, and therefore
         // when this destructor runs there are no more live references into
@@ -102,14 +103,14 @@ impl Drop for MmapGuard {
 
 /// Reader for VMClock shared memory segment.
 ///
-/// The VMClock shared memory segment consists of a VMClockShmHeader followed by a
-/// VMClockShmBody struct. The segment is updated by a single producer (the Hypervisor),
+/// The VMClock shared memory segment consists of a `VMClockShmHeader` followed by a
+/// `VMClockShmBody` struct. The segment is updated by a single producer (the Hypervisor),
 /// but may be read by many clients.  The shared memory segment does not implement a semaphore or
 /// equivalent to synchronize the single-producer / many-consumers processes. Instead, the
 /// mechanism is lock-free and relies on a `seq_count` number to ensure consistent reads (over
 /// retries).
 ///
-/// The writer increments the seq_count field from even to odd before each update. It also
+/// The writer increments the `seq_count` field from even to odd before each update. It also
 /// increment it again, from odd to even, after finishing the update. Readers must check the
 /// `seq_count` field before and after each read, and verify that they obtain the same, even,
 /// value. Otherwise, the read was dirty and must be retried.
@@ -154,6 +155,7 @@ impl VMClockShmReader {
     /// On error, returns an appropriate `Errno`. If the content of the segment
     /// is uninitialized, unparseable, or otherwise malformed, EPROTO will be
     /// returned.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(path: &str) -> Result<VMClockShmReader, ShmError> {
         debug!("VMClockShmReader::new(): path is: {:?}", path);
         let file = match File::open(path) {
@@ -220,7 +222,7 @@ impl VMClockShmReader {
         }
         // SAFETY: segment size has been checked to ensure `cursor` move leads to a valid cast
         cursor = unsafe { cursor.add(size_of::<VMClockShmHeader>()) };
-        let vmclock_shm_body_ptr = unsafe { ptr::addr_of!(*cursor.cast::<VMClockShmBody>()) };
+        let vmclock_shm_body_ptr = ptr::addr_of!(*cursor.cast::<VMClockShmBody>());
 
         Ok(VMClockShmReader {
             _marker: std::marker::PhantomData,
@@ -235,15 +237,16 @@ impl VMClockShmReader {
 
     /// Return a consistent snapshot of the shared memory segment.
     ///
-    /// Taking a snapshot consists in reading the memory segment while confirming the seq_count
+    /// Taking a snapshot consists in reading the memory segment while confirming the `seq_count`
     /// number in the header has not changed (which would indicate an update from the writer
     /// occurred while reading). If an update is detected, the read is retried.
     ///
-    /// This function returns a reference to the VMClockShmBody snapshot stored by the reader, and
-    /// not an owned value. This make the VMClockShmReader NOT thread-safe: the data pointed to could be
+    /// This function returns a reference to the `VMClockShmBody` snapshot stored by the reader, and
+    /// not an owned value. This make the `VMClockShmReader` NOT thread-safe: the data pointed to could be
     /// updated without one of the thread knowing, leading to a incorrect clock error bond. The
     /// advantage are in terms of performance: less data copied, but also no locking, yielding or
     /// excessive retries.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn snapshot(&mut self) -> Result<&VMClockShmBody, ShmError> {
         // Atomically read the current version in the shared memory segment
         // SAFETY: `self.version` has been validated when creating the reader
@@ -305,9 +308,8 @@ impl VMClockShmReader {
                     self.seq_count_snapshot = seq_count_first;
                     self.vmclock_shm_body_snapshot = snapshot;
                     return Ok(&self.vmclock_shm_body_snapshot);
-                } else {
-                    seq_count_first = seq_count_second;
                 }
+                seq_count_first = seq_count_second;
             }
             retries -= 1;
         }

@@ -1,5 +1,5 @@
 use clock_bound::client::{
-    ClockBoundClient, ClockBoundError, ClockStatus, CLOCKBOUND_SHM_DEFAULT_PATH,
+    CLOCKBOUND_SHM_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
     VMCLOCK_SHM_DEFAULT_PATH,
 };
 use std::process;
@@ -29,17 +29,21 @@ fn main() {
             }
         };
 
-        println!("When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {:?}.",
-                 &now_result.earliest.tv_sec(), &now_result.earliest.tv_nsec(),
-                 &now_result.latest.tv_sec(), &now_result.latest.tv_nsec(),
-                 format_clock_status(&now_result.clock_status));
+        println!(
+            "When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {:?}.",
+            &now_result.earliest.tv_sec(),
+            &now_result.earliest.tv_nsec(),
+            &now_result.latest.tv_sec(),
+            &now_result.latest.tv_nsec(),
+            format_clock_status(&now_result.clock_status)
+        );
 
         thread::sleep(Duration::from_millis(1000));
     }
 }
 
 fn print_error(detail: &str, error: &ClockBoundError) {
-    eprintln!("{detail} {:?}", error);
+    eprintln!("{detail} {error:?}");
 }
 
 fn format_clock_status(clock_status: &ClockStatus) -> &str {

@@ -19,7 +19,7 @@ use tracing::{debug, error};
 pub const VMCLOCK_SHM_DEFAULT_PATH: &str = "/dev/vmclock0";
 
 /// The magic number that identifies a VMClock shared memory segment.
-pub const VMCLOCK_SHM_MAGIC: u32 = 0x4B4C4356;
+pub const VMCLOCK_SHM_MAGIC: u32 = 0x4B4C_4356;
 
 /// Header structure to the Shared Memory segment where the VMClock data is kept.
 ///
@@ -43,11 +43,11 @@ pub struct VMClockShmHeader {
     ///
     /// Possible values are:
     ///
-    /// VMCLOCK_TIME_UTC                        0   // Since 1970-01-01 00:00:00z
-    /// VMCLOCK_TIME_TAI                        1   // Since 1970-01-01 00:00:00z
-    /// VMCLOCK_TIME_MONOTONIC                  2   // Since undefined epoch
-    /// VMCLOCK_TIME_INVALID_SMEARED            3   // Not supported
-    /// VMCLOCK_TIME_INVALID_MAYBE_SMEARED      4   // Not supported
+    /// `VMCLOCK_TIME_UTC`                        0   // Since 1970-01-01 00:00:00z
+    /// `VMCLOCK_TIME_TAI`                        1   // Since 1970-01-01 00:00:00z
+    /// `VMCLOCK_TIME_MONOTONIC`                  2   // Since undefined epoch
+    /// `VMCLOCK_TIME_INVALID_SMEARED`            3   // Not supported
+    /// `VMCLOCK_TIME_INVALID_MAYBE_SMEARED`      4   // Not supported
     ///
     pub time_type: atomic::AtomicU8,
 
@@ -59,9 +59,11 @@ pub struct VMClockShmHeader {
 }
 
 impl VMClockShmHeader {
-    /// Initialize a VMClockShmHeader from a vector of bytes.
+    /// Initialize a `VMClockShmHeader` from a vector of bytes.
     ///
     /// It is assumed that the vecxtor has already been validated to have enough bytes to hold.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    #[expect(clippy::missing_panics_doc, reason = "slices appropriately sized")]
     pub fn read(vector: &Vec<u8>) -> Result<Self, ShmError> {
         if vector.len() < size_of::<VMClockShmHeader>() {
             return syserror!("Insufficient bytes to create a VMClockShmHeader.");
@@ -110,7 +112,7 @@ impl VMClockShmHeader {
         size as usize >= size_of::<Self>()
     }
 
-    /// Check whether a VMClockShmHeader is valid
+    /// Check whether a `VMClockShmHeader` is valid
     fn is_valid(&self) -> Result<(), ShmError> {
         if !self.matches_magic() {
             error!("VMClockShmHeader does not have a matching magic number.");
@@ -152,7 +154,7 @@ pub enum VMClockClockStatus {
 }
 
 /// Custom struct used for indicating a parsing error when parsing a
-/// VMClockClockStatus from str.
+/// `VMClockClockStatus` from str.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ParseError;
 
@@ -176,6 +178,7 @@ impl FromStr for VMClockClockStatus {
 /// this specific layout.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[expect(clippy::pub_underscore_fields, reason = "C FFI struct")]
 pub struct VMClockShmBody {
     /// Disruption Marker.
     ///
@@ -187,19 +190,19 @@ pub struct VMClockShmBody {
     ///
     /// Bit flags representing the following:
     ///
-    /// Bit (1 << 0): VMCLOCK_FLAG_TAI_OFFSET_VALID: Indicates that the tai_offset_sec field is valid.
+    /// Bit (1 << 0): `VMCLOCK_FLAG_TAI_OFFSET_VALID`: Indicates that the `tai_offset_sec` field is valid.
     ///
     /// The below bits are optionally used to notify guests of pending
     /// maintenance events. A guest which provides latency-sensitive
     /// services may wish to remove itself from service if an event is coming up.
     /// Two flags indicate the approximate imminence of the event.
     ///
-    /// Bit (1 << 1): VMCLOCK_FLAG_DISRUPTION_SOON: About a day.
-    /// Bit (1 << 2): VMCLOCK_FLAG_DISRUPTION_IMMINENT: About an hour.
-    /// Bit (1 << 3): VMCLOCK_FLAG_PERIOD_ESTERROR_VALID
-    /// Bit (1 << 4): VMCLOCK_FLAG_PERIOD_MAXERROR_VALID
-    /// Bit (1 << 5): VMCLOCK_FLAG_TIME_ESTERROR_VALID
-    /// Bit (1 << 6): VMCLOCK_FLAG_TIME_MAXERROR_VALID
+    /// Bit (1 << 1): `VMCLOCK_FLAG_DISRUPTION_SOON`: About a day.
+    /// Bit (1 << 2): `VMCLOCK_FLAG_DISRUPTION_IMMINENT`: About an hour.
+    /// Bit (1 << 3): `VMCLOCK_FLAG_PERIOD_ESTERROR_VALID`
+    /// Bit (1 << 4): `VMCLOCK_FLAG_PERIOD_MAXERROR_VALID`
+    /// Bit (1 << 5): `VMCLOCK_FLAG_TIME_ESTERROR_VALID`
+    /// Bit (1 << 6): `VMCLOCK_FLAG_TIME_MAXERROR_VALID`
     ///
     /// The below bit is the MONOTONIC flag.
     /// If the MONOTONIC flag is set then (other than leap seconds) it is
@@ -208,13 +211,13 @@ pub struct VMClockShmBody {
     /// calculated via the structure at any *later* moment.
     ///
     /// In particular, a timestamp based on a counter reading taken
-    /// immediately after setting the low bit of seq_count (and the
+    /// immediately after setting the low bit of `seq_count` (and the
     /// associated memory barrier), using the previously-valid time and
     /// period fields, shall never be later than a timestamp based on
     /// a counter reading taken immediately before *clearing* the low
     /// bit again after the update, using the about-to-be-valid fields.
     ///
-    /// Bit (1 << 7): VMCLOCK_FLAG_TIME_MONOTONIC
+    /// Bit (1 << 7): `VMCLOCK_FLAG_TIME_MONOTONIC`
     ///
     pub flags: u64,
 
@@ -239,9 +242,9 @@ pub struct VMClockShmBody {
     ///
     /// Possible values are:
     ///
-    /// VMCLOCK_SMEARING_STRICT:      0
-    /// VMCLOCK_SMEARING_NOON_LINEAR: 1
-    /// VMCLOCK_SMEARING_UTC_SLS:     2
+    /// `VMCLOCK_SMEARING_STRICT`:      0
+    /// `VMCLOCK_SMEARING_NOON_LINEAR`: 1
+    /// `VMCLOCK_SMEARING_UTC_SLS`:     2
     ///
     pub leap_second_smearing_hint: u8,
 
@@ -250,29 +253,29 @@ pub struct VMClockShmBody {
 
     /// Leap indicator.
     ///
-    /// This field is based on the the VIRTIO_RTC_LEAP_xxx values as
+    /// This field is based on the the `VIRTIO_RTC_LEAP_xxx` values as
     /// defined in the current draft of virtio-rtc, but since smearing
     /// cannot be used with the shared memory device, some values are
     /// not used.
     ///
-    /// The _POST_POS and _POST_NEG values allow the guest to perform
+    /// The _`POST_POS` and _`POST_NEG` values allow the guest to perform
     /// its own smearing during the day or so after a leap second when
     /// such smearing may need to continue being applied for a leap
     /// second which is now theoretically "historical".
     ///
     /// Possible values are:
-    /// VMCLOCK_LEAP_NONE       0x00  // No known nearby leap second
-    /// VMCLOCK_LEAP_PRE_POS    0x01  // Positive leap second at EOM
-    /// VMCLOCK_LEAP_PRE_NEG    0x02  // Negative leap second at EOM
-    /// VMCLOCK_LEAP_POS        0x03  // Set during 23:59:60 second
-    /// VMCLOCK_LEAP_POST_POS   0x04
-    /// VMCLOCK_LEAP_POST_NEG   0x05
+    /// `VMCLOCK_LEAP_NONE`       0x00  // No known nearby leap second
+    /// `VMCLOCK_LEAP_PRE_POS`    0x01  // Positive leap second at EOM
+    /// `VMCLOCK_LEAP_PRE_NEG`    0x02  // Negative leap second at EOM
+    /// `VMCLOCK_LEAP_POS`        0x03  // Set during 23:59:60 second
+    /// `VMCLOCK_LEAP_POST_POS`   0x04
+    /// `VMCLOCK_LEAP_POST_NEG`   0x05
     ///
     pub leap_indicator: u8,
 
     /// Counter period shift.
     ///
-    /// Bit shift for the counter_period_frac_sec and its error rate.
+    /// Bit shift for the `counter_period_frac_sec` and its error rate.
     pub counter_period_shift: u8,
 
     /// Counter value.
@@ -281,24 +284,24 @@ pub struct VMClockShmBody {
     /// Counter period.
     ///
     /// This is the estimated period of the counter, in binary fractional seconds.
-    /// The unit of this field is: 1 / (2 ^ (64 + counter_period_shift)) of a second.
+    /// The unit of this field is: 1 / (2 ^ (64 + `counter_period_shift`)) of a second.
     pub counter_period_frac_sec: u64,
 
     /// Counter period estimated error rate.
     ///
     /// This is the estimated error rate of the counter period, in binary fractional seconds per second.
-    /// The unit of this field is: 1 / (2 ^ (64 + counter_period_shift)) of a second per second.
+    /// The unit of this field is: 1 / (2 ^ (64 + `counter_period_shift`)) of a second per second.
     pub counter_period_esterror_rate_frac_sec: u64,
 
     /// Counter period maximum error rate.
     ///
     /// This is the maximum error rate of the counter period, in binary fractional seconds per second.
-    /// The unit of this field is: 1 / (2 ^ (64 + counter_period_shift)) of a second per second.
+    /// The unit of this field is: 1 / (2 ^ (64 + `counter_period_shift`)) of a second per second.
     pub counter_period_maxerror_rate_frac_sec: u64,
 
-    /// Time according to the time_type field.
+    /// Time according to the `time_type` field.
 
-    /// Time: Seconds since time_type epoch.
+    /// Time: Seconds since `time_type` epoch.
     pub time_sec: u64,
 
     /// Time: Fractional seconds, in units of 1 / (2 ^ 64) of a second.
@@ -312,7 +315,7 @@ pub struct VMClockShmBody {
 }
 
 impl Default for VMClockShmBody {
-    /// Get a default VMClockShmBody struct
+    /// Get a default `VMClockShmBody` struct
     /// Equivalent to zero'ing this bit of memory
     fn default() -> Self {
         VMClockShmBody {

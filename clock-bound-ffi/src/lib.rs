@@ -6,11 +6,11 @@
 #![allow(non_camel_case_types)]
 
 use clock_bound::shm::{ClockStatus, ShmError, ShmReader};
-use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use clock_bound::vmclock::VMClock;
+use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use core::ptr;
 use nix::sys::time::TimeSpec;
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 
 /// Error kind exposed over the FFI.
 ///
@@ -89,12 +89,12 @@ pub struct clockbound_ctx {
 }
 
 impl clockbound_ctx {
-    /// Obtain error-bounded timestamps and the ClockStatus.
+    /// Obtain error-bounded timestamps and the `ClockStatus`.
     ///
     /// The result on success is a tuple of:
-    /// - TimeSpec: earliest timestamp.
-    /// - TimeSpec: latest timestamp.
-    /// - ClockStatus: Status of the clock.
+    /// - `TimeSpec`: earliest timestamp.
+    /// - `TimeSpec`: latest timestamp.
+    /// - `ClockStatus`: Status of the clock.
     fn now(&mut self) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
         if let Some(ref mut clockbound_shm_reader) = self.clockbound_shm_reader {
             match clockbound_shm_reader.snapshot() {
@@ -143,22 +143,20 @@ pub struct clockbound_now_result {
 
 /// Open and create a reader to the Clockbound shared memory segment.
 ///
-/// Create a ShmReader pointing at the path passed to this call, and package it (and any other side
+/// Create a `ShmReader` pointing at the path passed to this call, and package it (and any other side
 /// information) into a `clockbound_ctx`. A reference to the context is passed back to the C
 /// caller, and needs to live beyond the scope of this function.
 ///
 /// # Safety
 /// Rely on the caller to pass valid pointers.
-///
+#[expect(clippy::missing_panics_doc, reason = "todo")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_open(
     clockbound_shm_path: *const c_char,
     err: *mut clockbound_err,
 ) -> *mut clockbound_ctx {
     // Safety: Rely on caller to pass valid pointers
-    let clockbound_shm_path_cstr = unsafe {
-        CStr::from_ptr(clockbound_shm_path)
-    };
+    let clockbound_shm_path_cstr = unsafe { CStr::from_ptr(clockbound_shm_path) };
     let clockbound_shm_path = clockbound_shm_path_cstr
         .to_str()
         .expect("Failed to convert ClockBound shared memory path to str");
@@ -176,7 +174,7 @@ pub unsafe extern "C" fn clockbound_open(
     };
 
     let ctx = clockbound_ctx {
-        err: Default::default(),
+        err: clockbound_err::default(),
         clockbound_shm_reader: None,
         vmclock: Some(vmclock),
     };
@@ -185,7 +183,7 @@ pub unsafe extern "C" fn clockbound_open(
     //
     // The caller is responsible for calling clockbound_close() with this context which will
     // perform memory clean-up.
-    return Box::leak(Box::new(ctx));
+    Box::leak(Box::new(ctx))
 }
 
 /// Open and create a reader to the Clockbound shared memory segment and the VMClock shared memory segment.
@@ -196,6 +194,7 @@ pub unsafe extern "C" fn clockbound_open(
 ///
 /// # Safety
 /// Rely on the caller to pass valid pointers.
+#[expect(clippy::missing_panics_doc, reason = "todo")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_vmclock_open(
     clockbound_shm_path: *const c_char,
@@ -203,14 +202,12 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
     err: *mut clockbound_err,
 ) -> *mut clockbound_ctx {
     // Safety: Rely on caller to pass valid pointers
-    let clockbound_shm_path_cstr = unsafe { 
-        CStr::from_ptr(clockbound_shm_path)
-    };
+    let clockbound_shm_path_cstr = unsafe { CStr::from_ptr(clockbound_shm_path) };
     let clockbound_shm_path = clockbound_shm_path_cstr
         .to_str()
         .expect("Failed to convert ClockBound shared memory path to str");
     // Safety: Rely on caller to pass valid pointers
-    let vmclock_shm_path_cstr = unsafe {CStr::from_ptr(vmclock_shm_path) };
+    let vmclock_shm_path_cstr = unsafe { CStr::from_ptr(vmclock_shm_path) };
     let vmclock_shm_path = vmclock_shm_path_cstr
         .to_str()
         .expect("Failed to convert VMClock shared memory path to str");
@@ -227,7 +224,7 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
     };
 
     let ctx = clockbound_ctx {
-        err: Default::default(),
+        err: clockbound_err::default(),
         clockbound_shm_reader: None,
         vmclock: Some(vmclock),
     };
@@ -236,12 +233,12 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
     //
     // The caller is responsible for calling clockbound_close() with this context which will
     // perform memory clean-up.
-    return Box::leak(Box::new(ctx));
+    Box::leak(Box::new(ctx))
 }
 
 /// Close the clockbound context.
 ///
-/// Effectively unmap the shared memory segment and drop the ShmReader.
+/// Effectively unmap the shared memory segment and drop the `ShmReader`.
 ///
 /// # Safety
 ///
@@ -262,7 +259,6 @@ pub unsafe extern "C" fn clockbound_close(ctx: *mut clockbound_ctx) -> *const cl
 /// # Safety
 ///
 /// Have no choice but rely on the caller to pass valid pointers.
-#[inline]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_now(
     ctx: *mut clockbound_ctx,
@@ -275,7 +271,7 @@ pub unsafe extern "C" fn clockbound_now(
         Ok(now) => now,
         Err(e) => {
             ctx.err = e.into();
-            return &ctx.err;
+            return &raw const ctx.err;
         }
     };
     // Safety: Rely on caller to pass valid pointers
@@ -292,8 +288,8 @@ pub unsafe extern "C" fn clockbound_now(
 #[cfg(test)]
 mod t_ffi {
     use super::*;
-    use clock_bound::shm::ClockErrorBound;
     use byteorder::{LittleEndian, NativeEndian, WriteBytesExt};
+    use clock_bound::shm::ClockErrorBound;
     use std::ffi::CString;
     use std::fs::OpenOptions;
     use std::io::Write;

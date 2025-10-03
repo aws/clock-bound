@@ -1,0 +1,78 @@
+[tasks.hack-check]
+description = "Check that each feature builds as expected"
+category = "Build"
+condition = { env_set = ["CARGO_MAKE_RUN_HACK_CHECK"] }
+command = "cargo"
+args = ["hack", "check", "--each-feature", "--no-dev-deps"]
+
+[tasks.custom-docs-flow]
+description = "Check docs for broken links"
+category = "Documentation"
+install_crate = false
+command = "cargo"
+args = ["rustdoc", "--lib", "--", "-D", "rustdoc::broken-intra-doc-links"]
+
+[tasks.format]
+description = "Runs the cargo rustfmt plugin."
+category = "Development"
+dependencies = ["install-rustfmt"]
+command = "cargo"
+args = ["fmt"]
+
+[tasks.custom-default-flow]
+dependencies = [
+  "format-flow",
+  "format-toml-conditioned-flow",
+  "pre-build",
+  "build",
+  "build-release",
+  "hack-check",
+  "test-flow",
+  "post-build",
+  "clippy-flow",
+  "custom-docs-flow",
+]
+
+[tasks.custom-ci-flow]
+dependencies = [
+  "pre-build",
+  "check-format-flow",
+  "clippy-flow",
+  "build",
+  "build-release",
+  "hack-check",
+  "post-build",
+  "test-flow",
+  "examples-ci-flow",
+  "bench-ci-flow",
+  "post-ci-flow",
+  "custom-docs-flow",
+]
+
+[tasks.default]
+alias = "custom-default-flow"
+
+[tasks.clippy]
+args = ["hack", "clippy", "@@split(CARGO_MAKE_CLIPPY_ARGS, )"]
+
+[env]
+CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
+CARGO_MAKE_RUN_TOML_FORMAT = true
+CARGO_MAKE_CLIPPY_ARGS = """\
+--each-feature --no-deps -- \
+-W clippy::cargo \
+-W clippy::all \
+-W clippy::pedantic \
+-A clippy::multiple-crate-versions \
+-A clippy::must_use_candidate \
+-A clippy::cargo_common_metadata \
+-D warnings \
+"""
+CARGO_MAKE_RUN_CLIPPY = true
+CARGO_MAKE_RUN_CHECK_FORMAT = true
+CARGO_MAKE_RUN_HACK_CHECK = true
+CARGO_HACK_CHECK_ARGS = "--feature-powerset --no-dev-deps"
+
+[env.custom-ci]
+CARGO_MAKE_CLIPPY_ALLOW_FAIL = false
+CARGO_MAKE_FORMAT_TOML_ARGS = "--check"

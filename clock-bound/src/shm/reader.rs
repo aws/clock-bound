@@ -1,3 +1,5 @@
+#![expect(clippy::cast_ptr_alignment, reason = "TODO COME BACK TO THIS")]
+
 use errno::{Errno, errno};
 use std::ffi::{CStr, c_void};
 use std::mem::size_of;
@@ -12,12 +14,12 @@ use crate::{
 
 /// A guard tracking an open file descriptor.
 ///
-/// Creating the FdGuard opens the file with read-only permission.
+/// Creating the `FdGuard` opens the file with read-only permission.
 /// The file descriptor is closed when the guard is dropped.
 struct FdGuard(i32);
 
 impl FdGuard {
-    /// Create a new FdGuard.
+    /// Create a new `FdGuard`.
     ///
     /// Open a file at `path` and store the open file descriptor
     fn new(path: &CStr) -> Result<Self, ShmError> {
@@ -32,7 +34,7 @@ impl FdGuard {
 }
 
 impl Drop for FdGuard {
-    /// Drop the FdGuard and close the file descriptor it holds.
+    /// Drop the `FdGuard` and close the file descriptor it holds.
     fn drop(&mut self) {
         // SAFETY: Unsafe because this is a call into a C API, but this particular
         // call is always safe.
@@ -45,7 +47,7 @@ impl Drop for FdGuard {
 
 /// A guard tracking an memory mapped file.
 ///
-/// Creating the MmapGuard maps an open file descriptor.
+/// Creating the `MmapGuard` maps an open file descriptor.
 /// The file is unmap'ed when the guard is dropped.
 #[derive(Debug)]
 struct MmapGuard {
@@ -57,9 +59,9 @@ struct MmapGuard {
 }
 
 impl MmapGuard {
-    /// Create a new MmapGuard.
+    /// Create a new `MmapGuard`.
     ///
-    /// Map the open file descriptor held in the FdGuard.
+    /// Map the open file descriptor held in the `FdGuard`.
     fn new(fdguard: &FdGuard) -> Result<Self, ShmError> {
         // Read the header so we know how much to map in memory.
         let header = ShmHeader::read(fdguard.0)?;
@@ -89,7 +91,7 @@ impl MmapGuard {
 }
 
 impl Drop for MmapGuard {
-    /// Drop the MmapGuard and unmap the file it tracks.
+    /// Drop the `MmapGuard` and unmap the file it tracks.
     fn drop(&mut self) {
         // SAFETY: `segment` was previously returned from `mmap`, and therefore
         // when this destructor runs there are no more live references into
@@ -103,8 +105,8 @@ impl Drop for MmapGuard {
 
 /// Reader for ClockBound daemon shared memory segment.
 ///
-/// The Clockbound daemon shared memory segment consists of a ShmHeader followed by a
-/// ClockBoundError struct. The segment is updated by a single producer (the clockbound daemon),
+/// The Clockbound daemon shared memory segment consists of a `ShmHeader` followed by a
+/// `ClockBoundError` struct. The segment is updated by a single producer (the clockbound daemon),
 /// but may be read by many clients.  The shared memory segment does not implement a semaphore or
 /// equivalent to synchronize the single-producer / many-consumers processes. Instead, the
 /// mechanism is lock-free and relies on a `generation` number to ensure consistent reads (over
@@ -157,6 +159,7 @@ impl ShmReader {
     /// On error, returns an appropriate `Errno`. If the content of the segment
     /// is uninitialized, unparseable, or otherwise malformed, EPROTO will be
     /// returned.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(path: &CStr) -> Result<ShmReader, ShmError> {
         let fdguard = FdGuard::new(path)?;
         let mmap_guard = MmapGuard::new(&fdguard)?;
@@ -179,7 +182,7 @@ impl ShmReader {
 
         // SAFETY: segment size has been checked to ensure `cursor` move leads to a valid cast
         cursor = unsafe { cursor.add(size_of::<ShmHeader>()) };
-        let ceb_shm = unsafe { ptr::addr_of!(*cursor.cast::<ClockErrorBound>()) };
+        let ceb_shm = ptr::addr_of!(*cursor.cast::<ClockErrorBound>());
 
         Ok(ShmReader {
             _marker: std::marker::PhantomData,
@@ -198,11 +201,12 @@ impl ShmReader {
     /// number in the header has not changed (which would indicate an update from the writer
     /// occurred while reading). If an update is detected, the read is retried.
     ///
-    /// This function returns a reference to the ClockErrorBound snapshot stored by the reader, and
-    /// not an owned value. This make the ShmReader NOT thread-safe: the data pointed to could be
+    /// This function returns a reference to the `ClockErrorBound` snapshot stored by the reader, and
+    /// not an owned value. This make the `ShmReader` NOT thread-safe: the data pointed to could be
     /// updated without one of the thread knowing, leading to a incorrect clock error bond. The
     /// advantage are in terms of performance: less data copied, but also no locking, yielding or
     /// excessive retries.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn snapshot(&mut self) -> Result<&ClockErrorBound, ShmError> {
         // Atomically read the current version in the shared memory segment
         // SAFETY: `self.version` has been validated when creating the reader
@@ -218,8 +222,7 @@ impl ShmReader {
             return Ok(&self.snapshot_ceb);
         } else if version != CLOCKBOUND_SHM_SUPPORTED_VERSION {
             eprintln!(
-                "ClockBound shared memory segment has version {:?} which is not supported by this software.",
-                version
+                "ClockBound shared memory segment has version {version:?} which is not supported by this software."
             );
             return Err(ShmError::SegmentVersionNotSupported);
         }
@@ -284,11 +287,10 @@ impl ShmReader {
                 self.snapshot_gen = first_gen;
                 self.snapshot_ceb = snapshot;
                 return Ok(&self.snapshot_ceb);
-            } else {
-                // Only track complete updates indicated by an even generation number.
-                if second_gen & 0x0001 == 0 {
-                    first_gen = second_gen;
-                }
+            }
+            // Only track complete updates indicated by an even generation number.
+            if second_gen & 0x0001 == 0 {
+                first_gen = second_gen;
             }
             retries -= 1;
         }

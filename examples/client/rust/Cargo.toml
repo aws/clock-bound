@@ -19,7 +19,9 @@ path = "src/main.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clock-bound = { version = "2.0", path = "../../../clock-bound", features = ["client"] }
+clock-bound = { version = "2.0", path = "../../../clock-bound", features = [
+  "client",
+] }
 nix = { version = "0.26", features = ["feature", "time"] }
 
 [dev-dependencies]
