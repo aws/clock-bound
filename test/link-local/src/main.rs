@@ -1,0 +1,45 @@
+//! Link Local test executable.
+//!
+//! This executable tests that the link local runner is able to send and receive packets from the
+//! link local address and that the polling rate is roughly once a second.
+
+use clock_bound::daemon::io::{SourceIO, ntp::Event};
+use std::time;
+use tokio::sync::mpsc;
+use tokio::time::{Duration, timeout};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    println!("Lets get a NTP packet!");
+    let (link_local_sender, mut link_local_receiver) = mpsc::channel::<Event>(1);
+
+    let mut start = time::Instant::now();
+
+    let mut sourceio = SourceIO::construct();
+    sourceio.create_link_local(link_local_sender);
+
+    let mut polling_rate = time::Duration::from_secs(0);
+    for i in 0..11 {
+        // On instances that aren't able to connect to link local the runner will run infinitely.
+        // To address this we timeout if an NTP event has not been received.
+        let ntpevent = timeout(Duration::from_secs(5), link_local_receiver.recv())
+            .await
+            .unwrap();
+        let now = time::Instant::now();
+        let d = now - start;
+        println!(
+            "It looks like we got an ntp packet \n{ntpevent:#?}\n{:?} ms",
+            d.as_millis()
+        );
+
+        // Skip the first sample, the IO runner will poll immediately after it's created.
+        if i > 0 {
+            polling_rate += d;
+        }
+
+        start = now;
+    }
+    polling_rate /= 10;
+    println!("Polling rate avg: {polling_rate:?}");
+    assert!(polling_rate.abs_diff(time::Duration::from_secs(1)) < time::Duration::from_millis(100));
+}

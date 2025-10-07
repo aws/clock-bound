@@ -4,6 +4,7 @@ members = [
   "clock-bound-ffi",
   "examples/client/rust",
   "test/clock-bound-vmclock-client-test",
+  "test/link-local",
   "test/vmclock-updater",
 ]
 resolver = "3"

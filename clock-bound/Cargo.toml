@@ -14,21 +14,33 @@ version.workspace = true
 
 [dependencies]
 byteorder = "1"
+bytes = { version = "1", optional = true }
+chrono = { version = "0.4", optional = true }
 errno = { version = "0.3.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = [
   "extra_traits",
 ] }
 nix = { version = "0.26", features = ["feature", "time"] }
+nom = { version = "8", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
+thiserror = "2"
+tokio = { version = "1.47.1", features = [
+  "net",
+  "macros",
+  "rt",
+  "sync",
+  "time",
+], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["std", "fmt", "json"] }
 
 [dev-dependencies]
 approx = "0.5"
+hex-literal = "0.4"
 rstest = "0.26"
 tempfile = "3.13"
 
 [features]
 client = []
-daemon = ["dep:serde"]
+daemon = ["dep:serde", "dep:tokio", "dep:chrono", "dep:bytes", "dep:nom"]
 default = ["client", "daemon"]
