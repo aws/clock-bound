@@ -1,6 +1,6 @@
 //! Perform IO on clock events
 //!
-//! This module implements the logic needed to sample reference clocks, be it from NTP sources from
+//! This module implements the logic needed to retrieve time sync sample measurements, be it from NTP sources from
 //! over the internet, the PHC via Linux's `ioctl` interface or some other source.
 
 #![allow(dead_code)]
@@ -58,8 +58,8 @@ impl SourceIO {
 
             spawn(async move {
                 let socket = UdpSocket::bind(ntp::BIND_ADDRESS).await.unwrap();
-                let mut linklocal = LinkLocal::construct(socket, communication_channels);
-                linklocal.run().await;
+                let mut link_local = LinkLocal::construct(socket, communication_channels);
+                link_local.run().await;
             });
             ctrl_sender
         });

@@ -4,5 +4,5 @@ extend = "../../Makefile.toml"
 [tasks.custom-docs-flow]
 clear = true
 script = '''
-echo "skipping custom docs flow in examples/client/rust"
+echo "skipping custom docs flow in test/link-local"
 '''
