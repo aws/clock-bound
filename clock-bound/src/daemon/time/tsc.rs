@@ -4,12 +4,15 @@
 
 use super::Duration;
 use super::inner::{Diff, Time};
+use std::ops::Neg;
 use std::{
     fmt::Display,
     ops::{Div, Mul, MulAssign},
 };
 
 use serde::{Deserialize, Serialize};
+
+const FREQUENCY_TO_TIMEX_SCALE: f64 = (1 << 16) as f64;
 
 /// Marker type to crate a raw timestamp with [`super::inner::Time`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -158,18 +161,42 @@ impl Skew {
     const PERCENT: f64 = 0.01;
 
     /// Construct a new skew from parts per million (ppm)
-    pub fn from_ppm(skew: f64) -> Self {
+    pub const fn from_ppm(skew: f64) -> Self {
         Self(skew * Self::PPM)
     }
 
     /// Construct a new skew from percentage
-    pub fn from_percent(skew: f64) -> Self {
+    pub const fn from_percent(skew: f64) -> Self {
         Self(skew * Self::PERCENT)
     }
 
     /// Get the inner value
-    pub fn get(self) -> f64 {
+    pub const fn get(self) -> f64 {
         self.0
+    }
+
+    /// In struct timex, freq, ppsfreq, and stabil are ppm (parts per
+    /// million) with a 16-bit fractional part, which means that a value
+    /// of 1 in one of those fields actually means 2^-16 ppm, and
+    /// 2^16=65536 is 1 ppm.  This is the case for both input values (in
+    /// the case of freq) and output values.
+    /// ref: See NOTES in <https://man7.org/linux/man-pages/man2/adjtimex.2.html>
+    pub fn to_timex_freq(self) -> i64 {
+        (FREQUENCY_TO_TIMEX_SCALE * self.0 / Self::PPM) as i64
+    }
+
+    /// `clamp` implementation delegating to inner `f64` for `Skew` values.
+    #[must_use]
+    pub fn clamp(self, min: Self, max: Self) -> Self {
+        Self(self.get().clamp(min.get(), max.get()))
+    }
+}
+
+impl Neg for Skew {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self(-self.0)
     }
 }
 
@@ -316,6 +343,22 @@ mod tests {
     fn skew_from_percent() {
         let skew = Skew::from_percent(5.0);
         assert_abs_diff_eq!(skew.get(), 0.05);
+    }
+
+    #[test]
+    fn skew_to_timex_freq() {
+        let skew = Skew::from_ppm(1.0);
+        assert_eq!(skew.to_timex_freq(), 65536);
+        let skew = Skew::from_ppm(2.0);
+        assert_eq!(skew.to_timex_freq(), 131072);
+        let skew = Skew::from_ppm(-1.0);
+        assert_eq!(skew.to_timex_freq(), -65536);
+        let skew = Skew::from_ppm(0.0);
+        assert_eq!(skew.to_timex_freq(), 0);
+        let skew = Skew::from_ppm(f64::MAX);
+        assert_eq!(skew.to_timex_freq(), i64::MAX);
+        let skew = Skew::from_ppm(f64::MIN);
+        assert_eq!(skew.to_timex_freq(), i64::MIN);
     }
 
     #[test]

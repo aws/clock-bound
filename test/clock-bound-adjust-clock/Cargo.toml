@@ -1,0 +1,25 @@
+[package]
+name = "clock-bound-adjust-clock"
+description = "A Rust example program of the ClockBound daemon's clock adjustment routines."
+license = "MIT OR Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "clock-bound-adjust-clock"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5.31", features = ["derive"] }
+clock-bound = { version = "2.0", path = "../../clock-bound", features = [
+  "daemon",
+] }

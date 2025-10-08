@@ -4,7 +4,7 @@
 
 use std::{
     marker::PhantomData,
-    ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
+    ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
 /// Abstraction used to reuse basic time arithmetic, but allow for different types based on its usage
@@ -242,6 +242,17 @@ impl<T: Type> Mul<Diff<T>> for usize {
 impl<T: Type> MulAssign<usize> for Diff<T> {
     fn mul_assign(&mut self, rhs: usize) {
         self.duration *= rhs as i128;
+    }
+}
+
+impl<T: Type> Neg for Diff<T> {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self {
+            duration: -self.duration,
+            _marker: PhantomData,
+        }
     }
 }
 

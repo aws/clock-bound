@@ -5,6 +5,7 @@
 
 pub mod inner;
 pub mod instant;
+pub mod timex;
 pub mod tsc;
 
 pub use instant::{Duration, Instant};

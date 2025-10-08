@@ -6,6 +6,7 @@ members = [
   "test/clock-bound-vmclock-client-test",
   "test/link-local",
   "test/vmclock-updater",
+  "test/clock-bound-adjust-clock",
 ]
 resolver = "3"
 
