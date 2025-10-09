@@ -1,9 +1,10 @@
 use std::ops::{Deref, DerefMut};
 
 use bon::bon;
+#[cfg(not(target_os = "macos"))]
+use libc::timeval;
 use libc::{
-    MOD_FREQUENCY, MOD_NANO, MOD_OFFSET, MOD_STATUS, MOD_TIMECONST, STA_FREQHOLD, STA_PLL, timeval,
-    timex,
+    MOD_FREQUENCY, MOD_NANO, MOD_OFFSET, MOD_STATUS, MOD_TIMECONST, STA_FREQHOLD, STA_PLL, timex,
 };
 use tracing::warn;
 
@@ -93,10 +94,12 @@ impl Default for Timex {
             constant: 0,
             precision: 0,
             tolerance: 0,
+            #[cfg(not(target_os = "macos"))]
             time: timeval {
                 tv_sec: 0,
                 tv_usec: 0,
             },
+            #[cfg(not(target_os = "macos"))]
             tick: 0,
             ppsfreq: 0,
             jitter: 0,
@@ -106,17 +109,29 @@ impl Default for Timex {
             calcnt: 0,
             errcnt: 0,
             stbcnt: 0,
+            #[cfg(not(target_os = "macos"))]
             tai: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused1: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused2: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused3: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused4: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused5: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused6: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused7: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused8: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused9: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused10: 0,
+            #[cfg(not(target_os = "macos"))]
             __unused11: 0,
         })
     }
@@ -153,8 +168,11 @@ mod test {
         assert_eq!(timex.constant, 0);
         assert_eq!(timex.precision, 0);
         assert_eq!(timex.tolerance, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.time.tv_sec, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.time.tv_usec, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.tick, 0);
         assert_eq!(timex.ppsfreq, 0);
         assert_eq!(timex.jitter, 0);
@@ -164,17 +182,29 @@ mod test {
         assert_eq!(timex.calcnt, 0);
         assert_eq!(timex.errcnt, 0);
         assert_eq!(timex.stbcnt, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.tai, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused1, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused2, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused3, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused4, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused5, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused6, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused7, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused8, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused9, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused10, 0);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(timex.__unused11, 0);
     }
 
