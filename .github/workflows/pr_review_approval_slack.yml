@@ -1,0 +1,21 @@
+name: pr_review_approval_slack
+permissions:
+  contents: read
+
+on:
+  pull_request_review:
+    types: [submitted]
+    branches: [main]
+
+jobs:
+  pr_review_approval_slack:
+    if: github.event.review.state == 'approved'
+    name: Notify slack of pull request approvals
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send approval info to slack
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          payload-delimiter: "_"
+          webhook: ${{ secrets.PR_REVIEW_APPROVAL_WEBHOOK_URL }}
+          webhook-type: webhook-trigger
