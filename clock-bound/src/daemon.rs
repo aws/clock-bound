@@ -1,5 +1,7 @@
 //! Clock Synchronization Daemon
 
+pub mod async_ring_buffer;
+
 pub mod io;
 
 pub mod clock_state;
