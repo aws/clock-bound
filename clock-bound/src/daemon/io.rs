@@ -13,7 +13,8 @@ use tokio::task::spawn;
 use tracing::{debug, info};
 
 pub mod ntp;
-use ntp::{Event as NtpEvent, LinkLocal};
+use super::event;
+use ntp::LinkLocal;
 
 mod tsc;
 
@@ -43,7 +44,7 @@ impl SourceIO {
     /// # Panics
     /// - If not called within the `tokio` runtime.
     /// - If socket binding fails.
-    pub fn create_link_local(&mut self, event_sender: mpsc::Sender<NtpEvent>) {
+    pub fn create_link_local(&mut self, event_sender: mpsc::Sender<event::Ntp>) {
         info!("Creating link local source.");
 
         let entry = self.sources.entry(TimeSource::LinkLocal);
@@ -85,7 +86,7 @@ struct ClockDisruptionChannels {
 #[derive(Debug)]
 pub struct CommunicationChannels {
     /// The channel which the IO task passes NTP events.
-    event_sender: mpsc::Sender<NtpEvent>,
+    event_sender: mpsc::Sender<event::Ntp>,
 
     /// The channel which the IO task receives control events.
     ctrl_receiver: mpsc::Receiver<ControlRequest>,

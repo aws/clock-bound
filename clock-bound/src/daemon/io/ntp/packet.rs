@@ -24,8 +24,7 @@ pub use header::{LeapIndicator, Mode, Version};
 pub use short::Short;
 pub use timestamp::Timestamp;
 
-use super::NtpData;
-
+use crate::daemon::event::{NtpData, Stratum, TryFromU8Error};
 use crate::daemon::time::{Duration as ClockBoundDuration, Instant as ClockBoundInstant};
 
 /// An NTP packet, as defined in RFC 5905
@@ -196,22 +195,26 @@ impl Packet {
     }
 }
 
-impl From<Packet> for NtpData {
-    fn from(value: Packet) -> Self {
+impl TryFrom<Packet> for NtpData {
+    type Error = TryFromU8Error;
+
+    fn try_from(value: Packet) -> Result<Self, Self::Error> {
         let root_delay = ClockBoundDuration::from(value.root_delay);
         let root_dispersion = ClockBoundDuration::from(value.root_dispersion);
         let server_recv_time = ClockBoundInstant::from(value.receive_timestamp);
         let server_send_time = ClockBoundInstant::from(value.transmit_timestamp);
 
-        NtpData {
+        let stratum = Stratum::try_from(value.stratum)?;
+
+        Ok(NtpData {
             server_recv_time,
             server_send_time,
 
             root_delay,
             root_dispersion,
 
-            stratum: value.stratum,
-        }
+            stratum,
+        })
     }
 }
 
@@ -291,20 +294,20 @@ mod test {
     }
 
     #[test]
-    fn conversion_packet_to_ntpdata() {
+    fn conversion_packet_to_ntp_data() {
         let (_, packet) = Packet::parse_from_bytes(NTP_PACKET).unwrap();
-        let ntpdata = NtpData::from(packet);
+        let ntp_data = NtpData::try_from(packet).unwrap();
 
-        assert!((ntpdata.root_delay.as_seconds_f64() - 0.000031).abs() < 1.0 / 65536.0);
-        assert!((ntpdata.root_dispersion.as_seconds_f64() - 0.000015).abs() < 1.0 / 65536.0);
+        assert!((ntp_data.root_delay.as_seconds_f64() - 0.000031).abs() < 1.0 / 65536.0);
+        assert!((ntp_data.root_dispersion.as_seconds_f64() - 0.000015).abs() < 1.0 / 65536.0);
         assert_eq!(
-            ntpdata.server_recv_time,
+            ntp_data.server_recv_time,
             ClockBoundInstant::from_time(1738189694, 689357564)
         );
         assert_eq!(
-            ntpdata.server_send_time,
+            ntp_data.server_send_time,
             ClockBoundInstant::from_time(1738189694, 689379474)
         );
-        assert_eq!(ntpdata.stratum, 1);
+        assert_eq!(ntp_data.stratum, Stratum::ONE);
     }
 }

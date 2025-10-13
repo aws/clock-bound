@@ -7,3 +7,5 @@ pub mod clock_state;
 pub mod clock_sync_algorithm;
 
 pub mod time;
+
+pub mod event;

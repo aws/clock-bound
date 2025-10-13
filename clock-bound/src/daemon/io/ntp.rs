@@ -11,10 +11,11 @@ use tokio::{
 };
 use tracing::{debug, info};
 
+use super::CommunicationChannels;
 use super::tsc::read_timestamp_counter;
-use super::{CommunicationChannels, NtpEvent};
-use crate::daemon::time::{
-    Duration as ClockBoundDuration, Instant as ClockBoundInstant, tsc::TscCount,
+use crate::daemon::{
+    event::{self, NtpData},
+    time::tsc::TscCount,
 };
 
 pub mod packet;
@@ -25,17 +26,6 @@ const LINK_LOCAL_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(169, 25
 const INTERVAL_DURATION: Duration = Duration::from_secs(1);
 const LINK_LOCAL_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Contains the NTP and time stamp counter samples to be used by synchronization algorithm.
-#[derive(Clone, Debug)]
-pub struct Event {
-    /// TSC value before requesting a NTP packet
-    pub tsc_pre: TscCount,
-    /// TSC value after receiving a NTP packet
-    pub tsc_post: TscCount,
-    /// NTP Packet data
-    pub ntp_data: NtpData,
-}
-
 #[derive(Debug, Error)]
 pub enum LinkLocalError {
     #[error("IO failure.")]
@@ -43,28 +33,10 @@ pub enum LinkLocalError {
     #[error("Failed to parse NTP packet.")]
     PacketParsing(String),
     #[error("Send NtpEvent message failed.")]
-    SendEventMessage(#[from] mpsc::error::SendError<NtpEvent>),
+    SendEventMessage(#[from] mpsc::error::SendError<event::Ntp>),
     #[error("Operation timed out.")]
     Timeout(#[from] time::error::Elapsed),
 }
-
-#[derive(Clone, Debug)]
-pub struct NtpData {
-    /// NTP Server recv time
-    server_recv_time: ClockBoundInstant,
-    /// NTP Server send time
-    server_send_time: ClockBoundInstant,
-
-    /// Root Delay of NTP packet
-    root_delay: ClockBoundDuration,
-    /// Root Dispersion of NTP packet
-    root_dispersion: ClockBoundDuration,
-
-    /// NTP Stratum. Used in reporting, not used in ff-sync
-    stratum: Stratum,
-}
-
-type Stratum = u8;
 
 /// Contains the data needed to run the link local runner.
 #[derive(Debug)]
@@ -114,10 +86,13 @@ impl LinkLocal {
         let (_, ntp_packet) = Packet::parse_from_bytes(&self.ntp_buffer)
             .map_err(|e| LinkLocalError::PacketParsing(e.to_string()))?;
 
-        let ntp_event: Event = Event {
+        let ntp_data = NtpData::try_from(ntp_packet)
+            .map_err(|e| LinkLocalError::PacketParsing(e.to_string()))?;
+
+        let ntp_event = event::Ntp {
             tsc_pre: TscCount::new(sent_timestamp.into()),
             tsc_post: TscCount::new(received_timestamp.into()),
-            ntp_data: NtpData::from(ntp_packet),
+            ntp_data,
         };
 
         debug!(?recv_packet_result, "Received packet.");

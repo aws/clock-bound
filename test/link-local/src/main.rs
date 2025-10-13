@@ -3,7 +3,8 @@
 //! This executable tests that the link local runner is able to send and receive packets from the
 //! link local address and that the polling rate is roughly once a second.
 
-use clock_bound::daemon::io::{SourceIO, ntp::Event};
+use clock_bound::daemon::event;
+use clock_bound::daemon::io::SourceIO;
 use std::time;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -11,7 +12,7 @@ use tokio::time::{Duration, timeout};
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     println!("Lets get a NTP packet!");
-    let (link_local_sender, mut link_local_receiver) = mpsc::channel::<Event>(1);
+    let (link_local_sender, mut link_local_receiver) = mpsc::channel::<event::Ntp>(1);
 
     let mut start = time::Instant::now();
 
