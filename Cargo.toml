@@ -19,6 +19,9 @@ authors = [
   "Wenhao Piao <wenhaopi@amazon.com>",
   "Thoth Gunter <mtgunter@amazon.com>",
   "Shamik Chakraborty <shamchak808@gmail.com>",
+  "Mohammed Kabir <mekabir93@gmail.com>",
+  "Myles Neloms <nelomsmn@gmail.com>",
+  "Nick Matthews <nick.matthews1020@gmail.com>",
 ]
 categories = [ "date-and-time" ]
 edition = "2024"
