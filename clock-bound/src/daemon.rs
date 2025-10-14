@@ -4,6 +4,8 @@ pub mod async_ring_buffer;
 
 pub mod io;
 
+pub mod clock_parameters;
+
 pub mod clock_state;
 
 pub mod clock_sync_algorithm;
