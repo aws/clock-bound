@@ -25,7 +25,7 @@ impl NtpAdjTime for KAPIClockAdjuster {
     fn ntp_adjtime(&self, tx: &mut Timex) -> i32 {
         // # Safety
         // `tx` should point to a valid struct because of validation guarantees of `Timex`
-        unsafe { ntp_adjtime(&raw mut **tx) }
+        unsafe { ntp_adjtime(tx.expose()) }
     }
 }
 
@@ -46,7 +46,7 @@ pub trait NtpAdjTime {
     fn ntp_adjtime(&self, tx: &mut Timex) -> i32;
 }
 
-pub struct ClockAdjuster<T: NtpAdjTime> {
+pub struct ClockAdjuster<T> {
     ntp_adjtime: T,
 }
 

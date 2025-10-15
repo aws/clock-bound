@@ -1,5 +1,5 @@
-use std::ops::{Deref, DerefMut};
-
+//! This module contains a newtype `Timex` wrapping an inner `libc::timex`, which allows construction
+//! only of valid values for the sake of the types of `adjtimex`/`ntp_adjtime` calls we'll make in ClockBound.
 use bon::bon;
 #[cfg(not(target_os = "macos"))]
 use libc::timeval;
@@ -14,13 +14,17 @@ const MAX_PHASE_OFFSET: Duration = Duration::from_millis(500);
 const MAX_SKEW: Skew = Skew::from_ppm(512.0);
 
 /// Newtype wrapping `libc::timex` to provide valid
-/// constructor with less verbosity. Provides a constructor `new`
-/// which zero-initializes all fields.
+/// constructors for each type of `adjtimex`/`ntp_adjtime` operation.
 #[derive(Debug)]
 pub struct Timex(timex);
 
 #[bon]
 impl Timex {
+    /// Expose a mutable reference to the inner `libc::timex`.
+    pub fn expose(&mut self) -> *mut timex {
+        &raw mut self.0
+    }
+
     /// Builds a `libc::timex` used for adjustment of the system clock, to apply the given phase correction
     /// and skew values, in a single system call.
     ///
@@ -45,12 +49,10 @@ impl Timex {
         reason = "phase correction is clamped then converted so no truncation"
     )]
     pub fn clock_adjustment(mut phase_correction: Duration, mut skew: Skew) -> Self {
-        let mut tx = Self::default();
         if skew > MAX_SKEW || skew < -MAX_SKEW {
             warn!("Skew of {skew} is outside of bounds +/-{MAX_SKEW}, clamping the value",);
             skew = skew.clamp(-MAX_SKEW, MAX_SKEW);
         }
-        tx.freq = skew.to_timex_freq();
         if phase_correction > MAX_PHASE_OFFSET || phase_correction < -MAX_PHASE_OFFSET {
             warn!(
                 "Phase correction of {}ns is outside of bounds +/-{}ns, clamping the value",
@@ -59,38 +61,26 @@ impl Timex {
             );
             phase_correction = phase_correction.clamp(-MAX_PHASE_OFFSET, MAX_PHASE_OFFSET);
         }
-        tx.offset = phase_correction.as_nanos() as i64;
-
-        // PLL clock adjustment proportion is dependent on this time constant.
-        // The clock adjustment factor over the length of a second
-        // is calculated as `shift_right(offset, SHIFT_PLL + ntpdata->time_constant)`, where const `SHIFT_PLL` = 2
-        // So, if we want to correct the clock quickly, we use a lower time constant.
-        // The value is clamped between 0 and 10.
-        // For now, we use 0, to aggressively correct the clock, which means we'd expect for
-        // offset to be corrected by `offset >> 2` every second (exponentially decaying)
-        tx.constant = 0;
-        // Set `modes` bits for all fields we modify, plus ADJ_NANO to use nanosecond units
-        // and ADJ_STATUS to set status bits below.
-        tx.modes = MOD_FREQUENCY | MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS;
-        // STA_FREQHOLD: Hold the frequency that we prescribe, if this is omitted the PLL would modify `freq`
-        // which we do not want since ClockBound's clock sync algorithm should determine the proper
-        // frequency setting.
-        // STA_PLL: Additionally, only rely on PLL to perform phase adjustments
-        tx.status = STA_FREQHOLD | STA_PLL;
-
-        tx
-    }
-}
-
-impl Default for Timex {
-    fn default() -> Self {
         Self(timex {
-            modes: 0,
-            offset: 0,
-            freq: 0,
+            // Set `modes` bits for all fields we modify, plus ADJ_NANO to use nanosecond units
+            // and ADJ_STATUS to set status bits below.
+            modes: MOD_FREQUENCY | MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS,
+            offset: phase_correction.as_nanos() as i64,
+            freq: skew.to_timex_freq(),
             maxerror: 0,
             esterror: 0,
-            status: 0,
+            // STA_FREQHOLD: Hold the frequency that we prescribe, if this is omitted the PLL would modify `freq`
+            // which we do not want since ClockBound's clock sync algorithm should determine the proper
+            // frequency setting.
+            // STA_PLL: Additionally, only rely on PLL to perform phase adjustments
+            status: STA_FREQHOLD | STA_PLL,
+            // PLL clock adjustment proportion is dependent on this time constant.
+            // The clock adjustment factor over the length of a second
+            // is calculated as `shift_right(offset, SHIFT_PLL + ntpdata->time_constant)`, where const `SHIFT_PLL` = 2
+            // So, if we want to correct the clock quickly, we use a lower time constant.
+            // The value is clamped between 0 and 10.
+            // For now, we use 0, to aggressively correct the clock, which means we'd expect for
+            // offset to be corrected by `offset >> 2` every second (exponentially decaying)
             constant: 0,
             precision: 0,
             tolerance: 0,
@@ -137,76 +127,17 @@ impl Default for Timex {
     }
 }
 
-impl Deref for Timex {
-    type Target = timex;
-
-    fn deref(&self) -> &Self::Target {
+impl AsRef<timex> for Timex {
+    fn as_ref(&self) -> &timex {
         &self.0
     }
 }
 
-impl DerefMut for Timex {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
 #[cfg(test)]
 mod test {
     use rstest::rstest;
 
     use super::*;
-
-    #[test]
-    fn test_timex_default() {
-        let timex = Timex::default();
-        assert_eq!(timex.modes, 0);
-        assert_eq!(timex.offset, 0);
-        assert_eq!(timex.freq, 0);
-        assert_eq!(timex.maxerror, 0);
-        assert_eq!(timex.esterror, 0);
-        assert_eq!(timex.status, 0);
-        assert_eq!(timex.constant, 0);
-        assert_eq!(timex.precision, 0);
-        assert_eq!(timex.tolerance, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.time.tv_sec, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.time.tv_usec, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.tick, 0);
-        assert_eq!(timex.ppsfreq, 0);
-        assert_eq!(timex.jitter, 0);
-        assert_eq!(timex.shift, 0);
-        assert_eq!(timex.stabil, 0);
-        assert_eq!(timex.jitcnt, 0);
-        assert_eq!(timex.calcnt, 0);
-        assert_eq!(timex.errcnt, 0);
-        assert_eq!(timex.stbcnt, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.tai, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused1, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused2, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused3, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused4, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused5, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused6, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused7, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused8, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused9, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused10, 0);
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(timex.__unused11, 0);
-    }
 
     #[rstest]
     #[case::upper_bound(
@@ -252,10 +183,11 @@ mod test {
         #[case] expected_offset: i64,
         #[case] expected_freq: i64,
     ) {
-        let tx = Timex::clock_adjustment()
+        let binding = Timex::clock_adjustment()
             .phase_correction(phase_correction)
             .skew(skew)
             .call();
+        let tx = binding.as_ref();
         assert_eq!(tx.offset, expected_offset);
         assert_eq!(tx.freq, expected_freq);
         // assert modes, status and constant are set properly for our adjustment

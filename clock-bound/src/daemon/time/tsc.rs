@@ -186,6 +186,9 @@ impl Skew {
     }
 
     /// `clamp` implementation delegating to inner `f64` for `Skew` values.
+    ///
+    /// # Panics
+    /// Panics if `min > max`, `min` is NaN, or `max` is NaN.
     #[must_use]
     pub fn clamp(self, min: Self, max: Self) -> Self {
         Self(self.get().clamp(min.get(), max.get()))
