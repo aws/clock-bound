@@ -1,5 +1,7 @@
 //! A simplified time type for `ClockBound`
 
+use libc::timeval;
+
 use super::inner::{Diff, Time};
 
 /// Marker type to signify a time as a timestamp
@@ -273,6 +275,31 @@ impl Duration {
     pub const fn as_days(self) -> i128 {
         self.get() / (FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)
     }
+
+    /// Returns the `Duration` converted to a `timeval`.
+    /// It's used by `adjtimex`/`ntp_adjtime` in the returned timestamp or in `ADJ_SETOFFSET`.
+    ///
+    /// A `timeval` is equivalent to `timespec` in usage, but with normally less resolution..
+    /// However, a caller may supply `ADJ_NANO` to tell the kernel we want to supply a nanosecond value inside
+    /// `tv_usec`, and so we do that to be consistent with our `clock_adjust` offset resolution).
+    /// Thus, this does not return a correct `timeval` by the specifications of the fields themselves, but instead
+    /// a `timeval` in the context of an `adjtimex` call with `ADJ_NANO` set.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "tv_sec truncation should be acceptable to i64::MAX for any of our use cases, and tv_usec should be between 0 and 1e9-1 so no truncation"
+    )]
+    pub fn to_timeval_nanos(self) -> timeval {
+        let mut tv = timeval {
+            tv_sec: self.as_seconds() as i64,
+            tv_usec: (self.as_nanos() % NANOS_PER_SECOND) as i64,
+        };
+        // Normalize the timeval, as `tv_usec` cannot be negative (so we push the "negative" place into `tv_sec`)
+        if tv.tv_usec < 0 {
+            tv.tv_sec -= 1;
+            tv.tv_usec += 1_000_000_000_i64;
+        }
+        tv
+    }
 }
 
 pub(crate) const FEMTOS_PER_SEC: i128 = 1_000_000_000_000_000;
@@ -280,12 +307,15 @@ pub(crate) const FEMTOS_PER_MILLI: i128 = 1_000_000_000_000;
 pub(crate) const FEMTOS_PER_MICRO: i128 = 1_000_000_000;
 pub(crate) const FEMTOS_PER_NANO: i128 = 1_000_000;
 pub(crate) const FEMTOS_PER_PICO: i128 = 1_000;
+pub(crate) const NANOS_PER_SECOND: i128 = 1_000_000_000;
 pub(crate) const SECS_PER_MINUTE: i128 = 60;
 pub(crate) const MINS_PER_HOUR: i128 = 60;
 pub(crate) const HOURS_PER_DAY: i128 = 24;
 
 #[cfg(test)]
 mod test {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
@@ -428,5 +458,25 @@ mod test {
     fn duration_nanos_f64_conversion() {
         let duration = Duration::from_nanos_f64(1.5);
         assert_eq!(duration.as_nanos(), 1);
+    }
+
+    #[rstest]
+    #[case::positive(Duration::from_nanos(1_400_000_000), 1, 400_000_000)]
+    #[case::negative(Duration::from_nanos(-1_600_000_000), -2, 400_000_000)]
+    // Take time in seconds since unix epoch * 100
+    #[case::bignum(
+        Duration::from_nanos(1_760_120_080_500_000_000),
+        1_760_120_080,
+        500_000_000
+    )]
+    #[case::negative_bignum(Duration::from_nanos(-1_760_120_080_500_000_000), -1_760_120_081, 500_000_000)]
+    fn duration_to_timeval_micros(
+        #[case] duration: Duration,
+        #[case] tv_sec: i64,
+        #[case] tv_usec_nanos: i64,
+    ) {
+        let tv = duration.to_timeval_nanos();
+        assert_eq!(tv.tv_sec, tv_sec);
+        assert_eq!(tv.tv_usec, tv_usec_nanos);
     }
 }

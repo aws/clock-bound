@@ -14,11 +14,16 @@ repository.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "clock-bound-adjust-clock"
-path = "src/main.rs"
+name = "adjust-clock"
+path = "src/adjust_clock.rs"
+
+[[bin]]
+name = "step-clock"
+path = "src/step_clock.rs"
 
 [dependencies]
 anyhow = "1"
+chrono = "0.4"
 clap = { version = "4.5.31", features = ["derive"] }
 clock-bound = { version = "2.0", path = "../../clock-bound", features = [
   "daemon",

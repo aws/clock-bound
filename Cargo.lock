@@ -274,6 +274,7 @@ name = "clock-bound-adjust-clock"
 version = "2.0.3"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "clock-bound",
 ]

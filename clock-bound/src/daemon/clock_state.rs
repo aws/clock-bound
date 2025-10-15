@@ -82,6 +82,31 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
             unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
         }
     }
+
+    /// Applies an instantaneous step of `CLOCK_REALTIME` based on the passed `phase_correction` value.
+    ///
+    /// # Errors
+    /// `NtpAdjTimeError::Failure` if `ntp_adjtime` returns -1, meaning the system call failed, along with errno
+    /// `NtpAdjTimeError::BadState` if some state other than `TIME_ERROR` is returned from `ntp_adjtime`
+    /// `NtpAdjTimeError::InvalidState` if some invalid or not well-documented state is returned from `ntp_adjtime`
+    pub fn step_clock(&self, phase_correction: Duration) -> Result<(), NtpAdjTimeError> {
+        let mut tx = Timex::clock_step()
+            .phase_correction(phase_correction)
+            .call();
+
+        debug!("calling ntp_adjtime with {:?}", tx);
+        // NOTE: we actually expect TIME_ERROR if the clock adjustment succeeds, since
+        // that indicates the clock is now "unsynchronized" (expected after we step the clock
+        // discontinuously)
+        match self.ntp_adjtime.ntp_adjtime(&mut tx) {
+            TIME_ERROR => Ok(()),
+            cs @ (TIME_OK | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
+                Err(NtpAdjTimeError::BadState(cs))
+            }
+            -1 => Err(NtpAdjTimeError::Failure(errno::errno())),
+            unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -174,5 +199,26 @@ mod test {
             result.unwrap_err(),
             NtpAdjTimeError::InvalidState(_)
         ));
+    }
+
+    #[rstest]
+    #[case::positive(Duration::from_millis(100))]
+    #[case::negative(-Duration::from_millis(100))]
+    #[case::zero(Duration::from_millis(0))]
+    fn step_clock_happy_paths(#[case] input_phase_correction: Duration) {
+        let mock_ntp_adj_time = MockNtpAdjTime::new();
+        let mut clock_adjuster = ClockAdjuster::new(mock_ntp_adj_time);
+
+        // Set up mock expectations
+        clock_adjuster
+            .ntp_adjtime
+            .expect_ntp_adjtime()
+            .times(1)
+            .return_const(TIME_ERROR);
+
+        // Call step_clock with test values
+        let result = clock_adjuster.step_clock(input_phase_correction);
+
+        assert!(result.is_ok());
     }
 }

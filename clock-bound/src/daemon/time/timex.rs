@@ -4,7 +4,8 @@ use bon::bon;
 #[cfg(not(target_os = "macos"))]
 use libc::timeval;
 use libc::{
-    MOD_FREQUENCY, MOD_NANO, MOD_OFFSET, MOD_STATUS, MOD_TIMECONST, STA_FREQHOLD, STA_PLL, timex,
+    ADJ_SETOFFSET, MOD_FREQUENCY, MOD_NANO, MOD_OFFSET, MOD_STATUS, MOD_TIMECONST, STA_FREQHOLD,
+    STA_PLL, timex,
 };
 use tracing::warn;
 
@@ -125,6 +126,71 @@ impl Timex {
             __unused11: 0,
         })
     }
+
+    /// Construct a `libc::timex` used for stepping the clock by some phase correction,
+    /// with a full step (can go forwards or backwards).
+    /// This is used to set the system clock to the current time, which is useful for
+    /// initializing the clock after a reboot.
+    ///
+    /// `ADJ_SETOFFSET` is only supported on Linux `adjtimex`, in the future we should have some implementation
+    /// for other platforms e.g. FreeBSD
+    #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "false positive, can't use default constructor for inner type fields mutated"
+    )]
+    #[builder]
+    pub fn clock_step(phase_correction: Duration) -> Self {
+        Self(timex {
+            // Set `modes` bits for `ADJ_SETOFFSET` to step the clock, and MOD_NANO to use nanosecond units
+            modes: ADJ_SETOFFSET | MOD_NANO,
+            offset: 0,
+            freq: 0,
+            maxerror: 0,
+            esterror: 0,
+            status: 0,
+            constant: 0,
+            precision: 0,
+            tolerance: 0,
+            // `ADJ_SETOFFSET` uses `time` rather than offset field to indicate how much to step the clock
+            #[cfg(not(target_os = "macos"))]
+            time: phase_correction.to_timeval_nanos(),
+            #[cfg(not(target_os = "macos"))]
+            tick: 0,
+            ppsfreq: 0,
+            jitter: 0,
+            shift: 0,
+            stabil: 0,
+            jitcnt: 0,
+            calcnt: 0,
+            errcnt: 0,
+            stbcnt: 0,
+            #[cfg(not(target_os = "macos"))]
+            tai: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused1: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused2: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused3: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused4: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused5: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused6: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused7: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused8: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused9: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused10: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused11: 0,
+        })
+    }
 }
 
 impl AsRef<timex> for Timex {
@@ -197,5 +263,28 @@ mod test {
         );
         assert_eq!(tx.status, STA_FREQHOLD | STA_PLL);
         assert_eq!(tx.constant, 0);
+    }
+
+    #[rstest]
+    #[case::positive(
+        Duration::from_millis(100),
+        timeval {tv_sec: 0, tv_usec: 100_000_000},
+    )]
+    #[case::negative(
+        -Duration::from_millis(100),
+        timeval {tv_sec: -1, tv_usec: 900_000_000},
+    )]
+    #[case::zero(
+        Duration::from_millis(0),
+        timeval {tv_sec: 0, tv_usec: 0},
+    )]
+    fn test_timex_clock_step(#[case] phase_correction: Duration, #[case] expected_time: timeval) {
+        let binding = Timex::clock_step()
+            .phase_correction(phase_correction)
+            .call();
+        let tx = binding.as_ref();
+        assert_eq!(tx.time, expected_time);
+        // assert modes is set properly for our adjustment
+        assert_eq!(tx.modes, ADJ_SETOFFSET | MOD_NANO);
     }
 }
