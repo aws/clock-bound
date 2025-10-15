@@ -3,6 +3,7 @@
 //! Other time libraries do not meet our needs, as we make heavy usage of time stamp counters (TSCs)
 //! for the bulk of our processing. These values are more low-level than those seen in `chrono` or other time types
 
+pub mod clocks;
 pub mod inner;
 pub mod instant;
 pub mod timex;

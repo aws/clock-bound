@@ -10,6 +10,11 @@ use std::{
 /// Abstraction used to reuse basic time arithmetic, but allow for different types based on its usage
 pub trait Type: crate::private::Sealed {}
 
+pub trait Clock<T: Type + Copy> {
+    /// Read the current clock time.
+    fn get_time(&self) -> Time<T>;
+}
+
 /// Abstract type for Time while keeping arithmetic consistent
 ///
 /// This type is not usually used directly, but rather through the [`Instant`](super::Instant) and [`Tsc`](super::TscCount) types.
