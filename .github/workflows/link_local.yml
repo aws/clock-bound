@@ -1,0 +1,49 @@
+name: Link Local
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cargo build
+        run: cargo build --bin link-local-test --release
+
+      - name: Upload link-local-test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: link-local-test
+          path: target/release/link-local-test
+
+  Link-Local_Tests:
+    name: Link-Local Tests
+    needs: build
+    runs-on:
+      - codebuild-StagingClockBound-${{ github.run_id }}-${{ github.run_attempt }}
+        buildspec-override:true
+
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: link-local-test
+
+      - run: ls
+      - run: echo "Change permissions of artifact."
+      - run: chmod 755 link-local-test
+      - run: echo "Run link local test!"
+      - run: ./link-local-test

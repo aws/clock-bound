@@ -8,9 +8,14 @@ use clock_bound::daemon::io::SourceIO;
 use std::time;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     println!("Lets get a NTP packet!");
     let (link_local_sender, mut link_local_receiver) = mpsc::channel::<event::Ntp>(1);
 
