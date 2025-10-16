@@ -4,17 +4,66 @@ use std::{
     fmt::{Display, Formatter},
 };
 
+use super::TscRtt;
 use crate::daemon::time::{Duration, Instant, TscCount};
 
 /// Contains the NTP and time stamp counter samples to be used by synchronization algorithm.
+///
+/// `tsc_post` must be greater than `tsc_pre`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ntp {
     /// TSC value before sending event
-    pub tsc_pre: TscCount,
+    tsc_pre: TscCount,
     /// TSC value after sending event
-    pub tsc_post: TscCount,
+    tsc_post: TscCount,
     /// NTP Packet data
-    pub ntp_data: NtpData,
+    data: NtpData,
+}
+
+#[bon::bon]
+impl Ntp {
+    /// Construct a [`Ntp`]
+    ///
+    /// Returns `None` if `tsc_post <= tsc_pre`
+    #[builder]
+    pub fn new(tsc_pre: TscCount, tsc_post: TscCount, ntp_data: NtpData) -> Option<Self> {
+        if tsc_post > tsc_pre {
+            Some(Self {
+                tsc_pre,
+                tsc_post,
+                data: ntp_data,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl Ntp {
+    /// `tsc_pre` getter
+    pub fn tsc_pre(&self) -> TscCount {
+        self.tsc_pre
+    }
+
+    /// `tsc_post` getter
+    pub fn tsc_post(&self) -> TscCount {
+        self.tsc_post
+    }
+
+    /// `data` getter
+    pub fn data(&self) -> &NtpData {
+        &self.data
+    }
+}
+
+impl TscRtt for Ntp {
+    fn tsc_pre(&self) -> TscCount {
+        self.tsc_pre
+    }
+
+    fn tsc_post(&self) -> TscCount {
+        self.tsc_post
+    }
 }
 
 /// NTP-specific data
@@ -128,6 +177,48 @@ impl ValidStratumLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_ntp_event() {
+        let event = Ntp::builder()
+            .tsc_pre(TscCount::new(1))
+            .tsc_post(TscCount::new(2))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::new(1),
+                server_send_time: Instant::new(2),
+                root_delay: Duration::new(3),
+                root_dispersion: Duration::new(4),
+                stratum: Stratum::ONE,
+            })
+            .build();
+
+        let event = event.unwrap();
+
+        assert_eq!(event.tsc_pre().get(), 1);
+        assert_eq!(event.tsc_post().get(), 2);
+        assert_eq!(event.data().server_recv_time, Instant::new(1));
+        assert_eq!(event.data().server_send_time, Instant::new(2));
+        assert_eq!(event.data().root_delay, Duration::new(3));
+        assert_eq!(event.data().root_dispersion, Duration::new(4));
+        assert_eq!(event.data().stratum, Stratum::ONE);
+    }
+
+    #[test]
+    fn wrong_tsc_order() {
+        let event = Ntp::builder()
+            .tsc_pre(TscCount::new(2))
+            .tsc_post(TscCount::new(1))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::new(1),
+                server_send_time: Instant::new(2),
+                root_delay: Duration::new(3),
+                root_dispersion: Duration::new(4),
+                stratum: Stratum::ONE,
+            })
+            .build();
+
+        assert!(event.is_none());
+    }
 
     #[test]
     fn stratum_new_valid_values() {

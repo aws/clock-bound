@@ -36,6 +36,8 @@ pub enum LinkLocalError {
     SendEventMessage(#[from] mpsc::error::SendError<event::Ntp>),
     #[error("Operation timed out.")]
     Timeout(#[from] time::error::Elapsed),
+    #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
+    TscOrder { pre: u64, post: u64 },
 }
 
 /// Contains the data needed to run the link local runner.
@@ -89,11 +91,15 @@ impl LinkLocal {
         let ntp_data = NtpData::try_from(ntp_packet)
             .map_err(|e| LinkLocalError::PacketParsing(e.to_string()))?;
 
-        let ntp_event = event::Ntp {
-            tsc_pre: TscCount::new(sent_timestamp.into()),
-            tsc_post: TscCount::new(received_timestamp.into()),
-            ntp_data,
-        };
+        let ntp_event = event::Ntp::builder()
+            .tsc_pre(TscCount::new(sent_timestamp.into()))
+            .tsc_post(TscCount::new(received_timestamp.into()))
+            .ntp_data(ntp_data)
+            .build()
+            .ok_or(LinkLocalError::TscOrder {
+                pre: sent_timestamp,
+                post: received_timestamp,
+            })?;
 
         debug!(?recv_packet_result, "Received packet.");
         self.communication_channels
