@@ -209,26 +209,40 @@ impl Display for Skew {
     }
 }
 
-/// A representation of a TSC clock period
+/// A representation of a TSC clock period in seconds
 ///
 /// Logically, this value is the mathematical inverse of [`Frequency`]. In other words,
 /// `[Period] = 1 / [Frequency]`
+///
+/// ## Note on lossy-ness
+/// All time durations are stored internally as `i128` values. This means it is possible
+/// to store frequency values that will have precision loss when converted from
+/// measurements based on [`Duration`] types
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Period(Duration);
+pub struct Period(f64);
 
 impl Period {
+    /// Construct from seconds
+    ///
+    /// # Panics
+    /// Panics if `seconds` <= 0
+    pub fn from_seconds(seconds: f64) -> Self {
+        assert!(seconds > 0.0);
+        Self(seconds)
+    }
+
     /// Construct from a duration
     ///
     /// # Panics
     /// Panics if `duration <= 0`
     pub fn from_duration(duration: Duration) -> Self {
         assert!(duration.get() > 0);
-        Self(duration)
+        Self(duration.as_seconds_f64())
     }
 
-    /// Get the inner duration
-    pub fn get(self) -> Duration {
+    /// Get the inner duration in seconds
+    pub fn get(self) -> f64 {
         self.0
     }
 
@@ -238,11 +252,13 @@ impl Period {
     /// Given that there is a floating point to integer conversion, precision loss can be
     /// seen from either large (> 1 PHz) or small (< 1 Hz) frequency values.
     pub fn from_frequency(frequency: Frequency) -> Self {
-        // no assert statement. Frequency can't be negative
-        let period_femtos = 1.0e15 / frequency.0;
-        let period_femtos = period_femtos.round() as i128;
-        let period = Duration::from_femtos(period_femtos);
-        Self::from_duration(period)
+        Self::from_seconds(1.0 / frequency.get())
+    }
+}
+
+impl std::fmt::Display for Period {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.e}s", self.0)
     }
 }
 
@@ -250,8 +266,8 @@ impl Mul<Period> for TscDiff {
     type Output = Duration;
 
     fn mul(self, rhs: Period) -> Self::Output {
-        let dur = self.get() * rhs.get().as_femtos();
-        Duration::from_femtos(dur)
+        let dur_seconds = self.get() as f64 * rhs.get();
+        Duration::from_seconds_f64(dur_seconds)
     }
 }
 
@@ -276,8 +292,8 @@ impl Div<Period> for Duration {
     type Output = TscDiff;
 
     fn div(self, rhs: Period) -> Self::Output {
-        let diff = self.as_femtos() / rhs.get().as_femtos();
-        TscDiff::new(diff)
+        let diff = self.as_seconds_f64() / rhs.get();
+        TscDiff::new(diff as i128) // truncate
     }
 }
 
@@ -305,7 +321,7 @@ mod tests {
     fn frequency_period() {
         let f = Frequency::from_hz(10.0); // 10 Hz = 0.1 seconds period
         let period = f.period();
-        assert_eq!(period.get(), Duration::from_millis(100));
+        assert_abs_diff_eq!(period.get(), 0.1);
     }
 
     #[test]
@@ -409,7 +425,7 @@ mod tests {
     fn period_from_frequency() {
         let freq = Frequency::from_hz(1000.0);
         let period = Period::from_frequency(freq);
-        assert_eq!(period.get(), Duration::from_micros(1000));
+        assert_abs_diff_eq!(period.get(), 0.001);
     }
 
     #[test]
@@ -433,5 +449,11 @@ mod tests {
 
         assert_abs_diff_eq!(ppm_skew.get(), 100.0e-6);
         assert_abs_diff_eq!(percent_skew.get(), 0.01);
+    }
+
+    #[test]
+    fn period_display() {
+        let period = Period::from_seconds(1e-9);
+        assert_eq!(period.to_string(), "1e-9s");
     }
 }
