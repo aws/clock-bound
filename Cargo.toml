@@ -2,6 +2,7 @@
 members = [
   "clock-bound",
   "clock-bound-ffi",
+  "clock-bound-ff-tester",
   "examples/client/rust",
   "test/clock-bound-vmclock-client-test",
   "test/link-local",

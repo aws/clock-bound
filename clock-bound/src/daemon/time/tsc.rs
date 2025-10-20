@@ -18,7 +18,6 @@ const FREQUENCY_TO_TIMEX_SCALE: f64 = (1 << 16) as f64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tsc;
 
-impl crate::private::Sealed for Tsc {}
 impl super::inner::Type for Tsc {}
 
 /// Abstract representation of a time stamp counter.
