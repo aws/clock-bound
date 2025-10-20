@@ -1,6 +1,6 @@
 //! Ring buffers used internally in the FF clock sync algorithm
 
-use std::{collections::VecDeque, num::NonZeroUsize};
+use std::{collections::VecDeque, fmt::Debug, num::NonZeroUsize};
 
 /// A fixed-size ring buffer
 ///
@@ -10,6 +10,7 @@ use std::{collections::VecDeque, num::NonZeroUsize};
 /// Uses `head` and `tail` terminology. The head is where the most recent values
 /// are added, and `tail` is where the oldest values are. Values are added to the head
 /// via [`RingBuffer::push`].
+#[derive(Debug, Clone)]
 pub struct RingBuffer<T> {
     buffer: VecDeque<T>,
     capacity: usize,
@@ -29,7 +30,7 @@ impl<T> RingBuffer<T> {
     ///
     /// Returns the value that was overwritten, if any
     pub fn push(&mut self, value: T) -> Option<T> {
-        let popped = if self.buffer.len() == self.capacity {
+        let popped = if self.is_full() {
             self.buffer.pop_front()
         } else {
             None

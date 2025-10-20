@@ -8,6 +8,7 @@ use crate::daemon::time::{Duration, Instant, TscCount, tsc::Period};
 ///
 /// These values are calculated by the [`ClockSyncAlgorithm`](super::clock_sync_algorithm)
 /// and used by the [`ClockState`](super::clock_state)
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClockParameters {
     /// The tsc values that these account for
     pub tsc_count: TscCount,
