@@ -13,3 +13,60 @@ pub mod clock_sync_algorithm;
 pub mod time;
 
 pub mod event;
+
+use crate::daemon::clock_sync_algorithm::ClockSyncAlgorithm;
+use tokio::sync::mpsc;
+
+pub struct Daemon {
+    _io_front_end: io::SourceIO,
+    clock_sync_algorithm: ClockSyncAlgorithm,
+    link_local_receiver: mpsc::Receiver<event::Ntp>,
+}
+
+impl Daemon {
+    /// Construct and initialize a new daemon
+    pub fn construct() -> Self {
+        let (tx, rx) = mpsc::channel(2);
+
+        let mut io_front_end = io::SourceIO::construct();
+
+        let clock_sync_algorithm = ClockSyncAlgorithm::builder()
+            .link_local(clock_sync_algorithm::source::LinkLocal::new())
+            .build();
+
+        // FIXME, we are basically starting the application in the constructor
+        // We should be able to construct the link local and spawn it when `run` is called
+        //
+        // Also, this function doesn't return anything?
+        //
+        // Ideally we would construct the `io::LinkLocal` and just build the `io_front_end` with something like
+        // ```
+        // let (tx, rx) = mpsc::channel(1);
+        // let link_local = io::LinkLocal::construct(rx, ..Args);
+        // let io_front_end = SourceIo::builder().link_local(tx, link_local).build();
+        // ```
+        io_front_end.create_link_local(tx);
+
+        Self {
+            _io_front_end: io_front_end,
+            clock_sync_algorithm,
+            link_local_receiver: rx,
+        }
+    }
+
+    /// Run the daemon
+    pub async fn run(&mut self) {
+        loop {
+            // TODO: add live migration watch and statements
+            tokio::select! {
+                Some(event) = self.link_local_receiver.recv() => {
+                    self.handle_event(event);
+                }
+            }
+        }
+    }
+
+    fn handle_event(&mut self, event: event::Ntp) {
+        self.clock_sync_algorithm.feed_link_local(event);
+    }
+}

@@ -37,8 +37,10 @@ impl Ntp {
     /// Feed an event into this algorithm
     ///
     /// Returns [`Some`] if the event has improved this source's [`ClockParameters`].
-    pub fn feed(&mut self, _event: event::Ntp) -> Option<ClockParameters> {
-        todo!()
+    #[expect(clippy::needless_pass_by_value, reason = "impl will remove this lint")]
+    pub fn feed(&mut self, event: event::Ntp) -> Option<ClockParameters> {
+        tracing::debug!(?event, "feed");
+        None
     }
 
     /// Get the current [`ClockParameters`]

@@ -29,6 +29,7 @@ tokio = { version = "1.47.1", features = [
   "net",
   "macros",
   "rt",
+  "rt-multi-thread",
   "sync",
   "time",
 ], optional = true }
@@ -52,5 +53,10 @@ daemon = [
   "dep:bytes",
   "dep:nom",
   "dep:thiserror",
+  "tracing-subscriber/env-filter",
 ]
 default = ["client", "daemon"]
+
+[[bin]]
+name = "clockbound"
+required-features = ["daemon"]
