@@ -3,8 +3,9 @@
 use std::num::NonZeroUsize;
 
 use crate::daemon::clock_parameters::ClockParameters;
-use crate::daemon::clock_sync_algorithm::ff;
+use crate::daemon::clock_sync_algorithm::ff::{self, event_buffer};
 use crate::daemon::event;
+use crate::daemon::time::Duration;
 
 /// A Link Local reference clock source
 ///
@@ -15,8 +16,16 @@ pub struct LinkLocal {
 }
 
 impl LinkLocal {
-    // Poll every 2 seconds. Capacity is 1000 / 2 = 500
-    const CAPACITY: NonZeroUsize = NonZeroUsize::new(500).unwrap();
+    const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+    // Poll every 2 seconds. Capacity is 1024 / 2 = 512
+    const CAPACITY: NonZeroUsize = {
+        let capacity =
+            event_buffer::Local::<()>::SKM_WINDOW.as_seconds() / Self::POLL_INTERVAL.as_seconds();
+        assert!(capacity > 0);
+        #[expect(clippy::cast_sign_loss)]
+        NonZeroUsize::new(capacity as usize).unwrap()
+    };
 
     /// Create a new Link Local reference clock source
     pub fn new() -> Self {

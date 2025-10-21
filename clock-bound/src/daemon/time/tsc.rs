@@ -2,6 +2,8 @@
 #![expect(clippy::cast_possible_truncation)]
 #![expect(clippy::cast_precision_loss)]
 
+use crate::daemon::time::Instant;
+
 use super::Duration;
 use super::inner::{Diff, Time};
 use std::ops::Neg;
@@ -34,6 +36,35 @@ pub type TscCount = Time<Tsc>;
 
 /// Corresponding duration type for [`TscCount`]
 pub type TscDiff = Diff<Tsc>;
+
+impl TscCount {
+    /// Get an uncorrected time value
+    ///
+    /// `Cu(t) = TSC(t) * p + K`, where
+    /// - `Cu(t)` is the uncorrected time value, and return value
+    /// - `TSC(t)` is the raw TSC value, aka self
+    /// - `p` is the period of the TSC
+    /// - `K` is the "epoch" of the TSC. Aka the UTC time at TSC(0)
+    ///
+    /// # Precision loss
+    /// Precision loss can occur if Self is `> 1e15`. On modern processors, this is a year of runtime
+    pub fn uncorrected_time(self, p: Period, k: Instant) -> Instant {
+        k + Duration::from_seconds_f64(p.get() * self.get() as f64)
+    }
+
+    /// Calculate tick count from an uncorrected clock
+    ///
+    /// `Cu(t) = TSC(t) * p + K`, therefore
+    ///
+    /// `TSC(t) = (Cu(t) - K) / p`
+    ///
+    /// See [`TscCount::uncorrected_time`] for variable definitions
+    pub fn from_uncorrected_time(t: Instant, p: Period, k: Instant) -> Self {
+        let diff = t - k;
+        let ticks = (diff.as_seconds_f64() / p.get()).round() as i128;
+        Self::new(ticks)
+    }
+}
 
 /// A frequency in Hz
 ///
@@ -454,5 +485,28 @@ mod tests {
     fn period_display() {
         let period = Period::from_seconds(1e-9);
         assert_eq!(period.to_string(), "1e-9s");
+    }
+
+    #[test]
+    fn uncorrected_time() {
+        let tsc = TscCount::new(1_000_000_000);
+        let p = Period::from_seconds(1.0e-9);
+        let k = Instant::from_days(365);
+
+        let uncorrected = tsc.uncorrected_time(p, k);
+        assert_eq!(
+            uncorrected,
+            Instant::from_days(365) + Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn from_uncorrected_time() {
+        let p = Period::from_seconds(1.0e-9);
+        let k = Instant::from_days(365);
+
+        let uncorrected = Instant::from_days(365) + Duration::from_secs(1);
+        let tsc = TscCount::from_uncorrected_time(uncorrected, p, k);
+        assert_eq!(tsc.get(), 1_000_000_000);
     }
 }

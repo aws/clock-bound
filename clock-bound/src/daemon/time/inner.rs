@@ -48,6 +48,9 @@ impl<T> From<Time<T>> for i128 {
 
 // type guarded to be sealed construction
 impl<T: Type> Time<T> {
+    /// Zero valued epoch
+    pub const EPOCH: Self = Self::new(0);
+
     /// constructor
     pub const fn new(instant: i128) -> Self {
         Self {

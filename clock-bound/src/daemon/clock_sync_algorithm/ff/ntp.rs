@@ -8,7 +8,7 @@ use crate::daemon::{clock_parameters::ClockParameters, event, time::tsc::Period}
 /// Feed forward time synchronization algorithm for a single NTP source
 #[derive(Debug, Clone)]
 pub struct Ntp {
-    /// Events within the current SKM (within 1000 seconds)
+    /// Events within the current SKM (within 1024 seconds)
     local: event_buffer::Local<event::Ntp>,
     /// Best RTT values of each SKM over the last week
     estimate: event_buffer::Estimate<event::Ntp>,
@@ -23,7 +23,7 @@ impl Ntp {
     ///
     /// `local_capacity` should be the number of data-points to span an SKM window.
     /// For example, if the source is expected to sample once every second, the `local_capacity`
-    /// should have a max value of 1000.
+    /// should have a max value of 1024.
     pub fn new(_local_capacity: NonZeroUsize) -> Self {
         todo!()
         // Self {
