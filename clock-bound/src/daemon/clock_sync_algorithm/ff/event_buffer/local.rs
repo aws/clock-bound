@@ -4,7 +4,7 @@ use std::{fmt::Debug, num::NonZeroUsize};
 use crate::daemon::{
     clock_sync_algorithm::RingBuffer,
     event::TscRtt,
-    time::{Duration, Instant, TscCount, TscDiff, tsc::Period},
+    time::{Duration, TscCount, tsc::Period},
 };
 
 /// A local buffer of events
@@ -18,11 +18,11 @@ use crate::daemon::{
 /// ## Feeding data
 /// The Local event buffer should have data fed in 2 different ways based on available information.
 /// 1. If the TSC period is unknown, simply [`Self::feed`] in the data
-/// 2. If the TSC period has an estimate, then `feed` and then [`Self::retain_high_quality_events`] to purge old values
+/// 2. If the TSC period has an estimate, then `feed` and then [`Self::expunge_old_events`] to purge old values
 ///
 /// ## Starvation
-/// The Local event buffer currently has a simple rejection strategy. Have a multiplier. When attempting to feed
-/// in a new event, if the `RTT(event) >= multiplier * min_rtt`, we reject the sample. We can increase complexity
+/// The Local event buffer currently has a simple rejection strategy. Have a multiplier. When attempting to calculate
+/// parameters from a new event, if the `RTT(event) >= multiplier * min_rtt`, we reject the sample. We can increase complexity
 /// of this with time and exploration of data samples.
 ///
 /// However, this rule **can** cause starvation if the RTT is extremely noisy. That's why the threshold can be tuned
@@ -81,22 +81,7 @@ impl<T: TscRtt + Debug> Local<T> {
     ///
     /// # Errors
     /// - the event is older than events already in the buffer
-    /// - the event has too large of an rtt
     pub fn feed(&mut self, event: T) -> Result<(), FeedError<T>> {
-        let rtt = event.rtt();
-        let Some(min_rtt_event) = self.inner.min_rtt() else {
-            // we empty
-            self.inner.push(event);
-            return Ok(());
-        };
-
-        let threshold = min_rtt_event.rtt() * self.rtt_threshold_multiplier;
-        if rtt > threshold {
-            return Err(FeedError::RttExceedsThreshold {
-                max_diff: threshold,
-                event,
-            });
-        }
         self.push_if_newer(event)
     }
 
@@ -117,36 +102,28 @@ impl<T: TscRtt + Debug> Local<T> {
         self.inner.push(event);
         Ok(())
     }
-}
 
-impl<T: TscRtt + Debug> Local<T> {
-    /// Retain high quality events in the SKM window
-    ///
-    /// This will delete all values that either:
-    /// - are older than the SKM window
-    /// - has an RTT too large
+    /// Delete events older than the SKM Window
     ///
     /// Requires a period measurement to convert the TSC values to time durations.
     ///
     /// # Starvation warning
     /// This will clear out anything older than the cutoff. This CAN leave the ring buffer EMPTY
-    #[expect(clippy::missing_panics_doc, reason = "min_rtt has an element")]
-    pub fn retain_high_quality_events(&mut self, period: Period, now_post_tsc: TscCount) {
+    pub fn expunge_old_events(&mut self, period: Period, now_post_tsc: TscCount) {
         if self.is_empty() {
             return;
         }
-        let max_rtt = self.inner.min_rtt().unwrap().rtt() * self.rtt_threshold_multiplier;
+        // We need to calculate the corresponding TSC for an SKM window ago
+        let cutoff_tsc = now_post_tsc - (Self::SKM_WINDOW / period);
 
-        let newest_time = now_post_tsc.uncorrected_time(period, Instant::UNIX_EPOCH);
-
-        if newest_time < (Instant::EPOCH + Self::SKM_WINDOW) {
-            self.inner.expunge_old_and_delayed(TscCount::EPOCH, max_rtt);
-        } else {
-            let cutoff = newest_time - Self::SKM_WINDOW;
-            let cutoff_tsc = TscCount::from_uncorrected_time(cutoff, period, Instant::UNIX_EPOCH);
-
-            self.inner.expunge_old_and_delayed(cutoff_tsc, max_rtt);
+        // If cutoff tsc is negative, that means we booted within an SKM window seconds.
+        // Log and bail
+        if cutoff_tsc <= TscCount::EPOCH {
+            tracing::debug!(%period, ?now_post_tsc, "We booted less than 1 window ago. Not deleting events.");
+            return;
         }
+
+        self.inner.expunge_old(cutoff_tsc);
     }
 }
 
@@ -162,8 +139,6 @@ pub enum FeedError<T: std::fmt::Debug> {
         "event is older than latest event. Buffer's latest event TSC {latest_tsc:?}, event: {event:?}"
     )]
     Old { latest_tsc: TscCount, event: T },
-    #[error("event has too large of an rtt. Threshold rtt {max_diff:?}, event: {event:?}")]
-    RttExceedsThreshold { max_diff: TscDiff, event: T },
 }
 
 #[cfg(test)]
@@ -185,20 +160,6 @@ mod tests {
 
         assert!(buffer.feed(event).is_ok());
         assert_eq!(buffer.iter().count(), 1);
-    }
-
-    #[test]
-    fn feed_rtt_threshold() {
-        let mut buffer: Local<TestEvent> = Local::new(NonZeroUsize::new(5).unwrap());
-
-        // First event with small RTT
-        let event1 = TestEvent::new(10, 20); // rtt is 10
-        assert!(buffer.feed(event1).is_ok());
-
-        // Second event with RTT exceeding threshold (10 * 5 = 50)
-        let event2 = TestEvent::new(30, 81);
-        let err = buffer.feed(event2).unwrap_err();
-        assert!(matches!(err, FeedError::RttExceedsThreshold { .. }));
     }
 
     #[test]
@@ -244,7 +205,7 @@ mod tests {
             buffer.feed(event).unwrap();
         }
 
-        buffer.retain_high_quality_events(period, TscCount::new(1_500_000_000_000));
+        buffer.expunge_old_events(period, TscCount::new(1_500_000_000_000));
 
         // Should only retain events within last 1024 seconds
         for event in buffer.iter() {

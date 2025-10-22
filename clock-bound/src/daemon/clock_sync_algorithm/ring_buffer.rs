@@ -2,10 +2,7 @@
 
 use std::{collections::VecDeque, fmt::Debug, num::NonZeroUsize};
 
-use crate::daemon::{
-    event::TscRtt,
-    time::{TscCount, TscDiff},
-};
+use crate::daemon::{event::TscRtt, time::TscCount};
 
 /// A fixed-size ring buffer
 ///
@@ -162,13 +159,13 @@ impl<T: TscRtt + Debug> RingBuffer<T> {
     /// Removes values from the buffers that:
     /// - Are before a certain TSC
     /// - are greater than a specified rtt
-    pub fn expunge_old_and_delayed(&mut self, before: TscCount, max_rtt: TscDiff) {
+    pub fn expunge_old(&mut self, before: TscCount) {
         self.buffer.retain(|event| {
             // Now, I would normally like to NOT have any logging in a low level function like this
             // But I don't have a way of returning the dropped values without allocating.
             //
             // Logging at a debug level
-            if event.tsc_post() >= before && event.rtt() <= max_rtt {
+            if event.tsc_post() >= before {
                 true
             } else {
                 tracing::debug!(?event, "Purging stale event");
@@ -405,7 +402,7 @@ mod tests {
             buffer.push(event);
         }
 
-        buffer.expunge_old_and_delayed(TscCount::new(250), TscDiff::new(30));
+        buffer.expunge_old(TscCount::new(250));
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.head().unwrap().tsc_post(), TscCount::new(330));
     }
@@ -419,26 +416,8 @@ mod tests {
         assert_eq!(buffer.min_rtt_in_quarter(Quarter::Oldest), None);
 
         // Purging an empty buffer should not panic
-        buffer.expunge_old_and_delayed(TscCount::new(100), TscDiff::new(50));
+        buffer.expunge_old(TscCount::new(100));
         assert!(buffer.is_empty());
-    }
-
-    #[test]
-    fn expunge_large_rtt() {
-        let mut buffer = RingBuffer::new(NonZeroUsize::new(3).unwrap());
-
-        let events = vec![
-            TestEvent::pre_and_rtt(100, 10),
-            TestEvent::pre_and_rtt(200, 20),
-            TestEvent::pre_and_rtt(300, 30),
-        ];
-
-        for event in events {
-            buffer.push(event);
-        }
-        assert_eq!(buffer.len(), 3);
-        buffer.expunge_old_and_delayed(TscCount::new(50), TscDiff::new(9));
-        assert_eq!(buffer.len(), 0);
     }
 
     #[test]
