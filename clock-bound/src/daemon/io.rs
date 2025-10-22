@@ -23,7 +23,7 @@ mod tsc;
 /// `SourceIO` contains the interface from which new IO tasks can be spawned, as well as an interface
 /// to send control commands to the specific IO tasks.
 pub struct SourceIO {
-    /// A mapping between the time source type and the task handle.
+    /// A mapping between the time source and the control sender.
     sources: HashMap<TimeSource, mpsc::Sender<ControlRequest>>,
     /// Contains the channel used to communicate clock disruption events.
     clock_disruption_channels: ClockDisruptionChannels,
@@ -58,9 +58,11 @@ impl SourceIO {
             };
 
             spawn(async move {
-                let socket = UdpSocket::bind(ntp::BIND_ADDRESS).await.unwrap();
-                let mut link_local = LinkLocal::construct(socket, communication_channels);
-                link_local.run().await;
+                let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
+                    .await
+                    .unwrap();
+                let mut linklocal = LinkLocal::construct(socket, communication_channels);
+                linklocal.run().await;
             });
             ctrl_sender
         });

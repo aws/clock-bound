@@ -21,7 +21,7 @@ use crate::daemon::{
 pub mod packet;
 pub use packet::Packet;
 
-pub const BIND_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+pub const UNSPECIFIED_SOCKET_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 const LINK_LOCAL_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(169, 254, 169, 123), 123);
 const INTERVAL_DURATION: Duration = Duration::from_secs(1);
 const LINK_LOCAL_TIMEOUT: Duration = Duration::from_millis(100);
@@ -133,6 +133,7 @@ impl LinkLocal {
                 }
                 _ = self.communication_channels.clock_disruption_receiver.as_mut().unwrap().changed() => {
                     // Clock Disruption logic here
+                    todo!("Clock disruption logic has yet to be implemented.");
                 }
             }
         }
