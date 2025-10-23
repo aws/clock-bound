@@ -6,13 +6,13 @@ use thiserror::Error;
 use tokio::{
     io,
     net::UdpSocket,
-    sync::mpsc,
+    sync::{mpsc, watch},
     time::{self, Duration, Interval, interval, timeout},
 };
 use tracing::{debug, info};
 
-use super::CommunicationChannels;
 use super::tsc::read_timestamp_counter;
+use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
     event::{self, NtpData},
     time::tsc::TscCount,
@@ -44,17 +44,26 @@ pub enum LinkLocalError {
 #[derive(Debug)]
 pub struct LinkLocal {
     socket: UdpSocket,
-    communication_channels: CommunicationChannels,
+    event_sender: mpsc::Sender<event::Ntp>,
+    ctrl_receiver: mpsc::Receiver<ControlRequest>,
+    clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     ntp_buffer: [u8; Packet::SIZE],
     interval: Interval,
 }
 
 impl LinkLocal {
     /// Constructs a new `LinkLocal` with using given parameters.
-    pub fn construct(socket: UdpSocket, communication_channels: CommunicationChannels) -> Self {
+    pub fn construct(
+        socket: UdpSocket,
+        event_sender: mpsc::Sender<event::Ntp>,
+        ctrl_receiver: mpsc::Receiver<ControlRequest>,
+        clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
+    ) -> Self {
         LinkLocal {
             socket,
-            communication_channels,
+            event_sender,
+            ctrl_receiver,
+            clock_disruption_receiver,
             ntp_buffer: [0u8; Packet::SIZE],
             interval: interval(INTERVAL_DURATION),
         }
@@ -102,10 +111,7 @@ impl LinkLocal {
             })?;
 
         debug!(?recv_packet_result, "Received packet.");
-        self.communication_channels
-            .event_sender
-            .send(ntp_event.clone())
-            .await?;
+        self.event_sender.send(ntp_event.clone()).await?;
         debug!(?ntp_event, "Successfully send link local event.");
         Ok(())
     }
@@ -126,12 +132,12 @@ impl LinkLocal {
                         debug!(?e, "Failed to sample link local source.");
                     }
                 }
-                _ = self.communication_channels.ctrl_receiver.recv() => {
+                _ = self.ctrl_receiver.recv() => {
                     // Ctrl logic here.
                     // Currently we breakout of the loop if we receive a control event.
                     break;
                 }
-                _ = self.communication_channels.clock_disruption_receiver.as_mut().unwrap().changed() => {
+                _ = self.clock_disruption_receiver.changed() => {
                     // Clock Disruption logic here
                     todo!("Clock disruption logic has yet to be implemented.");
                 }

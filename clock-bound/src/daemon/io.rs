@@ -51,18 +51,19 @@ impl SourceIO {
         debug!(?entry, "Current source entry status");
         entry.or_insert_with(|| {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
-            let communication_channels = CommunicationChannels {
-                event_sender,
-                ctrl_receiver,
-                clock_disruption_receiver: Some(self.clock_disruption_channels.sender.subscribe()),
-            };
+            let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
 
             spawn(async move {
                 let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
                     .await
                     .unwrap();
-                let mut linklocal = LinkLocal::construct(socket, communication_channels);
-                linklocal.run().await;
+                let mut link_local = LinkLocal::construct(
+                    socket,
+                    event_sender,
+                    ctrl_receiver,
+                    clock_disruption_receiver,
+                );
+                link_local.run().await;
             });
             ctrl_sender
         });
@@ -84,28 +85,13 @@ struct ClockDisruptionChannels {
     receiver: watch::Receiver<ClockDisruptionEvent>,
 }
 
-/// Communication channels for IO tasks.
-#[derive(Debug)]
-pub struct CommunicationChannels {
-    /// The channel which the IO task passes NTP events.
-    event_sender: mpsc::Sender<event::Ntp>,
-
-    /// The channel which the IO task receives control events.
-    ctrl_receiver: mpsc::Receiver<ControlRequest>,
-
-    /// The channel which the IO task receives clock disruption events.
-    ///
-    /// If the IO task is a VMClock task the no receiver is needed.
-    clock_disruption_receiver: Option<watch::Receiver<ClockDisruptionEvent>>,
-}
-
 // TODO: This is a stub for future clock disruption events.
 #[derive(Clone, Debug)]
-struct ClockDisruptionEvent {}
+pub struct ClockDisruptionEvent {}
 
 // TODO: This is a stub for future control events.
 #[derive(Debug)]
-struct ControlRequest {}
+pub struct ControlRequest {}
 
 /// `TimeSource` is a type representing the possible time sources the daemon can collect samples
 /// from.
