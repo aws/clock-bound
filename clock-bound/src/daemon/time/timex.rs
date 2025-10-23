@@ -66,7 +66,7 @@ impl Timex {
             // Set `modes` bits for all fields we modify, plus ADJ_NANO to use nanosecond units
             // and ADJ_STATUS to set status bits below.
             modes: MOD_FREQUENCY | MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS,
-            offset: phase_correction.as_nanos() as i64,
+            offset: phase_correction.as_nanos_trunc() as i64,
             freq: skew.to_timex_freq(),
             maxerror: 0,
             esterror: 0,

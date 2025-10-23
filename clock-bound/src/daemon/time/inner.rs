@@ -2,6 +2,9 @@
 //!
 //! Simpler representation of time than `nix::time::TimeSpec`. Just abstractions over integer math
 
+#[cfg(feature = "time-string-parse")]
+pub mod string_parse;
+
 use std::{
     marker::PhantomData,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
@@ -189,39 +192,42 @@ impl<T: FemtoType + Copy> Time<T> {
         self.get() / FEMTOS_PER_PICO
     }
 
-    /// Returns the total number of nanoseconds since the Unix Epoch
+    /// Returns the total number of nanoseconds, rounded since the Unix Epoch
     pub const fn as_nanos(self) -> i128 {
-        self.get() / FEMTOS_PER_NANO
+        (self.get() + FEMTOS_PER_NANO / 2) / FEMTOS_PER_NANO
     }
 
-    /// Returns the total number of microseconds, truncated, since the Unix Epoch
+    /// Returns the total number of microseconds, rounded, since the Unix Epoch
     pub const fn as_micros(self) -> i128 {
-        self.get() / FEMTOS_PER_MICRO
+        (self.get() + FEMTOS_PER_MICRO / 2) / FEMTOS_PER_MICRO
     }
 
-    /// Returns the total number of milliseconds, truncated, since the Unix Epoch
+    /// Returns the total number of milliseconds, rounded, since the Unix Epoch
     pub const fn as_millis(self) -> i128 {
-        self.get() / FEMTOS_PER_MILLI
+        (self.get() + FEMTOS_PER_MILLI / 2) / FEMTOS_PER_MILLI
     }
 
-    /// Returns the total number of seconds, truncated, since the Unix Epoch
+    /// Returns the total number of seconds, rounded, since the Unix Epoch
     pub const fn as_seconds(self) -> i128 {
-        self.get() / FEMTOS_PER_SEC
+        (self.get() + FEMTOS_PER_SEC / 2) / FEMTOS_PER_SEC
     }
 
-    /// Returns the total number of minutes, truncated, since the Unix Epoch
+    /// Returns the total number of minutes, rounded, since the Unix Epoch
     pub const fn as_minutes(self) -> i128 {
-        self.get() / (FEMTOS_PER_SEC * SECS_PER_MINUTE)
+        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE;
+        (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
-    /// Returns the total number of hours, truncated, since the Unix Epoch
+    /// Returns the total number of hours, rounded, since the Unix Epoch
     pub const fn as_hours(self) -> i128 {
-        self.get() / (FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR)
+        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR;
+        (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
-    /// Returns the total number of days, truncated, since the Unix Epoch
+    /// Returns the total number of days, rounded, since the Unix Epoch
     pub const fn as_days(self) -> i128 {
-        self.get() / (FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)
+        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY;
+        (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 }
 
@@ -384,38 +390,38 @@ impl<T: FemtoType + Copy> Diff<T> {
 
     /// Create a new [`Diff`] from the number of seconds in `f64` format
     ///
-    /// Will truncate to the nearest femtosecond
+    /// Will round to the nearest femtosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
     #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_seconds_f64(secs: f64) -> Self {
-        Self::new((secs * FEMTOS_PER_SEC as f64) as i128)
+        Self::new((secs * FEMTOS_PER_SEC as f64).round() as i128)
     }
 
     /// Create a new [`Diff`] from the number of milliseconds in `f64` format
     ///
-    /// Will truncate to the nearest femtosecond
+    /// Will round to the nearest femtosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
     #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_millis_f64(millis: f64) -> Self {
-        Self::new((millis * FEMTOS_PER_MILLI as f64) as i128)
+        Self::new((millis * FEMTOS_PER_MILLI as f64).round() as i128)
     }
 
     /// Create a new [`Diff`] from the number of microseconds in `f64` format
     ///
-    /// Will truncate to the nearest femtosecond
+    /// Will round to the nearest femtosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
     #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_micros_f64(micros: f64) -> Self {
-        Self::new((micros * FEMTOS_PER_MICRO as f64) as i128)
+        Self::new((micros * FEMTOS_PER_MICRO as f64).round() as i128)
     }
 
     /// Create a new [`Diff`] from the number of nanoseconds in `f64` format
     ///
-    /// Will truncate to the nearest femtosecond
+    /// Will round to the nearest femtosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
     #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_nanos_f64(nanos: f64) -> Self {
-        Self::new((nanos * FEMTOS_PER_NANO as f64) as i128)
+        Self::new((nanos * FEMTOS_PER_NANO as f64).round() as i128)
     }
 
     /// Create a new [`Diff`] from the number of milliseconds
@@ -475,29 +481,39 @@ impl<T: FemtoType + Copy> Diff<T> {
         self.get()
     }
 
-    /// Returns the total number of picoseconds, truncated
+    /// Returns the total number of picoseconds, rounded
     pub const fn as_picos(self) -> i128 {
-        self.get() / FEMTOS_PER_PICO
+        (self.get() + FEMTOS_PER_PICO / 2) / FEMTOS_PER_PICO
     }
 
-    /// Returns the total number of nanoseconds, truncated
+    /// Returns the total number of nanoseconds, rounded
     pub const fn as_nanos(self) -> i128 {
-        self.get() / FEMTOS_PER_NANO
+        (self.get() + FEMTOS_PER_NANO / 2) / FEMTOS_PER_NANO
     }
 
-    /// Returns the total number of microseconds, truncated
+    /// Returns the total number of microseconds, rounded
     pub const fn as_micros(self) -> i128 {
-        self.get() / FEMTOS_PER_MICRO
+        (self.get() + FEMTOS_PER_MICRO / 2) / FEMTOS_PER_MICRO
     }
 
-    /// Returns the total number of milliseconds, truncated
+    /// Returns the total number of milliseconds, rounded
     pub const fn as_millis(self) -> i128 {
-        self.get() / FEMTOS_PER_MILLI
+        (self.get() + FEMTOS_PER_MILLI / 2) / FEMTOS_PER_MILLI
+    }
+
+    /// Returns the total number of seconds, rounded
+    pub const fn as_seconds(self) -> i128 {
+        (self.get() + FEMTOS_PER_SEC / 2) / FEMTOS_PER_SEC
     }
 
     /// Returns the total number of seconds, truncated
-    pub const fn as_seconds(self) -> i128 {
+    pub const fn as_seconds_trunc(self) -> i128 {
         self.get() / FEMTOS_PER_SEC
+    }
+
+    /// Returns the total number of nanoseconds, truncated
+    pub const fn as_nanos_trunc(self) -> i128 {
+        self.get() / FEMTOS_PER_NANO
     }
 
     /// Returns the total number of seconds as a f64
@@ -506,19 +522,22 @@ impl<T: FemtoType + Copy> Diff<T> {
         self.get() as f64 / FEMTOS_PER_SEC as f64
     }
 
-    /// Returns the total number of minutes, truncated
+    /// Returns the total number of minutes, rounded
     pub const fn as_minutes(self) -> i128 {
-        self.get() / (FEMTOS_PER_SEC * SECS_PER_MINUTE)
+        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE;
+        (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
-    /// Returns the total number of hours, truncated
+    /// Returns the total number of hours, rounded
     pub const fn as_hours(self) -> i128 {
-        self.get() / (FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR)
+        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR;
+        (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
-    /// Returns the total number of days, truncated
+    /// Returns the total number of days, rounded
     pub const fn as_days(self) -> i128 {
-        self.get() / (FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)
+        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY;
+        (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
     /// Returns the `Duration` converted to a `timeval`.
@@ -535,8 +554,8 @@ impl<T: FemtoType + Copy> Diff<T> {
     )]
     pub fn to_timeval_nanos(self) -> timeval {
         let mut tv = timeval {
-            tv_sec: self.as_seconds() as i64,
-            tv_usec: (self.as_nanos() % NANOS_PER_SECOND) as i64,
+            tv_sec: self.as_seconds_trunc() as i64,
+            tv_usec: (self.as_nanos_trunc() % NANOS_PER_SECOND) as i64,
         };
         // Normalize the timeval, as `tv_usec` cannot be negative (so we push the "negative" place into `tv_sec`)
         if tv.tv_usec < 0 {
@@ -726,7 +745,7 @@ mod test {
     #[test]
     fn rounding() {
         let time = Instant::from_time(1, 500_000_000);
-        assert_eq!(time.as_seconds(), 1);
+        assert_eq!(time.as_seconds(), 2);
         assert_eq!(time.as_nanos(), 1_500_000_000);
     }
 
@@ -781,7 +800,7 @@ mod test {
     #[test]
     fn duration_truncating() {
         let time = Duration::from_nanos(1_500_000_000);
-        assert_eq!(time.as_seconds(), 1);
+        assert_eq!(time.as_seconds_trunc(), 1);
         assert_eq!(time.as_nanos(), 1_500_000_000);
     }
 
@@ -809,7 +828,7 @@ mod test {
     #[test]
     fn duration_constructor() {
         let time = Duration::from_time(1, 500_000_000);
-        assert_eq!(time.as_seconds(), 1);
+        assert_eq!(time.as_seconds_trunc(), 1);
         assert_eq!(time.as_nanos(), 1_500_000_000);
     }
 
@@ -835,7 +854,7 @@ mod test {
     #[test]
     fn duration_nanos_f64_conversion() {
         let duration = Duration::from_nanos_f64(1.5);
-        assert_eq!(duration.as_nanos(), 1);
+        assert_eq!(duration.as_nanos(), 2);
     }
 
     #[rstest::rstest]

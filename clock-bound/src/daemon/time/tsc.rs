@@ -3,6 +3,7 @@
 #![expect(clippy::cast_precision_loss)]
 
 use crate::daemon::time::Instant;
+use crate::daemon::time::inner::FemtoType;
 
 use super::Duration;
 use super::inner::{Diff, Time};
@@ -66,6 +67,24 @@ impl TscCount {
     }
 }
 
+#[cfg(feature = "time-string-parse")]
+impl std::str::FromStr for TscCount {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        i128::from_str(s).map(Self::new)
+    }
+}
+
+#[cfg(feature = "time-string-parse")]
+impl std::str::FromStr for TscDiff {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        i128::from_str(s).map(Self::new)
+    }
+}
+
 /// A frequency in Hz
 ///
 /// ## Note on lossy-ness
@@ -122,6 +141,33 @@ impl Frequency {
     }
 }
 
+#[cfg(feature = "time-string-parse")]
+impl std::str::FromStr for Frequency {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use nom::error::ErrorKind;
+
+        let s = s.trim();
+        let (rest, freq) =
+            nom::number::complete::double::<_, (&str, ErrorKind)>(s).map_err(|e| e.to_string())?;
+
+        if freq <= 0.0 {
+            return Err("Frequency must be positive".to_string());
+        }
+
+        let suffix = rest.trim();
+
+        match suffix.to_lowercase().as_str() {
+            "" | "hz" => Ok(Self::from_hz(freq)),
+            "khz" => Ok(Self::from_khz(freq)),
+            "mhz" => Ok(Self::from_mhz(freq)),
+            "ghz" => Ok(Self::from_ghz(freq)),
+            _ => Err(format!("Unknown suffix: {suffix}")),
+        }
+    }
+}
+
 impl Display for Frequency {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} Hz", self.0)
@@ -146,17 +192,25 @@ impl Div<Frequency> for TscDiff {
     fn div(self, rhs: Frequency) -> Self::Output {
         let raw = self.get() as f64;
         let duration_femtos = raw / rhs.0 * 1.0e15;
-        Duration::from_femtos(duration_femtos as i128)
+        Duration::from_femtos(duration_femtos.round() as i128)
     }
 }
 
-impl Mul<Frequency> for Duration {
+impl<T: FemtoType + Copy> Mul<Frequency> for Diff<T> {
     type Output = TscDiff;
 
     fn mul(self, rhs: Frequency) -> Self::Output {
         let duration_femtos = self.as_femtos() as f64;
         let raw = duration_femtos * rhs.0 / 1.0e15;
-        TscDiff::new(raw as i128)
+        TscDiff::new(raw.round() as i128)
+    }
+}
+
+impl Mul<Duration> for Frequency {
+    type Output = TscDiff;
+
+    fn mul(self, rhs: Duration) -> Self::Output {
+        rhs * self
     }
 }
 
@@ -236,6 +290,28 @@ impl Neg for Skew {
 impl Display for Skew {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} ppm", self.0 / Self::PPM)
+    }
+}
+
+#[cfg(feature = "time-string-parse")]
+impl std::str::FromStr for Skew {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use nom::error::ErrorKind;
+
+        let val = s.trim();
+        let (rest, skew) = nom::number::complete::double::<_, (&str, ErrorKind)>(val)
+            .map_err(|e| e.to_string())?;
+
+        let suffix = rest.trim();
+
+        match suffix.to_lowercase().as_str() {
+            "" => Ok(Self(skew)),
+            "%" | "percent" => Ok(Self::from_percent(skew)),
+            "ppm" => Ok(Self::from_ppm(skew)),
+            _ => Err(format!("Unknown suffix: {suffix}")),
+        }
     }
 }
 
@@ -324,6 +400,30 @@ impl Div<Period> for Duration {
     fn div(self, rhs: Period) -> Self::Output {
         let diff = self.as_seconds_f64() / rhs.get();
         TscDiff::new(diff as i128) // truncate
+    }
+}
+
+#[cfg(feature = "time-string-parse")]
+impl std::str::FromStr for Period {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use nom::error::ErrorKind;
+
+        let val = s.trim();
+        let (rest, period) = nom::number::complete::double::<_, (&str, ErrorKind)>(val)
+            .map_err(|e| e.to_string())?;
+
+        if period <= 0.0 {
+            return Err("Period must be positive".to_string());
+        }
+
+        let suffix = rest.trim();
+
+        match suffix.to_lowercase().as_str() {
+            "" | "s" | "sec" | "second" | "seconds" => Ok(Self(period)),
+            _ => Err(format!("Unknown suffix: {suffix}")),
+        }
     }
 }
 
@@ -508,5 +608,65 @@ mod tests {
         let uncorrected = Instant::from_days(365) + Duration::from_secs(1);
         let tsc = TscCount::from_uncorrected_time(uncorrected, p, k);
         assert_eq!(tsc.get(), 1_000_000_000);
+    }
+
+    #[cfg(feature = "time-string-parse")]
+    #[rstest]
+    #[case("1.0", 1.0)]
+    #[case("1 Hz", 1.0)]
+    #[case("1 kHz", 1000.0)]
+    #[case("1 MHz", 1_000_000.0)]
+    #[case("1ghz", 1_000_000_000.0)]
+    fn frequency_parse_from_str_valid(#[case] input: &str, #[case] expected: f64) {
+        use std::str::FromStr;
+        let freq = Frequency::from_str(input).unwrap();
+        assert_abs_diff_eq!(freq.get(), expected);
+    }
+
+    #[cfg(feature = "time-string-parse")]
+    #[rstest]
+    #[case("")]
+    #[case("invalid")]
+    #[case::negative("-1 Hz")]
+    #[case("1 InvalidUnit")]
+    fn frequency_parse_from_str_invalid(#[case] input: &str) {
+        use std::str::FromStr;
+        let _ = Frequency::from_str(input).unwrap_err();
+    }
+
+    #[cfg(feature = "time-string-parse")]
+    #[rstest]
+    #[case("0.001", 0.001)]
+    #[case("100 ppm", 0.0001)]
+    #[case("5%", 0.05)]
+    #[case("5 percent", 0.05)]
+    fn skew_parse_from_str(#[case] input: &str, #[case] expected: f64) {
+        use std::str::FromStr;
+        let skew = Skew::from_str(input).unwrap();
+        assert_abs_diff_eq!(skew.get(), expected);
+    }
+
+    #[cfg(feature = "time-string-parse")]
+    #[rstest]
+    #[case("1.0", 1.0)]
+    #[case("1s", 1.0)]
+    #[case("0.0000000000000001seconds", 0.000_000_000_000_000_1)]
+    #[case("0.001 sec", 0.001)]
+    #[case("1000second", 1000.0)]
+    fn period_parse_from_str_valid(#[case] input: &str, #[case] expected: f64) {
+        use std::str::FromStr;
+        let freq = Period::from_str(input).unwrap();
+        assert_abs_diff_eq!(freq.get(), expected);
+    }
+
+    #[cfg(feature = "time-string-parse")]
+    #[rstest]
+    #[case("")]
+    #[case("invalid")]
+    #[case::negative("-1 Hz")]
+    #[case("1 InvalidUnit")]
+    fn period_parse_from_str_invalid(#[case] input: &str) {
+        use std::str::FromStr;
+        let _ = Period::from_str(input).unwrap_err();
     }
 }

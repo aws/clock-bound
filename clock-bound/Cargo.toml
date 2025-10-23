@@ -55,6 +55,8 @@ daemon = [
   "dep:thiserror",
   "tracing-subscriber/env-filter",
 ]
+time-string-parse = ["dep:nom"]
+
 default = ["client", "daemon"]
 
 [[bin]]

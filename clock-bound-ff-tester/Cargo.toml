@@ -13,13 +13,26 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+anyhow = "1.0.100"
 bon = "3.8.1"
 clap = { version = "4.5", features = ["derive"] }
-clock-bound = { path = "../clock-bound", features = ["daemon"] }
+clock-bound = { path = "../clock-bound", features = [
+  "daemon",
+  "time-string-parse",
+] }
+num-traits = "0.2.19"
+rand = "0.8.5"
+# rand_chacha used by statsrs
+rand_chacha = "0.3.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.145"
+statrs = "0.18.0"
 thiserror = { version = "2.0" }
 
 [dev-dependencies]
 approx = "0.5"
+mockall = "0.13.1"
+nalgebra = "0.33"
 rstest = "0.25"
+varpro = "0.11.0"
+tempfile = "3.20"

@@ -4,7 +4,7 @@
 //! come from an external reading and may have known inaccuracies.
 //!
 //! A linux "system time" is an "estimate time" in this definition. However, a linux system time is a linux specific clock,
-//! and this crate uses a different name to prevent confusion from that term. For example, a TSC reading (a raw timestamp),
+//! and this crate uses a different name to prevent confusion from that term. For example, a TSC reading,
 //! multiplied by its current frequency and start time creates another estimate time. But that time is not the same as the
 //! linux system time.
 

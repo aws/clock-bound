@@ -73,7 +73,8 @@ mod tests {
         let now_std = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap();
-        assert!(now_std.as_secs().abs_diff(now.as_seconds() as u64) < 1);
+        let now = now - Instant::UNIX_EPOCH;
+        approx::assert_abs_diff_eq!(now_std.as_secs_f64(), now.as_seconds_f64(), epsilon = 0.01)
     }
 
     // Naively show that CLOCK_MONOTONIC_RAW is monotonic (and hope that it's raw)
