@@ -15,18 +15,18 @@ pub mod time;
 pub mod event;
 
 use crate::daemon::clock_sync_algorithm::ClockSyncAlgorithm;
-use tokio::sync::mpsc;
 
 pub struct Daemon {
     _io_front_end: io::SourceIO,
     clock_sync_algorithm: ClockSyncAlgorithm,
-    link_local_receiver: mpsc::Receiver<event::Ntp>,
+    link_local_receiver: async_ring_buffer::Receiver<event::Ntp>,
 }
 
 impl Daemon {
     /// Construct and initialize a new daemon
-    pub fn construct() -> Self {
-        let (tx, rx) = mpsc::channel(2);
+    /// FIXME: Make this function not async. (Currently required for the io.run methods)
+    pub async fn construct() -> Self {
+        let (tx, rx) = async_ring_buffer::create(2);
 
         let mut io_front_end = io::SourceIO::construct();
 
@@ -45,7 +45,7 @@ impl Daemon {
         // let link_local = io::LinkLocal::construct(rx, ..Args);
         // let io_front_end = SourceIo::builder().link_local(tx, link_local).build();
         // ```
-        io_front_end.create_link_local(tx);
+        let () = io_front_end.create_link_local(tx).await;
 
         Self {
             _io_front_end: io_front_end,
@@ -59,7 +59,7 @@ impl Daemon {
         loop {
             // TODO: add live migration watch and statements
             tokio::select! {
-                Some(event) = self.link_local_receiver.recv() => {
+                Ok(event) = self.link_local_receiver.recv() => {
                     self.handle_event(event);
                 }
             }

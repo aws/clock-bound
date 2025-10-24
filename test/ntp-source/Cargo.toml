@@ -1,0 +1,24 @@
+[package]
+name = "ntp-source"
+description = "A test program that attempts to sample NTP packets from a custom NTP Server."
+license = "Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "ntp-source-test"
+path = "src/main.rs"
+
+[dependencies]
+clock-bound = { version = "2.0", path = "../../clock-bound", features = [
+  "daemon",
+] }
+tokio = { version = "1.47.1", features = ["macros", "rt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }

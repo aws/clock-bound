@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
@@ -13,8 +14,15 @@ use tokio::task::spawn;
 use tracing::{debug, info};
 
 pub mod ntp;
-use super::event;
-use ntp::LinkLocal;
+use crate::daemon::{async_ring_buffer, event};
+
+// use super::event;
+// use ntp::LinkLocal;
+mod link_local;
+use link_local::LinkLocal;
+
+mod ntp_source;
+use ntp_source::NTPSource;
 
 mod tsc;
 
@@ -44,29 +52,76 @@ impl SourceIO {
     /// # Panics
     /// - If not called within the `tokio` runtime.
     /// - If socket binding fails.
-    pub fn create_link_local(&mut self, event_sender: mpsc::Sender<event::Ntp>) {
-        info!("Creating link local source.");
-
-        let entry = self.sources.entry(TimeSource::LinkLocal);
-        debug!(?entry, "Current source entry status");
-        entry.or_insert_with(|| {
+    pub async fn create_link_local(&mut self, event_sender: async_ring_buffer::Sender<event::Ntp>) {
+        if !self.sources.contains_key(&TimeSource::LinkLocal) {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
             let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
 
+            let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
+                .await
+                .unwrap();
+            let mut link_local = LinkLocal::construct(
+                socket,
+                event_sender,
+                ctrl_receiver,
+                clock_disruption_receiver,
+            );
+
             spawn(async move {
-                let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
-                    .await
-                    .unwrap();
-                let mut link_local = LinkLocal::construct(
-                    socket,
-                    event_sender,
-                    ctrl_receiver,
-                    clock_disruption_receiver,
-                );
-                link_local.run().await;
+                if let Err(e) = link_local.run().await {
+                    debug!("LinkLocal runner exited with an error: {:#?}", e);
+                }
             });
-            ctrl_sender
-        });
+            self.sources.insert(TimeSource::LinkLocal, ctrl_sender);
+        }
+
+        info!("Source update complete.");
+    }
+
+    /// Spawns the IO task for sampling a specific NTP Server source.
+    ///
+    /// # Panics
+    /// - If not called within the `tokio` runtime.
+    /// - If socket binding fails.
+    pub async fn create_ntp_source(
+        &mut self,
+        server_address: SocketAddr,
+        event_sender: async_ring_buffer::Sender<event::Ntp>,
+    ) {
+        info!("Creating custom ntp server IO source.");
+
+        if !self
+            .sources
+            .contains_key(&TimeSource::NTPSource(server_address))
+        {
+            let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
+            let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
+
+            let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
+                .await
+                .unwrap();
+
+            let mut ntp_source = NTPSource::construct(
+                socket,
+                server_address,
+                event_sender,
+                ctrl_receiver,
+                clock_disruption_receiver,
+            );
+
+            spawn(async move {
+                if let Err(e) = ntp_source.run().await {
+                    debug!(
+                        "NTPSource({}) runner exited with an error: {:#?}",
+                        server_address.ip().to_string(),
+                        e
+                    );
+                }
+            });
+
+            self.sources
+                .insert(TimeSource::NTPSource(server_address), ctrl_sender);
+        }
 
         info!("Source update complete.");
     }
@@ -99,4 +154,5 @@ pub struct ControlRequest {}
 enum TimeSource {
     /// The internal AWS EC2 link local source `169.254.169.123`.
     LinkLocal,
+    NTPSource(SocketAddr),
 }

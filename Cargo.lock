@@ -791,6 +791,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntp-source"
+version = "2.0.3"
+dependencies = [
+ "clock-bound",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

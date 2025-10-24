@@ -6,6 +6,7 @@ members = [
   "examples/client/rust",
   "test/clock-bound-vmclock-client-test",
   "test/link-local",
+  "test/ntp-source",
   "test/vmclock-updater",
   "test/clock-bound-adjust-clock",
 ]
