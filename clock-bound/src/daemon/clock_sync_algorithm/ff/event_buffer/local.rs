@@ -109,10 +109,12 @@ impl<T: TscRtt + Debug> Local<T> {
     ///
     /// # Starvation warning
     /// This will clear out anything older than the cutoff. This CAN leave the ring buffer EMPTY
-    pub fn expunge_old_events(&mut self, period: Period, now_post_tsc: TscCount) {
-        if self.is_empty() {
-            return;
-        }
+    pub fn expunge_old_events(&mut self, period: Period) {
+        let Some(head) = self.inner.head() else {
+            return; // we empty
+        };
+        let now_post_tsc = head.tsc_post();
+
         // We need to calculate the corresponding TSC for an SKM window ago
         let cutoff_tsc = now_post_tsc - (Self::SKM_WINDOW / period);
 
@@ -205,7 +207,7 @@ mod tests {
             buffer.feed(event).unwrap();
         }
 
-        buffer.expunge_old_events(period, TscCount::new(1_500_000_000_000));
+        buffer.expunge_old_events(period);
 
         // Should only retain events within last 1024 seconds
         for event in buffer.iter() {
