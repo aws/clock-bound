@@ -18,10 +18,60 @@ pub trait Type {}
 /// Abstraction for time type whose tick unit is approximately one femtosecond
 pub trait FemtoType: Type {}
 
+/// An offset and round-trip-time associated with a comparison of two clocks.
+///
+/// Generally, the "offset" of two clocks can be estimated via use of interleaved reads,
+/// e.g. reads: `our_clock_t1`, `other_clock_t2`, `our_clock_t3`
+/// and the offset would be approximately the difference between the midpoint of the `our_clock_t1` and `our_clock_t3`
+/// reads and the `other_clock_t2` reads.
+/// The comparison is bounded by the round-trip-time of this measurement, and thus is useful for
+/// determining the quality of the sample or bounding the clock error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClockOffsetAndRtt<T> {
+    /// Offset
+    offset: Diff<T>,
+    /// RTT
+    rtt: Diff<T>,
+}
+
+impl<T: Copy> ClockOffsetAndRtt<T> {
+    fn new(offset: Diff<T>, rtt: Diff<T>) -> Self {
+        Self { offset, rtt }
+    }
+
+    pub fn offset(&self) -> Diff<T> {
+        self.offset
+    }
+
+    pub fn rtt(&self) -> Diff<T> {
+        self.rtt
+    }
+}
+
+#[cfg_attr(test, mockall::automock)]
 pub trait Clock<T: Type + Copy> {
     /// Read the current clock time.
     fn get_time(&self) -> Time<T>;
 }
+
+/// Extension trait for Clock that provides offset and RTT measurement functionality
+pub trait ClockExt<T: Type + Copy>: Clock<T> {
+    /// Get the offset and RTT measurement for this reading between this clock and another clock.
+    /// The "offset" is from the caller to the `other` clock - e.g. if `self` is running behind `other`,
+    /// we would expect a negative value, and if it `self` running ahead of `other`, we expect a positive value.
+    fn get_offset_and_rtt(&self, other: &impl Clock<T>) -> ClockOffsetAndRtt<T> {
+        let our_read1 = self.get_time();
+        let their_read = other.get_time();
+        let our_read2 = self.get_time();
+        let mid = our_read1.midpoint(our_read2);
+        let offset = mid - their_read;
+        let rtt = our_read2 - our_read1;
+        ClockOffsetAndRtt::new(offset, rtt)
+    }
+}
+
+/// Blanket implementation of `ClockExt` for all types that implement Clock
+impl<T: Type + Copy, C: Clock<T>> ClockExt<T> for C {}
 
 /// Abstract type for Time while keeping arithmetic consistent
 ///
@@ -578,8 +628,10 @@ pub(crate) const NANOS_PER_SECOND: i128 = 1_000_000_000;
 
 #[cfg(test)]
 mod test {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
-    use crate::daemon::time::{Duration, Instant};
+    use crate::daemon::time::{Duration, Instant, instant::Utc};
 
     #[derive(Clone, Copy)]
     struct TestType;
@@ -875,5 +927,44 @@ mod test {
         let tv = duration.to_timeval_nanos();
         assert_eq!(tv.tv_sec, tv_sec);
         assert_eq!(tv.tv_usec, tv_usec_nanos);
+    }
+
+    #[test]
+    fn clock_get_offset_and_rtt() {
+        // Create mock clocks
+        let mut mock_clock1 = MockClock::<Utc>::new();
+        let mut mock_clock2 = MockClock::<Utc>::new();
+
+        // Use a counter to track calls and return different values
+        let call_count = Arc::new(Mutex::new(0));
+        let call_count_clone = call_count.clone();
+
+        // Set up expectations for clock1: first read 100, second read 300
+        mock_clock1.expect_get_time().times(2).returning(move || {
+            let mut count = call_count_clone.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Time::new(100)
+            } else {
+                Time::new(300)
+            }
+        });
+
+        // Set up expectations for clock2: single read 195
+        mock_clock2
+            .expect_get_time()
+            .times(1)
+            .returning(|| Time::new(195));
+
+        // Test the get_offset_and_rtt method
+        let result = mock_clock1.get_offset_and_rtt(&mock_clock2);
+
+        // Expected calculation:
+        // our_read1 = 100, their_read = 195, our_read2 = 300
+        // mid = (100 + 300) / 2 = 200
+        // offset = mid - their_read = 200 - 195 = 5
+        // rtt = our_read2 - our_read1 = 300 - 100 = 200
+        assert_eq!(result.offset().get(), 5);
+        assert_eq!(result.rtt().get(), 200);
     }
 }

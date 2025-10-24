@@ -9,5 +9,6 @@ pub mod instant;
 pub mod timex;
 pub mod tsc;
 
+pub use inner::{Clock, ClockExt};
 pub use instant::{Duration, Instant};
 pub use tsc::{TscCount, TscDiff};
