@@ -5,7 +5,7 @@ use std::{
 };
 
 use super::TscRtt;
-use crate::daemon::time::{Duration, Instant, TscCount};
+use crate::daemon::time::{Duration, Instant, TscCount, tsc::Period};
 
 /// Contains the NTP and time stamp counter samples to be used by synchronization algorithm.
 ///
@@ -53,6 +53,24 @@ impl Ntp {
     /// `data` getter
     pub fn data(&self) -> &NtpData {
         &self.data
+    }
+
+    /// Calculate the clock error bound of this event at the time of the event
+    ///
+    /// This is different from the clock error bound that would be reported to a user outside of the daemon.
+    ///
+    /// First, because this is a sans-IO input, there is no concept of reading this "after" the event comes in.
+    /// Because of this, there is no additional value added to the root-dispersion.
+    ///
+    /// Second, the round trip time needs a calculation of the period to be able to convert the TSC rtt into
+    /// a duration of time.
+    ///
+    /// Third, there is no "ntp offset" value. That is a parameter exclusive to modifying the system clock, which this component does not do.
+    /// Instead it just calculates the time at a TSC event, and then passes that on to the [`ClockState`](crate::daemon::clock_state) component.
+    pub fn calculate_clock_error_bound(&self, period_local: Period) -> Duration {
+        let rtt = self.rtt() * period_local;
+        let root_delay = self.data().root_delay + rtt;
+        self.data().root_dispersion + (root_delay / 2)
     }
 }
 
@@ -177,6 +195,7 @@ impl ValidStratumLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     #[test]
     fn valid_ntp_event() {
@@ -273,5 +292,115 @@ mod tests {
         // Test invalid conversions
         assert!(matches!(Stratum::try_from(17), Err(TryFromU8Error)));
         assert!(matches!(Stratum::try_from(255), Err(TryFromU8Error)));
+    }
+
+    #[rstest]
+    #[case::minimal_delays(
+        Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_002_000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_days(1),
+                server_send_time: Instant::from_days(1) + Duration::from_micros(1),
+                root_delay: Duration::from_micros(10),
+                root_dispersion: Duration::from_micros(5),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap(),
+        Period::from_seconds(1e-9),
+        Duration::from_micros(11)  // Expected: root_dispersion(5) + (root_delay(10) + rtt(2))/2
+    )]
+    #[case::larger_rtt(
+        Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_010_000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_days(1),
+                server_send_time: Instant::from_days(1) + Duration::from_micros(1),
+                root_delay: Duration::from_micros(20),
+                root_dispersion: Duration::from_micros(10),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap(),
+        Period::from_seconds(1e-9),
+        Duration::from_micros(25)  // Expected: root_dispersion(10) + (root_delay(20) + rtt(10))/2 
+    )]
+    #[case::period_scaling(
+        Ntp::builder()
+            .tsc_pre(TscCount::new(2_000_000_000))
+            .tsc_post(TscCount::new(2_000_002_000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_days(1),
+                server_send_time: Instant::from_days(1) + Duration::from_micros(1),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(8),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap(),
+        Period::from_seconds(2e-9),  // Different period scaling
+        Duration::from_nanos(17_500)  // Expected: root_dispersion(8) + (root_delay(15) + rtt(4))/2
+    )]
+    fn calculate_clock_error_bound(
+        #[case] event: Ntp,
+        #[case] period: Period,
+        #[case] expected: Duration,
+    ) {
+        let result = event.calculate_clock_error_bound(period);
+        approx::assert_abs_diff_eq!(
+            result.as_seconds_f64(),
+            expected.as_seconds_f64(),
+            epsilon = 1e-9
+        );
+    }
+
+    #[rstest]
+    #[case(
+        // Zero root delay and dispersion
+        Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_002_000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_days(1),
+                server_send_time: Instant::from_days(1) + Duration::from_micros(1),
+                root_delay: Duration::from_micros(0),
+                root_dispersion: Duration::from_micros(0),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap(),
+        Period::from_seconds(1e-9),
+        Duration::from_micros(1)  // Expected: only RTT contribution
+    )]
+    #[case(
+        // Large root delay and dispersion
+        Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_001_000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_days(1),
+                server_send_time: Instant::from_days(1) + Duration::from_micros(1),
+                root_delay: Duration::from_millis(1),
+                root_dispersion: Duration::from_millis(1),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap(),
+        Period::from_seconds(1e-9),
+        Duration::from_nanos(1_500_500)  // Expected: root_dispersion(1ms) + (root_delay(1ms) + rtt(1µs))/2
+    )]
+    fn calculate_clock_error_bound_edge_cases(
+        #[case] event: Ntp,
+        #[case] period: Period,
+        #[case] expected: Duration,
+    ) {
+        let result = event.calculate_clock_error_bound(period);
+        approx::assert_abs_diff_eq!(
+            result.as_seconds_f64(),
+            expected.as_seconds_f64(),
+            epsilon = 1e-9
+        );
     }
 }

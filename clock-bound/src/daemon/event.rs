@@ -24,4 +24,9 @@ pub trait TscRtt {
     fn rtt(&self) -> TscDiff {
         self.tsc_post() - self.tsc_pre()
     }
+
+    /// The TSC midpoint
+    fn tsc_midpoint(&self) -> TscCount {
+        self.tsc_pre().midpoint(self.tsc_post())
+    }
 }
