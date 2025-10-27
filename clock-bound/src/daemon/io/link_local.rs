@@ -5,7 +5,7 @@ use tokio::{
     io,
     net::UdpSocket,
     sync::{mpsc, watch},
-    time::{self, Interval, interval, timeout},
+    time::{self, Interval, MissedTickBehavior, interval, timeout},
 };
 use tracing::{debug, info};
 
@@ -53,13 +53,15 @@ impl LinkLocal {
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     ) -> Self {
+        let mut link_local_interval = interval(INTERVAL_DURATION);
+        link_local_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         LinkLocal {
             socket,
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
             ntp_buffer: [0u8; Packet::SIZE],
-            interval: interval(INTERVAL_DURATION),
+            interval: link_local_interval,
         }
     }
 

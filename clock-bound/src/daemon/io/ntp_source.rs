@@ -7,7 +7,7 @@ use tokio::{
     io,
     net::UdpSocket,
     sync::{mpsc, watch},
-    time::{self, Interval, interval, timeout},
+    time::{self, Interval, MissedTickBehavior, interval, timeout},
 };
 use tracing::{debug, info};
 
@@ -58,6 +58,8 @@ impl NTPSource {
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     ) -> Self {
+        let mut ntp_server_interval = interval(NTP_SERVER_INTERVAL_DURATION);
+        ntp_server_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         NTPSource {
             socket,
             address,
@@ -65,7 +67,7 @@ impl NTPSource {
             ctrl_receiver,
             clock_disruption_receiver,
             ntp_buffer: [0u8; Packet::SIZE],
-            interval: interval(NTP_SERVER_INTERVAL_DURATION),
+            interval: ntp_server_interval,
         }
     }
 
