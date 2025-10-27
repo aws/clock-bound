@@ -286,6 +286,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "clock-bound-adjust-clock-test"
+version = "2.0.3"
+dependencies = [
+ "clock-bound",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "clock-bound-ff-tester"
 version = "2.0.3"
 dependencies = [

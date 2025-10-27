@@ -1,0 +1,26 @@
+[package]
+name = "clock-bound-adjust-clock-test"
+description = "An integration test of the ClockBound daemon's clock adjustment function."
+license = "MIT OR Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "adjust-clock-test"
+path = "src/adjust_clock_test.rs"
+
+[dependencies]
+clock-bound = { version = "2.0", path = "../../clock-bound", features = [
+  "daemon",
+] }
+tokio = { version = "1.47.1", features = ["macros", "rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }

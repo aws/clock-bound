@@ -9,6 +9,7 @@ members = [
   "test/ntp-source",
   "test/vmclock-updater",
   "test/clock-bound-adjust-clock",
+  "test/clock-bound-adjust-clock-test",
 ]
 resolver = "3"
 
