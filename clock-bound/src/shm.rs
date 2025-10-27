@@ -19,7 +19,9 @@ pub use writer::{ShmWrite, ShmWriter};
 
 use errno::Errno;
 use nix::sys::time::{TimeSpec, TimeValLike};
+use std::error::Error;
 use std::ffi::CStr;
+use std::fmt;
 
 use common::{CLOCK_MONOTONIC, CLOCK_REALTIME, clock_gettime_safe};
 
@@ -57,6 +59,30 @@ pub enum ShmError {
     /// The shared memory segment version is not supported.
     SegmentVersionNotSupported,
 }
+
+impl fmt::Display for ShmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ShmError::SyscallError(errno, c_str) => {
+                write!(f, "Errno: {errno:?} Details: {c_str:?}")
+            }
+            ShmError::SegmentNotInitialized => {
+                write!(f, "The shared memory segment is not initialized.")
+            }
+            ShmError::SegmentMalformed => {
+                write!(f, "The shared memory segment is initialized but malformed.")
+            }
+            ShmError::CausalityBreach => {
+                write!(f, "Failed causality check when comparing timestamps.")
+            }
+            ShmError::SegmentVersionNotSupported => {
+                write!(f, "The shared memory segment version is not supported.")
+            }
+        }
+    }
+}
+
+impl Error for ShmError {}
 
 /// Definition of mutually exclusive clock status exposed to the reader.
 #[repr(C)]

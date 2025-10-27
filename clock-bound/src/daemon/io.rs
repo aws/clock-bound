@@ -26,6 +26,8 @@ use ntp_source::NTPSource;
 
 mod tsc;
 
+mod vmclock;
+
 /// `SourceIO` acts as the front end for IO tasks.
 ///
 /// `SourceIO` contains the interface from which new IO tasks can be spawned, as well as an interface
