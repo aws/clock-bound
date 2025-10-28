@@ -13,13 +13,16 @@
 )]
 use std::fmt::Display;
 
+use bon::Builder;
 use nom::Parser;
 use nom::number::{be_i8, be_u8};
 
+mod extension;
 mod header;
 mod short;
 mod timestamp;
 
+pub use extension::ExtensionField;
 pub use header::{LeapIndicator, Mode, Version};
 pub use short::Short;
 pub use timestamp::Timestamp;
@@ -30,34 +33,50 @@ use crate::daemon::time::{Duration as ClockBoundDuration, Instant as ClockBoundI
 /// An NTP packet, as defined in RFC 5905
 ///
 /// See each of the fields for more information
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Builder)]
 pub struct Packet {
     /// warning of impending leap second
+    #[builder(default = LeapIndicator::NoWarning)]
     pub leap_indicator: LeapIndicator,
     /// NTP version
+    #[builder(default = Version::V4)]
     pub version: Version,
     /// Association mode
+    #[builder(default = Mode::Client)]
     pub mode: Mode,
     /// Stratum
+    #[builder(default = 0)]
     pub stratum: u8,
     /// Maximum interval between successive messages, in log2 seconds
+    #[builder(default = 0)]
     pub poll: u8,
     /// Precision of system clock in log2 seconds
+    #[builder(default = 0)]
     pub precision: i8,
     /// Total round trip delay to the reference clock
+    #[builder(default = Short::new(0))]
     pub root_delay: Short,
     /// Total dispersion to the reference clock
+    #[builder(default = Short::new(0))]
     pub root_dispersion: Short,
     /// 32 bit code identifying the particular server/reference clock
+    #[builder(default = [0u8; 4])]
     pub reference_id: [u8; 4],
     /// Time when the system clock was last corrected
+    #[builder(default = Timestamp::new(0))]
     pub reference_timestamp: Timestamp,
     /// Time at the client when the request departed for the server
+    #[builder(default = Timestamp::new(0))]
     pub origin_timestamp: Timestamp,
     /// Time at the server when the request arrived from the client
+    #[builder(default = Timestamp::new(0))]
     pub receive_timestamp: Timestamp,
     /// Time at the server when the response left for the client
+    #[builder(default = Timestamp::new(0))]
     pub transmit_timestamp: Timestamp,
+    /// Extension field(s), if any
+    #[builder(default = Vec::new())]
+    pub extensions: Vec<ExtensionField>,
 }
 
 impl Display for Packet {
@@ -135,6 +154,7 @@ impl Packet {
             origin_timestamp: Timestamp::new(0),
             receive_timestamp: Timestamp::new(0),
             transmit_timestamp,
+            extensions: Vec::new(),
         }
     }
 
@@ -190,6 +210,7 @@ impl Packet {
             origin_timestamp,
             receive_timestamp,
             transmit_timestamp,
+            extensions: Vec::new(),
         };
         Ok((input, rv))
     }
@@ -222,6 +243,8 @@ impl TryFrom<Packet> for NtpData {
 mod test {
     use chrono::{DateTime, TimeDelta};
     use hex_literal::hex;
+
+    use crate::daemon::io::ntp::packet::extension::Fec2V1Value;
 
     use super::*;
 
@@ -309,5 +332,34 @@ mod test {
             ClockBoundInstant::from_time(1738189694, 689379474)
         );
         assert_eq!(ntp_data.stratum, Stratum::ONE);
+    }
+
+    #[test]
+    fn packet_builder() {
+        // Test with defaults
+        let default_packet = Packet::builder().build();
+        assert_eq!(default_packet.leap_indicator, LeapIndicator::NoWarning);
+        assert_eq!(default_packet.version, Version::V4);
+        assert_eq!(default_packet.mode, Mode::Client);
+        assert_eq!(default_packet.stratum, 0);
+        assert_eq!(default_packet.reference_id, [0u8; 4]);
+        assert!(default_packet.extensions.is_empty());
+
+        // Test with specified values
+        let custom_packet = Packet::builder()
+            .mode(Mode::Server)
+            .stratum(1)
+            .reference_id([0xa9, 0xfe, 0xa9, 0x7a])
+            .extensions(vec![ExtensionField::Fec2V1(Fec2V1Value {
+                major_version: 1,
+                minor_version: 0,
+                startup_id: 0xdeadbeef,
+            })])
+            .build();
+
+        assert_eq!(custom_packet.mode, Mode::Server);
+        assert_eq!(custom_packet.stratum, 1);
+        assert_eq!(custom_packet.reference_id, [0xa9, 0xfe, 0xa9, 0x7a]);
+        assert_eq!(custom_packet.extensions.len(), 1);
     }
 }
