@@ -55,6 +55,31 @@ impl Ntp {
         &self.data
     }
 
+    /// Calculate a period by using 2 NTP events using return path
+    ///
+    /// NTP traffic is characterized in ClockBound with each exchange having a
+    /// - `tsc_pre`: The TSC reading before sending the NTP packet
+    /// - `server_recv_system_time`: The server's system time after receiving the NTP packet
+    /// - `server_send_system_time`: The server's system time after sending the NTP packet
+    /// - `tsc_post`: The TSC reading after sending the NTP packet
+    ///
+    /// The "backward" path here means using the `server_send_system_time` and `tsc_post` from
+    /// two events to calculate the TSC period.
+    ///
+    /// # Panics
+    /// - Panics if events share the same `tsc_post` (happens if the events are the same).
+    /// - Panics if events share the same `server_send_time` (also happens if the events are the same)
+    pub fn calculate_period_backward(&self, other: &Self) -> Period {
+        let (old, new) = if self.tsc_post < other.tsc_post {
+            (self, other)
+        } else {
+            (other, self)
+        };
+
+        (new.data().server_send_time - old.data().server_send_time)
+            / (new.tsc_post() - old.tsc_post())
+    }
+
     /// Calculate the clock error bound of this event at the time of the event
     ///
     /// This is different from the clock error bound that would be reported to a user outside of the daemon.
@@ -294,6 +319,21 @@ mod tests {
         assert!(matches!(Stratum::try_from(255), Err(TryFromU8Error)));
     }
 
+    fn create_ntp_event(pre: TscCount, post: TscCount, server_send_time: Instant) -> Ntp {
+        Ntp::builder()
+            .tsc_pre(pre)
+            .tsc_post(post)
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_nanos(0), // Not used in calculation
+                server_send_time: server_send_time,
+                root_delay: Duration::from_nanos(0), // Not used in calculation
+                root_dispersion: Duration::from_nanos(0), // Not used in calculation
+                stratum: Stratum::ONE,               // Not used in calculation
+            })
+            .build()
+            .unwrap()
+    }
+
     #[rstest]
     #[case::minimal_delays(
         Ntp::builder()
@@ -356,6 +396,40 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case(
+        // First event
+        (TscCount::new(100), TscCount::new(200), Instant::from_days(1000)),
+        // Second event
+        (TscCount::new(300), TscCount::new(400), Instant::from_days(1000) + Duration::from_secs(1)),
+        Period::from_seconds(0.005),
+    )]
+    #[case(
+        // First event
+        (TscCount::new(1000), TscCount::new(2000), Instant::from_days(0)),
+        // Second event
+        (TscCount::new(3000), TscCount::new(4000), Instant::from_millis(500)),
+        Period::from_seconds(0.00025),
+    )]
+    #[case(
+        // First event with larger values
+        (TscCount::new(10000), TscCount::new(20000), Instant::from_secs(100000)),
+        // Second event
+        (TscCount::new(30000), TscCount::new(40000), Instant::from_secs(200000)),
+        // Expected period (server_time_diff / tsc_diff = (200000-100000)/(40000-20000) = 5)
+        Period::from_seconds(5.0),
+    )]
+    fn test_calculate_period_backward(
+        #[case] (first_pre, first_post, first_send): (TscCount, TscCount, Instant),
+        #[case] (second_pre, second_post, second_send): (TscCount, TscCount, Instant),
+        #[case] expected_period: Period,
+    ) {
+        let event1 = create_ntp_event(first_pre, first_post, first_send);
+        let event2 = create_ntp_event(second_pre, second_post, second_send);
+
+        let period = event1.calculate_period_backward(&event2);
+        approx::assert_abs_diff_eq!(period.get(), expected_period.get());
+    }
     #[rstest]
     #[case(
         // Zero root delay and dispersion

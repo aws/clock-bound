@@ -336,6 +336,10 @@ impl std::str::FromStr for Skew {
 /// All time durations are stored internally as `i128` values. This means it is possible
 /// to store frequency values that will have precision loss when converted from
 /// measurements based on [`Duration`] types
+///
+/// ## Note on zero valued periods
+/// While not logical for clocks, it can come up for error calculations currently.
+/// FIXME, does a zero error ever make sense?
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Period(f64);
@@ -344,18 +348,18 @@ impl Period {
     /// Construct from seconds
     ///
     /// # Panics
-    /// Panics if `seconds` <= 0
+    /// Panics if `seconds` < 0
     pub fn from_seconds(seconds: f64) -> Self {
-        assert!(seconds > 0.0);
+        assert!(seconds >= 0.0);
         Self(seconds)
     }
 
     /// Construct from a duration
     ///
     /// # Panics
-    /// Panics if `duration <= 0`
+    /// Panics if `duration < 0`
     pub fn from_duration(duration: Duration) -> Self {
-        assert!(duration.get() > 0);
+        assert!(duration.get() >= 0);
         Self(duration.as_seconds_f64())
     }
 
