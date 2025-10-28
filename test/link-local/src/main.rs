@@ -23,6 +23,7 @@ async fn main() {
 
     let mut sourceio = SourceIO::construct();
     sourceio.create_link_local(link_local_sender).await;
+    sourceio.spawn_all();
 
     let mut polling_rate = time::Duration::from_secs(0);
     for i in 0..11 {

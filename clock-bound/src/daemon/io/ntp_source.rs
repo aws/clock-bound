@@ -39,6 +39,7 @@ pub enum NTPSourceError {
 /// Contains data used to run `NTPSource` runner.
 /// Notably, the IP address passed to this struct should be associated
 /// with an NTP host.
+#[derive(Debug)]
 pub struct NTPSource {
     socket: UdpSocket,
     address: SocketAddr,

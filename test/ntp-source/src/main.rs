@@ -8,6 +8,7 @@ use clock_bound::daemon::io::SourceIO;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time;
+use tokio::time::{Duration, timeout};
 
 use tracing_subscriber::EnvFilter;
 
@@ -37,6 +38,7 @@ async fn main() {
     sourceio
         .create_ntp_source(second_ntp_source_public_ip, second_ntp_source_sender)
         .await;
+    sourceio.spawn_all();
     println!("NTP Server creation complete!");
 
     let mut polling_rate = time::Duration::from_secs(0);
@@ -44,8 +46,12 @@ async fn main() {
         println!("Polling {i}");
 
         // Get NTP packet from both specified servers
-        let ntpevent_a = first_ntp_source_receiver.recv().await;
-        let ntpevent_b = second_ntp_source_receiver.recv().await;
+        let ntpevent_a = timeout(Duration::from_secs(32), first_ntp_source_receiver.recv())
+            .await
+            .unwrap();
+        let ntpevent_b = timeout(Duration::from_secs(32), second_ntp_source_receiver.recv())
+            .await
+            .unwrap();
 
         let now = time::Instant::now();
         let d = now - start;

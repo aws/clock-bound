@@ -45,7 +45,9 @@ impl Daemon {
         // let link_local = io::LinkLocal::construct(rx, ..Args);
         // let io_front_end = SourceIo::builder().link_local(tx, link_local).build();
         // ```
-        let () = io_front_end.create_link_local(tx).await;
+        io_front_end.create_link_local(tx).await;
+        // TODO: Refactor so that the construction and spawning occurs in separate functions.
+        io_front_end.spawn_all();
 
         Self {
             _io_front_end: io_front_end,
