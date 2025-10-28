@@ -7,7 +7,10 @@ use super::inner::{Diff, Time};
 pub struct Utc;
 
 impl super::inner::Type for Utc {}
-impl super::inner::FemtoType for Utc {}
+impl super::inner::FemtoType for Utc {
+    const INSTANT_PREFIX: &'static str = "Instant";
+    const DURATION_PREFIX: &'static str = "Duration";
+}
 
 /// Representation of an absolute time timestamp
 ///

@@ -16,7 +16,10 @@ use clock_bound::daemon::time as cb_time;
 pub struct Estimate;
 
 impl super::inner::Type for Estimate {}
-impl super::inner::FemtoType for Estimate {}
+impl super::inner::FemtoType for Estimate {
+    const INSTANT_PREFIX: &'static str = "EstimateInstant";
+    const DURATION_PREFIX: &'static str = "EstimateDuration";
+}
 
 /// Representation of an absolute time timestamp
 ///

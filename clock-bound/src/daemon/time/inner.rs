@@ -16,7 +16,11 @@ use libc::timeval;
 pub trait Type {}
 
 /// Abstraction for time type whose tick unit is approximately one femtosecond
-pub trait FemtoType: Type {}
+pub trait FemtoType: Type {
+    /// The type prefix to use in the `Debug` impl
+    const INSTANT_PREFIX: &'static str;
+    const DURATION_PREFIX: &'static str;
+}
 
 /// An offset and round-trip-time associated with a comparison of two clocks.
 ///
@@ -27,14 +31,14 @@ pub trait FemtoType: Type {}
 /// The comparison is bounded by the round-trip-time of this measurement, and thus is useful for
 /// determining the quality of the sample or bounding the clock error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClockOffsetAndRtt<T> {
+pub struct ClockOffsetAndRtt<T: FemtoType + Copy> {
     /// Offset
     offset: Diff<T>,
     /// RTT
     rtt: Diff<T>,
 }
 
-impl<T: Copy> ClockOffsetAndRtt<T> {
+impl<T: FemtoType + Copy> ClockOffsetAndRtt<T> {
     fn new(offset: Diff<T>, rtt: Diff<T>) -> Self {
         Self { offset, rtt }
     }
@@ -55,7 +59,7 @@ pub trait Clock<T: Type + Copy> {
 }
 
 /// Extension trait for Clock that provides offset and RTT measurement functionality
-pub trait ClockExt<T: Type + Copy>: Clock<T> {
+pub trait ClockExt<T: FemtoType + Copy>: Clock<T> {
     /// Get the offset and RTT measurement for this reading between this clock and another clock.
     /// The "offset" is from the caller to the `other` clock - e.g. if `self` is running behind `other`,
     /// we would expect a negative value, and if it `self` running ahead of `other`, we expect a positive value.
@@ -71,19 +75,25 @@ pub trait ClockExt<T: Type + Copy>: Clock<T> {
 }
 
 /// Blanket implementation of `ClockExt` for all types that implement Clock
-impl<T: Type + Copy, C: Clock<T>> ClockExt<T> for C {}
+impl<T: FemtoType + Copy, C: Clock<T>> ClockExt<T> for C {}
 
 /// Abstract type for Time while keeping arithmetic consistent
 ///
 /// This type is not usually used directly, but rather through the [`Instant`](super::Instant) and [`Tsc`](super::TscCount) types.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
 pub struct Time<T> {
     instant: i128,
     _marker: std::marker::PhantomData<T>,
+}
+
+impl<T: FemtoType + Copy> std::fmt::Debug for Time<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_femtos(f, T::INSTANT_PREFIX, self.as_femtos())
+    }
 }
 
 impl<T> Time<T> {
@@ -262,6 +272,16 @@ impl<T: FemtoType + Copy> Time<T> {
         (self.get() + FEMTOS_PER_SEC / 2) / FEMTOS_PER_SEC
     }
 
+    /// Returns the total number of seconds, truncated
+    pub const fn as_seconds_trunc(self) -> i128 {
+        self.get() / FEMTOS_PER_SEC
+    }
+
+    /// Returns the total number of nanoseconds, truncated
+    pub const fn as_nanos_trunc(self) -> i128 {
+        self.get() / FEMTOS_PER_NANO
+    }
+
     /// Returns the total number of minutes, rounded, since the Unix Epoch
     pub const fn as_minutes(self) -> i128 {
         const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE;
@@ -285,23 +305,19 @@ impl<T: FemtoType + Copy> Time<T> {
 ///
 /// It is not recommended to use this directly, but use the [`Duration`](super::Duration) or [`TscDiff`](super::TscDiff) types
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
 pub struct Diff<T> {
     duration: i128,
     _marker: PhantomData<T>,
+}
+
+impl<T: FemtoType + Copy> std::fmt::Debug for Diff<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_femtos(f, T::DURATION_PREFIX, self.as_femtos())
+    }
 }
 
 impl<T> Diff<T> {
@@ -616,6 +632,39 @@ impl<T: FemtoType + Copy> Diff<T> {
     }
 }
 
+// print in <seconds>.<millis>_<micros>_<nanos> format.
+fn debug_femtos(
+    f: &mut std::fmt::Formatter<'_>,
+    prefix: &'static str,
+    femtos: i128,
+) -> std::fmt::Result {
+    let secs = femtos / FEMTOS_PER_SEC;
+    let nanos = (femtos / FEMTOS_PER_NANO - secs * 1_000_000_000).abs();
+    if nanos == 0 {
+        return f
+            .debug_tuple(prefix)
+            .field(&format_args!("{secs}.0"))
+            .finish();
+    }
+    let millis = nanos / 1_000_000;
+    let micros = (nanos / 1_000) % 1_000;
+    let nanos = nanos % 1_000;
+    if nanos == 0 && micros == 0 {
+        return f
+            .debug_tuple(prefix)
+            .field(&format_args!("{secs}.{millis:0>3}"))
+            .finish();
+    }
+    if nanos == 0 {
+        return f
+            .debug_tuple(prefix)
+            .field(&format_args!("{secs}.{millis:0>3}_{micros:0>3}"))
+            .finish();
+    }
+    let formatted = format_args!("{secs}.{millis:0>3}_{micros:0>3}_{nanos:0>3}");
+    f.debug_tuple(prefix).field(&formatted).finish()
+}
+
 pub(crate) const FEMTOS_PER_SEC: i128 = 1_000_000_000_000_000;
 pub(crate) const FEMTOS_PER_MILLI: i128 = 1_000_000_000_000;
 pub(crate) const FEMTOS_PER_MICRO: i128 = 1_000_000_000;
@@ -628,6 +677,7 @@ pub(crate) const NANOS_PER_SECOND: i128 = 1_000_000_000;
 
 #[cfg(test)]
 mod test {
+    use rstest::rstest;
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -927,6 +977,32 @@ mod test {
         let tv = duration.to_timeval_nanos();
         assert_eq!(tv.tv_sec, tv_sec);
         assert_eq!(tv.tv_usec, tv_usec_nanos);
+    }
+
+    #[rstest]
+    #[case(Duration::from_seconds_f64(1.123456789), "Duration(1.123_456_789)")]
+    #[case(Duration::from_seconds_f64(1.123456), "Duration(1.123_456)")]
+    #[case(Duration::from_seconds_f64(1.123), "Duration(1.123)")]
+    #[case(Duration::from_secs(1234567), "Duration(1234567.0)")]
+    #[case(Duration::from_seconds_f64(-1.123456), "Duration(-1.123_456)")]
+    #[case(Duration::from_secs(0), "Duration(0.0)")]
+    #[case(Duration::from_picos(6500), "Duration(0.000_000_006)")]
+    #[case(Duration::from_picos(50), "Duration(0.0)")]
+    fn duration_debug(#[case] duration: Duration, #[case] expected: &str) {
+        assert_eq!(format!("{duration:?}"), expected);
+    }
+
+    #[rstest]
+    #[case(Instant::from_nanos(1123456789), "Instant(1.123_456_789)")]
+    #[case(Instant::from_nanos(1123456000), "Instant(1.123_456)")]
+    #[case(Instant::from_nanos(1123000000), "Instant(1.123)")]
+    #[case(Instant::from_secs(1234567), "Instant(1234567.0)")]
+    #[case(Instant::from_micros(-1123456), "Instant(-1.123_456)")]
+    #[case(Instant::from_secs(0), "Instant(0.0)")]
+    #[case(Instant::from_picos(6500), "Instant(0.000_000_006)")]
+    #[case(Instant::from_picos(50), "Instant(0.0)")]
+    fn instant_debug(#[case] instant: Instant, #[case] expected: &str) {
+        assert_eq!(format!("{instant:?}"), expected);
     }
 
     #[test]

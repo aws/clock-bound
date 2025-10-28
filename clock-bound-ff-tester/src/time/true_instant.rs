@@ -11,7 +11,10 @@ use super::{EstimateDuration, EstimateInstant};
 pub struct True;
 
 impl Type for True {}
-impl FemtoType for True {}
+impl FemtoType for True {
+    const INSTANT_PREFIX: &'static str = "TrueInstant";
+    const DURATION_PREFIX: &'static str = "TrueDuration";
+}
 
 /// Representation of true time timestamps
 ///

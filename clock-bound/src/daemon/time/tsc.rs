@@ -38,6 +38,18 @@ pub type TscCount = Time<Tsc>;
 /// Corresponding duration type for [`TscCount`]
 pub type TscDiff = Diff<Tsc>;
 
+impl std::fmt::Debug for TscCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("TscCount").field(&self.get()).finish()
+    }
+}
+
+impl std::fmt::Debug for TscDiff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("TscDiff").field(&self.get()).finish()
+    }
+}
+
 impl TscCount {
     /// Get an uncorrected time value
     ///
@@ -668,5 +680,17 @@ mod tests {
     fn period_parse_from_str_invalid(#[case] input: &str) {
         use std::str::FromStr;
         let _ = Period::from_str(input).unwrap_err();
+    }
+
+    #[test]
+    fn debug_tsc_count() {
+        let tsc = TscCount::new(1_000_000_000);
+        assert_eq!(format!("{tsc:?}"), "TscCount(1000000000)");
+    }
+
+    #[test]
+    fn debug_tsc_diff() {
+        let diff = TscDiff::new(1_000_000_000);
+        assert_eq!(format!("{diff:?}"), "TscDiff(1000000000)");
     }
 }
