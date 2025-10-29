@@ -5,11 +5,11 @@ use bon::bon;
 use libc::timeval;
 use libc::{
     ADJ_SETOFFSET, MOD_FREQUENCY, MOD_NANO, MOD_OFFSET, MOD_STATUS, MOD_TIMECONST, STA_FREQHOLD,
-    STA_PLL, timex,
+    STA_NANO, STA_PLL, timex,
 };
 use tracing::warn;
 
-use crate::daemon::time::{Duration, tsc::Skew};
+use crate::daemon::time::{Duration, Instant, tsc::Skew};
 
 const MAX_PHASE_OFFSET: Duration = Duration::from_millis(500);
 const MAX_SKEW: Skew = Skew::from_ppm(512.0);
@@ -24,6 +24,29 @@ impl Timex {
     /// Expose a mutable reference to the inner `libc::timex`.
     pub fn expose(&mut self) -> *mut timex {
         &raw mut self.0
+    }
+
+    /// Read the given `time` from the underlying `timex`. The kernel
+    /// generally returns this with the time set to the current `CLOCK_REALTIME`
+    /// reading.
+    ///
+    /// Notably, this same field is used in `ADJ_SETOFFSET` mode calls in order to supply an
+    /// offset value.
+    ///
+    /// The value may be expressed in microseconds by default, but if the call is made
+    /// with `status` bit `STA_NANO` set, `tv_usec` represents a nanosecond value.
+    ///
+    /// Arguments
+    /// * `is_sta_nano` - whether the `tv_usec` should be interpreted as a microsecond or nanosecond
+    /// value, based on the `status` bit `STA_NANO` in the `timex` struct.
+    pub fn time(&self) -> Instant {
+        let tv = self.0.time;
+        let fractional_part = if self.0.status & STA_NANO > 0 {
+            Duration::from_nanos(tv.tv_usec.into())
+        } else {
+            Duration::from_micros(tv.tv_usec.into())
+        };
+        Instant::from_secs(tv.tv_sec.into()) + fractional_part
     }
 
     /// Builds a `libc::timex` used for adjustment of the system clock, to apply the given phase correction
@@ -201,6 +224,7 @@ impl AsRef<timex> for Timex {
 
 #[cfg(test)]
 mod test {
+    use libc::{STA_NANO, timeval};
     use rstest::rstest;
 
     use super::*;
@@ -286,5 +310,91 @@ mod test {
         assert_eq!(tx.time, expected_time);
         // assert modes is set properly for our adjustment
         assert_eq!(tx.modes, ADJ_SETOFFSET | MOD_NANO);
+    }
+
+    // Helper function to create a Timex with custom time and status values
+    fn create_timex_with_time(tv_sec: i64, tv_usec: i64, status: i32) -> Timex {
+        Timex(timex {
+            modes: 0,
+            offset: 0,
+            freq: 0,
+            maxerror: 0,
+            esterror: 0,
+            status,
+            constant: 0,
+            precision: 0,
+            tolerance: 0,
+            #[cfg(not(target_os = "macos"))]
+            time: timeval { tv_sec, tv_usec },
+            #[cfg(not(target_os = "macos"))]
+            tick: 0,
+            ppsfreq: 0,
+            jitter: 0,
+            shift: 0,
+            stabil: 0,
+            jitcnt: 0,
+            calcnt: 0,
+            errcnt: 0,
+            stbcnt: 0,
+            #[cfg(not(target_os = "macos"))]
+            tai: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused1: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused2: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused3: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused4: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused5: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused6: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused7: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused8: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused9: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused10: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused11: 0,
+        })
+    }
+
+    #[test]
+    fn test_get_time_microsecond_precision_without_sta_nano() {
+        // Test that without STA_NANO flag, tv_usec is interpreted as microseconds
+        let timex = create_timex_with_time(1, 123_456, 0);
+        let result = timex.time();
+        let expected = Instant::from_secs(1) + Duration::from_micros(123_456);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_get_time_nanosecond_precision_with_sta_nano() {
+        // Test that with STA_NANO flag, tv_usec is interpreted as nanoseconds
+        let timex = create_timex_with_time(1, 123_456_789, STA_NANO);
+        let result = timex.time();
+        let expected = Instant::from_secs(1) + Duration::from_nanos(123_456_789);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_get_time_zero_values() {
+        // Test epoch time (zero values)
+        let timex = create_timex_with_time(0, 0, 0);
+        let result = timex.time();
+        assert_eq!(result, Instant::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn test_get_time_negative_seconds() {
+        // Test negative seconds (before epoch)
+        let timex = create_timex_with_time(-10, 500_000, 0);
+        let result = timex.time();
+        let expected = Instant::from_secs(-10) + Duration::from_micros(500_000);
+        assert_eq!(result, expected);
     }
 }

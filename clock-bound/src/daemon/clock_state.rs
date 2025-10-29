@@ -66,7 +66,7 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
         &self,
         phase_correction: Duration,
         skew: Skew,
-    ) -> Result<(), NtpAdjTimeError> {
+    ) -> Result<Timex, NtpAdjTimeError> {
         let mut tx = Timex::clock_adjustment()
             .phase_correction(phase_correction)
             .skew(skew)
@@ -74,7 +74,7 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
 
         debug!("calling ntp_adjtime with {:?}", tx);
         match self.ntp_adjtime.ntp_adjtime(&mut tx) {
-            TIME_OK => Ok(()),
+            TIME_OK => Ok(tx),
             cs @ (TIME_ERROR | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
                 Err(NtpAdjTimeError::BadState(cs))
             }
@@ -89,7 +89,7 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
     /// `NtpAdjTimeError::Failure` if `ntp_adjtime` returns -1, meaning the system call failed, along with errno
     /// `NtpAdjTimeError::BadState` if some state other than `TIME_ERROR` is returned from `ntp_adjtime`
     /// `NtpAdjTimeError::InvalidState` if some invalid or not well-documented state is returned from `ntp_adjtime`
-    pub fn step_clock(&self, phase_correction: Duration) -> Result<(), NtpAdjTimeError> {
+    pub fn step_clock(&self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError> {
         let mut tx = Timex::clock_step()
             .phase_correction(phase_correction)
             .call();
@@ -99,7 +99,7 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
         // that indicates the clock is now "unsynchronized" (expected after we step the clock
         // discontinuously)
         match self.ntp_adjtime.ntp_adjtime(&mut tx) {
-            TIME_ERROR => Ok(()),
+            TIME_ERROR => Ok(tx),
             cs @ (TIME_OK | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
                 Err(NtpAdjTimeError::BadState(cs))
             }
