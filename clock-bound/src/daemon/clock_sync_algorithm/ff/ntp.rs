@@ -5,9 +5,10 @@ use std::num::NonZeroUsize;
 use super::event_buffer;
 use crate::daemon::{
     clock_parameters::ClockParameters,
-    clock_sync_algorithm::ring_buffer::Quarter,
-    event::{self, TscRtt},
-    time::tsc::Period,
+    clock_sync_algorithm::{ff::UncorrectedClock, ring_buffer::Quarter},
+    event,
+    event::TscRtt,
+    time::{TscDiff, tsc::Period},
 };
 
 /// Feed forward time synchronization algorithm for a single NTP source
@@ -51,6 +52,98 @@ impl Ntp {
     /// Get the current [`ClockParameters`]
     pub fn clock_parameters(&self) -> Option<&ClockParameters> {
         self.clock_parameters.as_ref()
+    }
+
+    /// Calculate the estimate period and k value based off of the ring buffers
+    ///
+    /// Returns `None` if we do not have enough data points to calculate a period.
+    ///
+    /// We calculate a period by finding a pair of RTT values that are recent and as far in the past as possible,
+    /// and using the pair of TSC/reference clock values,
+    ///
+    /// ## Steady State
+    /// While the program is running, it is expected that the `Local` event buffer is completely filled, and the
+    /// `Estimate` event buffer is partially/completely filled. In this state, the "new" value comes from the min value
+    /// in the current SKM window (local buffer), and "old" is the oldest datapoint in the estimate buffer.
+    ///
+    /// ## Initializing
+    /// If there are less than 2 values in the estimate buffer, then use the min values in the local buffer
+    /// for "new" and "old" values.
+    ///
+    /// ## Starvation
+    /// If local buffer is empty but we have multiple values in estimate, we can just use those.
+    fn calculate_uncorrected_clock(
+        local: &event_buffer::Local<event::Ntp>,
+        estimate: &event_buffer::Estimate<event::Ntp>,
+    ) -> Option<UncorrectedClock> {
+        // get the min RTT values in the "old" and "new" time ranges
+        let (oldest, newest) = if estimate.as_ref().len() < 2 {
+            // fallback to local only calculation if estimate is small.
+            //
+            // rationale for not using "is empty" logic: When there is a single
+            // value in the estimate buffer, it will end up being the min value
+            // in the local buff for some time. Best to avoid that.
+
+            // old means it's in the oldest quarter of the local buffer
+            // new means it's in the newest quarter of the local buffer
+            if local.as_ref().len() < 2 {
+                // We need at least 2 data points to start estimating the period
+                return None;
+            }
+            let oldest = local.as_ref().min_rtt_in_quarter(Quarter::Oldest).unwrap();
+            let newest = local.as_ref().min_rtt_in_quarter(Quarter::Newest).unwrap();
+            (oldest, newest)
+        } else if local.is_empty() {
+            // If local is empty but we have values in estimate (can happen if we are starving),
+            // we can fallback to using the estimate buffer
+            // unwrap okay. Estimate buffer has at least 2 data points from above if statement
+            let oldest = estimate.as_ref().tail().unwrap();
+            let newest = estimate.as_ref().head().unwrap();
+            (oldest, newest)
+        } else {
+            // happy case: We have values in the estimate buffer, and values in local
+            // old is the oldest value in the estimate buffer
+            // new is the min rtt value of local buffer.
+            // unwraps okay, if conditions above check that this will never happen
+            let oldest = estimate.as_ref().tail().unwrap();
+            let newest = local.as_ref().min_rtt().unwrap();
+            (oldest, newest)
+        };
+
+        // calculate using the backward offset (tsc_post and server_send)
+        //
+        // When it comes to the time period calculation, the most important factor is network path consistency.
+        // We have 4 options for doing this right now.
+        // - Using the return path only (what this code does)
+        // - Using the forward path only
+        // - using the midpoint
+        // - something more complex using period_max_error calculations
+        //
+        // The first 2 options (forward or return path) are stable and simple approaches.
+        //
+        // The midpoint creates an "averaging" effect. Since the goal is to minimize round trip, it ends
+        // up creating a "worst of both worlds" scenario.
+        //
+        // Anecdotally, we have seen some EC2 instances have more consistent link local RTT on the return
+        // path as opposed to the forward path.
+        //
+        // A complex strategy we could take on would be to calculate error values on slopes and directly compare
+        // these values in search. That kind of approach is TBD.
+        let p_estimate = (newest.data().server_send_time - oldest.data().server_send_time)
+            / (newest.tsc_post() - oldest.tsc_post());
+
+        let k = p_estimate * TscDiff::new(newest.tsc_post().get());
+        let k = newest.data().server_send_time - k;
+
+        tracing::debug!(
+            ?oldest,
+            ?newest,
+            ?p_estimate,
+            ?k,
+            "Calculated period and k values"
+        );
+
+        Some(UncorrectedClock { p_estimate, k })
     }
 
     /// Calculate the local period and associated error
@@ -114,13 +207,25 @@ struct LocalPeriodAndError {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::daemon::{
+        clock_sync_algorithm::{
+            RingBuffer,
+            ff::event_buffer::{Estimate, Local},
+        },
         event::{NtpData, Stratum},
         time::{Duration, Instant, TscCount},
     };
 
     use super::*;
+
+    #[test]
+    fn empty_buffers() {
+        let local = Local::new(NonZeroUsize::new(1).unwrap());
+        let estimate = Estimate::new();
+        let result = Ntp::calculate_uncorrected_clock(&local, &estimate);
+        assert!(result.is_none());
+    }
 
     #[test]
     fn calculate_local_period_returns_none() {
@@ -183,11 +288,151 @@ mod test {
             })
             .build()
             .unwrap();
-
         local.feed(old_event).unwrap();
         local.feed(new_event).unwrap();
 
         let result = Ntp::calculate_local_period_and_error(&local).unwrap();
         assert_eq!(result.period_local, Period::from_seconds(1.0e-9));
+    }
+
+    #[test]
+    fn calculate_uncorrected_local_has_single_value() {
+        let mut local = Local::new(NonZeroUsize::new(1).unwrap());
+        let event = event::Ntp::builder()
+            .tsc_pre(TscCount::new(100))
+            .tsc_post(TscCount::new(110))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1),
+                server_send_time: Instant::from_days(1) + Duration::from_micros(10),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        local.feed(event.clone()).unwrap();
+        let estimate = Estimate::new();
+
+        // estimate is empty, local has a single value. Cannot calculate a period with a single datapoint
+        let result = Ntp::calculate_uncorrected_clock(&local, &estimate);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn calculate_uncorrected_local_has_two_values() {
+        // Create 2 points that are 1 second apart and the TSC is roughly 1 GHz
+        let mut local = Local::new(NonZeroUsize::new(2).unwrap());
+        let server_send_time = Instant::from_days(1) + Duration::from_nanos(900);
+        let event1 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1) + Duration::from_nanos(100),
+                server_send_time,
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        let event2 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(2_000_000_000))
+            .tsc_post(TscCount::new(2_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(1)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(1)
+                    + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        local.feed(event1.clone()).unwrap();
+        local.feed(event2.clone()).unwrap();
+        let estimate = Estimate::new();
+
+        let result = Ntp::calculate_uncorrected_clock(&local, &estimate).unwrap();
+
+        approx::assert_abs_diff_eq!(result.p_estimate.get(), 1e-9);
+        let expected = server_send_time - Duration::from_secs(1) - Duration::from_micros(1); // account for tsc_post time of 1_000_001_000 at 1GHz period
+        assert_eq!(result.k, expected,);
+    }
+
+    #[test]
+    fn calculate_uncorrected_estimate_has_values() {
+        // Create 2 points that are 1 second apart and the TSC is roughly 1 GHz
+        let mut local = Local::new(NonZeroUsize::new(2).unwrap());
+        let local_event = event::Ntp::builder()
+            .tsc_pre(TscCount::new(2_000_000_000_000))
+            .tsc_post(TscCount::new(2_000_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(1999)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(1999)
+                    + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        local.feed(local_event).unwrap();
+
+        let estimate_event_1 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1) + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1) + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        // larger RTT
+        let estimate_event_2 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000_000))
+            .tsc_post(TscCount::new(1_000_000_002_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(1000)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(1000)
+                    + Duration::from_nanos(100),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        let mut estimate_inner = RingBuffer::new(NonZeroUsize::new(5).unwrap());
+        estimate_inner.push(estimate_event_1);
+        estimate_inner.push(estimate_event_2);
+
+        let estimate = Estimate::builder().inner(estimate_inner).build();
+
+        let result = Ntp::calculate_uncorrected_clock(&local, &estimate).unwrap();
+
+        approx::assert_abs_diff_eq!(result.p_estimate.get(), 1e-9);
+        assert_eq!(
+            result.k,
+            Instant::from_days(1) + Duration::from_nanos(900)
+                - Duration::from_secs(1)
+                - Duration::from_micros(1)
+        );
     }
 }
