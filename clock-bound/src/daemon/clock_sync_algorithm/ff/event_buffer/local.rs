@@ -74,6 +74,10 @@ impl<T> Local<T> {
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
+
+    pub fn rtt_threshold_multiplier(&self) -> usize {
+        self.rtt_threshold_multiplier
+    }
 }
 
 impl<T: TscRtt + Debug> Local<T> {

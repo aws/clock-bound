@@ -6,9 +6,11 @@ use super::event_buffer;
 use crate::daemon::{
     clock_parameters::ClockParameters,
     clock_sync_algorithm::{ff::UncorrectedClock, ring_buffer::Quarter},
-    event,
-    event::TscRtt,
-    time::{TscDiff, tsc::Period},
+    event::{self, TscRtt},
+    time::{
+        Duration, TscDiff,
+        tsc::{Period, Skew},
+    },
 };
 
 /// Feed forward time synchronization algorithm for a single NTP source
@@ -196,6 +198,86 @@ impl Ntp {
             error,
         })
     }
+
+    /// Calculate the theta value, which is the time correction to be applied
+    ///
+    /// The theta corresponds to the equation below
+    ///
+    /// `C(t) = TSC(t) × p^ + K − θ^(t)` where:
+    /// - `C(t)` is the absolute time. Corrected.
+    /// - `TSC(t)` is the tsc reading at a time
+    /// - `p^` is the estimation of the clock period
+    /// - `K` is the "epoch" (the uncorrected time at `TSC(0)`)
+    /// - `θ^(t)` is the time correction
+    ///
+    /// # Panics
+    /// Panics if `Local` is empty
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "exp and weight require floats. Values are small enough to not lose precision"
+    )]
+    fn calculate_theta(
+        local: &event_buffer::Local<event::Ntp>,
+        period_local: Period,
+        uncorrected_clock: UncorrectedClock,
+    ) -> CalculateThetaOutput {
+        // Feed-forward time synchronization algorithm's error normalization factor.
+        // This constant is used to penalize the feed_forward_samples that have a
+        // slower reference clock read duration.
+        const ERROR_NORMALIZATION_FACTOR: f64 = 1e5;
+
+        assert!(!local.is_empty());
+
+        let now_post = local.as_ref().head().unwrap().tsc_post();
+        let skew = Skew::from_ratio(period_local, uncorrected_clock.p_estimate);
+        let mut numerator = 0.0;
+        let mut denominator = 0.0;
+
+        let min_event = local.as_ref().min_rtt().unwrap();
+
+        let mut max_ceb = Duration::from_secs(0);
+
+        for event in local.iter() {
+            if event.rtt() > (min_event.rtt() * local.rtt_threshold_multiplier()) {
+                tracing::trace!(?event, ?min_event, "skipping event due to rtt threshold");
+                continue;
+            }
+            // Use the worst CEB in calculation as the algorithm's CEB
+            max_ceb = std::cmp::max(max_ceb, event.calculate_clock_error_bound(period_local));
+
+            // calculate midpoints on client and server side
+
+            let offset = event.calculate_offset(uncorrected_clock);
+
+            // estimate error based off of TSC rtt
+            let sample_error = event.rtt() - min_event.rtt();
+            assert!(sample_error.get() >= 0, "cannot have a negative error");
+
+            // weight is e^(-sqrt(Error_{i}/E))
+            // escaping into f64 to minimize rounding error. Sticking with nanoseconds as the base unit
+            // NOTE/FIXME: is there a world where we take into account either age of the event or the
+            // clock_error_bound?
+            let weight = -((sample_error.get() as f64 / ERROR_NORMALIZATION_FACTOR).sqrt());
+            let weight = weight.exp();
+
+            let offset_nsec = offset.as_seconds_f64() * 1e9;
+
+            let skew_correction_seconds = skew.get()
+                * uncorrected_clock.p_estimate.get()
+                * ((now_post - event.tsc_post()).get() as f64);
+            let skew_correction_nsec = skew_correction_seconds * 1e9;
+            numerator += weight * (offset_nsec + skew_correction_nsec);
+            denominator += weight;
+        }
+
+        let theta_nsec = numerator / denominator;
+        let theta = Duration::from_seconds_f64(theta_nsec / 1e9);
+        tracing::debug!(?theta, ?uncorrected_clock, %period_local, "Calculated theta");
+        CalculateThetaOutput {
+            theta,
+            clock_error_bound: max_ceb,
+        }
+    }
 }
 
 /// Used as the output for [`Ntp::calculate_local_period_and_error`]
@@ -204,6 +286,14 @@ struct LocalPeriodAndError {
     period_local: Period,
     /// period error
     error: Period,
+}
+
+/// Output from [`Ntp::calculate_theta`]
+struct CalculateThetaOutput {
+    /// The time correction to be applied
+    theta: Duration,
+    /// The worst clock error bound used in calculation
+    clock_error_bound: Duration,
 }
 
 #[cfg(test)]
@@ -433,6 +523,130 @@ mod tests {
             Instant::from_days(1) + Duration::from_nanos(900)
                 - Duration::from_secs(1)
                 - Duration::from_micros(1)
+        );
+    }
+
+    #[test]
+    fn theta_naive() {
+        // Naive test case, estimate and local periods are the same
+        // clock rates 1GHz
+        // epoch is 1 day after 1970 new years
+
+        let uncorrected_clock = UncorrectedClock {
+            k: Instant::from_days(1),
+            p_estimate: Period::from_seconds(1e-9),
+        };
+        let local_period = Period::from_seconds(1e-9);
+
+        let mut local = Local::new(NonZeroUsize::new(2).unwrap());
+        let event1 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(1)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(1)
+                    + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        let event2 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(2_000_000_000))
+            .tsc_post(TscCount::new(2_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(2)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(2)
+                    + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        local.feed(event1.clone()).unwrap();
+        local.feed(event2.clone()).unwrap();
+
+        let CalculateThetaOutput {
+            theta,
+            clock_error_bound,
+        } = Ntp::calculate_theta(&local, local_period, uncorrected_clock);
+
+        assert_eq!(theta, Duration::from_secs(0));
+        assert_eq!(
+            clock_error_bound,
+            event1.calculate_clock_error_bound(local_period)
+        );
+    }
+
+    #[test]
+    fn theta() {
+        // Less naive test case, estimate and local periods are 10 PPM off
+        // estimate clock rates 1GHz
+        // epoch is 1 day after 1970 new years
+
+        let uncorrected_clock = UncorrectedClock {
+            k: Instant::from_days(1),
+            p_estimate: Period::from_seconds(1e-9),
+        };
+        let local_period = Period::from_seconds(uncorrected_clock.p_estimate.get() * 1.000_010);
+
+        let mut local = Local::new(NonZeroUsize::new(2).unwrap());
+        let event1 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(1)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(1)
+                    + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(27),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        let event2 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(2_000_000_000))
+            .tsc_post(TscCount::new(2_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(2)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(2)
+                    + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        local.feed(event1.clone()).unwrap();
+        local.feed(event2.clone()).unwrap();
+
+        let CalculateThetaOutput {
+            theta,
+            clock_error_bound,
+        } = Ntp::calculate_theta(&local, local_period, uncorrected_clock);
+
+        assert_eq!(theta, Duration::from_micros(-5));
+        assert_eq!(
+            clock_error_bound,
+            event1.calculate_clock_error_bound(local_period)
         );
     }
 }

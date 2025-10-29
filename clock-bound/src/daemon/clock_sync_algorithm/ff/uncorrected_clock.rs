@@ -1,6 +1,6 @@
 //! A naive uncorrected clock
 
-use crate::daemon::time::{Instant, tsc::Period};
+use crate::daemon::time::{Instant, TscCount, tsc::Period};
 
 /// A naive uncorrected clock
 ///
@@ -13,4 +13,11 @@ use crate::daemon::time::{Instant, tsc::Period};
 pub struct UncorrectedClock {
     pub p_estimate: Period,
     pub k: Instant,
+}
+
+impl UncorrectedClock {
+    /// Calculate the uncorrected time of a corresponding TSC value
+    pub fn time_at(&self, tsc: TscCount) -> Instant {
+        tsc.uncorrected_time(self.p_estimate, self.k)
+    }
 }

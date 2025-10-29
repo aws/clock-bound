@@ -271,6 +271,14 @@ impl Skew {
         self.0
     }
 
+    /// Calculate skew from 2 clocks
+    ///
+    /// equivalent to `1 - (num / den)`
+    pub fn from_ratio(num: Period, den: Period) -> Self {
+        let ratio = num.get() / den.get();
+        Self(1.0 - ratio)
+    }
+
     /// In struct timex, freq, ppsfreq, and stabil are ppm (parts per
     /// million) with a 16-bit fractional part, which means that a value
     /// of 1 in one of those fields actually means 2^-16 ppm, and

@@ -5,7 +5,10 @@ use std::{
 };
 
 use super::TscRtt;
-use crate::daemon::time::{Duration, Instant, TscCount, tsc::Period};
+use crate::daemon::{
+    clock_sync_algorithm::ff::UncorrectedClock,
+    time::{Duration, Instant, TscCount, tsc::Period},
+};
 
 /// Contains the NTP and time stamp counter samples to be used by synchronization algorithm.
 ///
@@ -96,6 +99,23 @@ impl Ntp {
         let rtt = self.rtt() * period_local;
         let root_delay = self.data().root_delay + rtt;
         self.data().root_dispersion + (root_delay / 2)
+    }
+
+    /// Calculate offset using the uncorrected clock
+    ///
+    /// Offset is positive if the client is ahead of the server
+    pub fn calculate_offset(&self, uncorrected_clock: UncorrectedClock) -> Duration {
+        // calculate midpoints on client and server side
+        let client_send_time = uncorrected_clock.time_at(self.tsc_pre());
+        let client_recv_time = uncorrected_clock.time_at(self.tsc_post());
+        let client_midpoint = client_send_time.midpoint(client_recv_time);
+
+        let server = self.data();
+        let server_midpoint = server.server_recv_time.midpoint(server.server_send_time);
+
+        // calculate the uncorrected offset from the reference clock
+        // offset is positive if local clock is ahead of server
+        client_midpoint - server_midpoint
     }
 }
 
@@ -474,6 +494,97 @@ mod tests {
         approx::assert_abs_diff_eq!(
             result.as_seconds_f64(),
             expected.as_seconds_f64(),
+            epsilon = 1e-9
+        );
+    }
+
+    // Helper function to create an UncorrectedClock with specific parameters
+    fn create_uncorrected_clock(k: Instant, p_estimate: Period) -> UncorrectedClock {
+        UncorrectedClock { k, p_estimate }
+    }
+
+    #[rstest]
+    #[case::client_ahead(
+        // Test case where client is ahead of server
+        Ntp::builder()
+            .tsc_pre(TscCount::new(1000))
+            .tsc_post(TscCount::new(2000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_secs(10),
+                server_send_time: Instant::from_secs(11),
+                root_delay: Duration::from_secs(0),
+                root_dispersion: Duration::from_secs(0),
+                stratum: Stratum::ONE,
+            })
+            .build()
+            .unwrap(),
+        create_uncorrected_clock(
+            Instant::from_secs(0),
+            Period::from_seconds(0.02) // 20ms per tick
+        ),
+        Duration::from_seconds_f64(19.5) // Expected positive offset
+    )]
+    #[case::client_behind(
+        // Test case where client is behind server
+        Ntp::builder()
+            .tsc_pre(TscCount::new(1000))
+            .tsc_post(TscCount::new(2000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_secs(50),
+                server_send_time: Instant::from_secs(51),
+                root_delay: Duration::from_secs(0),
+                root_dispersion: Duration::from_secs(0),
+                stratum: Stratum::ONE,
+            })
+            .build()
+            .unwrap(),
+        create_uncorrected_clock(
+            Instant::from_secs(0),
+            Period::from_seconds(0.02) // 20ms per tick
+        ),
+        Duration::from_seconds_f64(-20.5) // Expected negative offset
+    )]
+    #[case::zero_offset(
+        // Test case where client and server are synchronized
+        Ntp::builder()
+            .tsc_pre(TscCount::new(1000))
+            .tsc_post(TscCount::new(2000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_secs(20),
+                server_send_time: Instant::from_secs(30),
+                root_delay: Duration::from_secs(0),
+                root_dispersion: Duration::from_secs(0),
+                stratum: Stratum::ONE,
+            })
+            .build()
+            .unwrap(),
+        create_uncorrected_clock(
+            Instant::from_secs(10),
+            Period::from_seconds(0.01) // 10ms per tick
+        ),
+        Duration::from_secs(0) // Expected zero offset
+    )]
+    fn calculate_offset(
+        #[case] ntp_event: Ntp,
+        #[case] uncorrected_clock: UncorrectedClock,
+        #[case] expected_offset: Duration,
+    ) {
+        let client_midpoint = ntp_event.tsc_pre.midpoint(ntp_event.tsc_post);
+        println!(
+            "tsc_pre: {:?}",
+            uncorrected_clock.time_at(ntp_event.tsc_pre)
+        );
+        println!(
+            "tsc_post: {:?}",
+            uncorrected_clock.time_at(ntp_event.tsc_post)
+        );
+        let client_midpoint = uncorrected_clock.time_at(client_midpoint);
+        println!("client_midpoint: {client_midpoint:?}");
+        let offset = ntp_event.calculate_offset(uncorrected_clock);
+
+        approx::assert_abs_diff_eq!(
+            offset.as_seconds_f64(),
+            expected_offset.as_seconds_f64(),
             epsilon = 1e-9
         );
     }
