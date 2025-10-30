@@ -1,5 +1,8 @@
 //! Feed forward clock sync algorithm
-#![expect(dead_code, reason = "remove when RoutableEvent is added")]
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "remove when RoutableEvent is added")
+)]
 
 pub mod ff;
 
@@ -22,7 +25,7 @@ pub mod source;
 ///
 /// # Usage
 /// TODO
-#[derive(Debug, Clone, bon::Builder)]
+#[derive(Debug, Clone, PartialEq, bon::Builder)]
 pub struct ClockSyncAlgorithm {
     /// The link-local reference clock's ff algorithm
     link_local: source::LinkLocal,
@@ -33,5 +36,20 @@ impl ClockSyncAlgorithm {
     /// TODO: make this function private and call into it from `fn feed` when we have a routable event
     pub fn feed_link_local(&mut self, event: event::Ntp) -> Option<ClockParameters> {
         self.link_local.feed(event)
+    }
+
+    /// Handle a clock disruption event
+    ///
+    /// Call this function after the system detects a VMClock disruption event.
+    ///
+    /// It will go through and clear the state (like startup).
+    pub fn handle_disruption(&mut self) {
+        // Use the destructure pattern to get a mutable reference to each item.
+        //
+        // This makes it a compilation error if we add a new field this Self without handling it here
+        let Self { link_local } = self;
+
+        link_local.handle_disruption();
+        tracing::info!("Handled clock disruption event");
     }
 }

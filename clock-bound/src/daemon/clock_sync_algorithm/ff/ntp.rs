@@ -14,7 +14,7 @@ use crate::daemon::{
 };
 
 /// Feed forward time synchronization algorithm for a single NTP source
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ntp {
     /// Events within the current SKM (within 1024 seconds)
     local: event_buffer::Local<event::Ntp>,
@@ -54,6 +54,24 @@ impl Ntp {
     /// Get the current [`ClockParameters`]
     pub fn clock_parameters(&self) -> Option<&ClockParameters> {
         self.clock_parameters.as_ref()
+    }
+
+    /// Handle a disruption event
+    ///
+    /// Clears all event buffers and prior-calculations.
+    pub fn handle_disruption(&mut self) {
+        // Destructure pattern makes handling new fields mandatory
+        let Self {
+            local,
+            estimate,
+            clock_parameters,
+            period_estimate,
+        } = self;
+
+        local.handle_disruption();
+        estimate.handle_disruption();
+        *clock_parameters = None;
+        *period_estimate = None;
     }
 
     /// Calculate the estimate period and k value based off of the ring buffers

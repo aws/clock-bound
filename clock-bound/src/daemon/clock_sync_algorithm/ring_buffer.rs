@@ -12,7 +12,7 @@ use crate::daemon::{event::TscRtt, time::TscCount};
 /// Uses `head` and `tail` terminology. The head is where the most recent values
 /// are added, and `tail` is where the oldest values are. Values are added to the head
 /// via [`RingBuffer::push`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RingBuffer<T> {
     buffer: VecDeque<T>,
     capacity: usize,

@@ -27,7 +27,7 @@ use crate::daemon::{
 ///
 /// However, this rule **can** cause starvation if the RTT is extremely noisy. That's why the threshold can be tuned
 /// or even dynamically modified. Changes subject to experimentation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Local<T> {
     /// The inner storage
     inner: RingBuffer<T>,
@@ -73,6 +73,15 @@ impl<T> Local<T> {
     /// Returns true if empty
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    /// Clear the internal buffer
+    pub fn handle_disruption(&mut self) {
+        let Self {
+            inner,
+            rtt_threshold_multiplier: _rtt,
+        } = self;
+        inner.clear();
     }
 
     pub fn rtt_threshold_multiplier(&self) -> usize {
@@ -234,5 +243,29 @@ mod tests {
         for (i, event) in buffer.iter().enumerate() {
             assert_eq!(event.tsc_pre().get(), ((i + 2) * 100) as i128);
         }
+    }
+
+    #[test]
+    fn handle_disruption() {
+        let mut local = Local::new(NonZeroUsize::new(3).unwrap());
+
+        let events = vec![
+            TestEvent::pre_and_rtt(1000, 100),
+            TestEvent::pre_and_rtt(2000, 90),
+            TestEvent::pre_and_rtt(3000, 80),
+        ];
+
+        for event in &events {
+            local.feed(event.clone()).unwrap();
+        }
+
+        let thresh = local.rtt_threshold_multiplier;
+
+        assert_eq!(local.inner.len(), 3);
+
+        local.handle_disruption();
+
+        assert_eq!(local.inner.len(), 0);
+        assert_eq!(local.rtt_threshold_multiplier, thresh); // unchanged
     }
 }

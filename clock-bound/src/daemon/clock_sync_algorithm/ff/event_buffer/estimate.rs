@@ -48,7 +48,7 @@ use crate::daemon::{
 /// # Starvation
 /// What happens if there are NO good data points for an SKM? That's an issue for [`Local`] to handle. But windows without
 /// anything in Local will just early exit, as there is nothing to feed into [`Estimate`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(bon::Builder))] // Workaround the strict invariants that make testing un-ergonomic
 pub struct Estimate<T> {
     /// The inner storage
@@ -97,6 +97,16 @@ impl<T> Estimate<T> {
     fn push(&mut self, event: T, now_tsc_post: TscCount) {
         self.last_tsc_post = Some(now_tsc_post);
         self.inner.push(event);
+    }
+
+    /// Clear the internal buffer
+    pub fn handle_disruption(&mut self) {
+        let Self {
+            inner,
+            last_tsc_post,
+        } = self;
+        inner.clear();
+        *last_tsc_post = None;
     }
 }
 
@@ -399,5 +409,28 @@ mod tests {
         for (i, event) in collected.iter().enumerate() {
             assert_eq!(event.tsc_post(), events[i].tsc_post());
         }
+    }
+
+    #[test]
+    fn handle_disruption() {
+        let mut estimate: Estimate<TestEvent> = Estimate::new();
+
+        let events = vec![
+            TestEvent::pre_and_rtt(1000, 100),
+            TestEvent::pre_and_rtt(2000, 90),
+            TestEvent::pre_and_rtt(3000, 80),
+        ];
+
+        for event in &events {
+            estimate.push(event.clone(), event.tsc_post());
+        }
+
+        assert_eq!(estimate.len(), 3);
+        assert!(estimate.last_tsc_post.is_some());
+
+        estimate.handle_disruption();
+
+        assert_eq!(estimate.len(), 0);
+        assert!(estimate.last_tsc_post.is_none());
     }
 }

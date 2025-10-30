@@ -10,7 +10,7 @@ use crate::daemon::time::Duration;
 /// A Link Local reference clock source
 ///
 /// Wraps around an NTP feed-forward clock-sync algorithm
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkLocal {
     inner: ff::Ntp,
 }
@@ -38,6 +38,16 @@ impl LinkLocal {
     #[tracing::instrument(level = "info", skip_all)]
     pub fn feed(&mut self, event: event::Ntp) -> Option<ClockParameters> {
         self.inner.feed(event)
+    }
+
+    /// Handle a disruption event.
+    ///
+    /// This clears the internal `ff` and any other state related to the local system's hardware
+    pub fn handle_disruption(&mut self) {
+        // Destructure pattern makes handling new fields mandatory
+        let Self { inner } = self;
+
+        inner.handle_disruption();
     }
 }
 
