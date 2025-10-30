@@ -14,6 +14,8 @@ pub mod time;
 
 pub mod event;
 
+pub mod receiver_stream;
+
 use crate::daemon::clock_sync_algorithm::ClockSyncAlgorithm;
 
 pub struct Daemon {

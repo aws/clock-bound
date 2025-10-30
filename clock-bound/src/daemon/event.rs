@@ -10,6 +10,7 @@ use crate::daemon::time::{TscCount, TscDiff};
 pub enum Event {
     /// NTP Event
     Ntp(Ntp),
+    Phc,
 }
 
 /// Simple abstraction around types that have a TSC read before and after reference clock reads
