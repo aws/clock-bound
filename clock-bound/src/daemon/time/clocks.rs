@@ -1,13 +1,33 @@
 //! Clocks used in ClockBound
-use crate::daemon::time::{Instant, inner::Clock, instant::Utc};
+use crate::daemon::{
+    clock_parameters::ClockParameters,
+    io::tsc::ReadTsc,
+    time::{Instant, TscCount, inner::Clock, instant::Utc},
+};
 use nix::time::{ClockId, clock_gettime};
 
 /// Wrapper around reads of the internal clock tracked by the ClockBound `ClockSyncAlgorithm`.
-pub struct ClockBound;
-impl Clock<Utc> for ClockBound {
+pub struct ClockBound<T> {
+    clock_parameters: ClockParameters,
+    read_tsc: T,
+}
+impl<T> ClockBound<T> {
+    /// Create a new `ClockBound` clock
+    pub fn new(clock_parameters: ClockParameters, read_tsc: T) -> Self {
+        Self {
+            clock_parameters,
+            read_tsc,
+        }
+    }
+}
+
+impl<T: ReadTsc> Clock<Utc> for ClockBound<T> {
     /// Get the current `Instant` by reading `ClockParameters`
     fn get_time(&self) -> Instant {
-        todo!("implement this clock once we have some sane parameters");
+        let current_tsc = TscCount::new(self.read_tsc.read_tsc().into());
+        // TODO: disregarding overflow of TSC, that will take a while, but worth thinking of
+        self.clock_parameters.time
+            + ((current_tsc - self.clock_parameters.tsc_count) * self.clock_parameters.period)
     }
 }
 
@@ -63,6 +83,13 @@ impl Clock<Utc> for MonotonicRaw {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
+    use crate::daemon::{
+        io::tsc::MockReadTsc,
+        time::{Duration, tsc::Period},
+    };
+
     use super::*;
 
     // Ensure that CLOCK_REALTIME and the std library utility for CLOCK_REALTIME are approximately the same.
@@ -84,5 +111,68 @@ mod tests {
         let now = monotonic_raw.get_time();
         let later = monotonic_raw.get_time();
         assert!(now < later);
+    }
+
+    #[rstest]
+    #[case::no_tsc_change(
+        TscCount::new(0),
+        Instant::from_secs(0),
+        Period::from_seconds(1e-9),
+        0,
+        Instant::from_secs(0)
+    )]
+    #[case::start_from_zero_time(
+        TscCount::new(0),
+        Instant::from_secs(0),
+        Period::from_seconds(1e-9),
+        1_000_000_000,
+        Instant::from_secs(1)
+    )]
+    #[case::start_from_nonzero_time(
+        TscCount::new(0),
+        Instant::from_secs(1),
+        Period::from_seconds(1e-9),
+        1_000_000_000,
+        Instant::from_secs(2)
+    )]
+    #[case::larger_period(
+        TscCount::new(0),
+        Instant::from_secs(0),
+        Period::from_seconds(1e-6),
+        1_000_000_000,
+        Instant::from_secs(1_000)
+    )]
+    #[case::start_from_nonzero_tsc(
+        TscCount::new(1_000_000_000),
+        Instant::from_secs(0),
+        Period::from_seconds(1e-9),
+        2_000_000_000,
+        Instant::from_secs(1)
+    )]
+    fn test_clockbound_clock(
+        #[case] initial_tsc: TscCount,
+        #[case] initial_time: Instant,
+        #[case] period: Period,
+        #[case] read_tsc_output: u64,
+        #[case] expected_time: Instant,
+    ) {
+        let mut mock_read_tsc = MockReadTsc::new();
+        mock_read_tsc
+            .expect_read_tsc()
+            .returning(move || read_tsc_output);
+
+        let tsc_count = initial_tsc;
+        let time = initial_time;
+        let clock_error_bound = Duration::new(0);
+        let period_max_error = Period::from_seconds(0.0);
+        let clock_parameters = ClockParameters {
+            tsc_count,
+            time,
+            clock_error_bound,
+            period,
+            period_max_error,
+        };
+        let clockbound_clock = ClockBound::new(clock_parameters, mock_read_tsc);
+        assert_eq!(clockbound_clock.get_time(), expected_time);
     }
 }

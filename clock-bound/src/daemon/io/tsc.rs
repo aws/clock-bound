@@ -1,4 +1,14 @@
 //! Module for reading TSC values.
+#[cfg_attr(test, mockall::automock)]
+pub trait ReadTsc {
+    fn read_tsc(&self) -> u64;
+}
+pub struct ReadTscImpl;
+impl ReadTsc for ReadTscImpl {
+    fn read_tsc(&self) -> u64 {
+        read_timestamp_counter()
+    }
+}
 
 /// Reads the current value of the processor's time-stamp counter.
 #[cfg(target_arch = "aarch64")]
