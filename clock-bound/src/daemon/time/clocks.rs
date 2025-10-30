@@ -81,6 +81,27 @@ impl Clock<Utc> for MonotonicRaw {
     }
 }
 
+pub struct MonotonicCoarse;
+impl Clock<Utc> for MonotonicCoarse {
+    /// Get the current `Instant` by reading `CLOCK_MONOTONIC_COARSE`
+    ///
+    /// # Panics
+    /// Panics if `clock_gettime` call fails (if pointer allocated for the call is invalid, or `ClockId` supplied is invalid or unavailable on the system)
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clock_gettime tv_nsec should be between 0 and 1e9-1 so no truncation"
+    )]
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "clock_gettime tv_nsec should be between 0 and 1e9-1 so no loss of sign"
+    )]
+    fn get_time(&self) -> Instant {
+        // Unwrap safety: `nix` crate supplies valid pointer and `ClockId` so the `clock_gettime` call should not be able to fail
+        let now = clock_gettime(ClockId::CLOCK_MONOTONIC_COARSE).unwrap();
+        Instant::from_time(now.tv_sec().into(), now.tv_nsec() as u32)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;

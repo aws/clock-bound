@@ -2,7 +2,7 @@
 //! the timekeeping utilities internal to ClockBound.
 use clap::Parser;
 use clock_bound::daemon::{
-    clock_state::{ClockAdjuster, KAPIClockAdjuster},
+    clock_state::clock_adjust::{ClockAdjuster, KAPIClockAdjuster},
     time::{Duration, tsc::Skew},
 };
 

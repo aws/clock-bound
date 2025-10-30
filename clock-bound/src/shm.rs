@@ -338,6 +338,38 @@ impl ClockErrorBound {
     }
 }
 
+/// Getters exposed for the sake of unit tests across other modules in crate
+#[cfg(test)]
+impl ClockErrorBound {
+    pub fn as_of(&self) -> TimeSpec {
+        self.as_of
+    }
+
+    pub fn void_after(&self) -> TimeSpec {
+        self.void_after
+    }
+
+    pub fn bound_nsec(&self) -> i64 {
+        self.bound_nsec
+    }
+
+    pub fn disruption_marker(&self) -> u64 {
+        self.disruption_marker
+    }
+
+    pub fn max_drift_ppb(&self) -> u32 {
+        self.max_drift_ppb
+    }
+
+    pub fn clock_status(&self) -> ClockStatus {
+        self.clock_status
+    }
+
+    pub fn clock_disruption_support_enabled(&self) -> bool {
+        self.clock_disruption_support_enabled
+    }
+}
+
 #[cfg(test)]
 mod t_lib {
     use super::*;

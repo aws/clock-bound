@@ -39,7 +39,7 @@ pub struct ClockOffsetAndRtt<T: FemtoType + Copy> {
 }
 
 impl<T: FemtoType + Copy> ClockOffsetAndRtt<T> {
-    fn new(offset: Diff<T>, rtt: Diff<T>) -> Self {
+    pub(crate) fn new(offset: Diff<T>, rtt: Diff<T>) -> Self {
         Self { offset, rtt }
     }
 
