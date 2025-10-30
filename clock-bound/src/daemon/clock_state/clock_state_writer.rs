@@ -1,3 +1,4 @@
+//! Write clockbound shared memory and manage clock state
 use nix::sys::time::TimeSpec;
 
 use crate::{
@@ -25,6 +26,19 @@ pub struct ClockStateWriter<T> {
     disruption_marker: u64,
 }
 
+#[cfg(test)]
+mockall::mock! {
+    pub ClockStateWriter<T> {
+        pub fn handle_clock_parameters(
+            &mut self,
+            // This is needed to tell ClockAdjust what frequency to use.
+            _clock_parameters: &ClockParameters,
+            // This is needed to tell ClockAdjust what phase offset to use.
+            clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
+        );
+    }
+}
+
 #[bon::bon]
 impl<T: ShmWrite> ClockStateWriter<T> {
     #[builder]
@@ -43,6 +57,8 @@ impl<T: ShmWrite> ClockStateWriter<T> {
         }
     }
 
+    /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector.
+    ///
     /// # Panics
     /// Panics if error bound calculated exceeds `i64::MAX`
     pub fn handle_clock_parameters(

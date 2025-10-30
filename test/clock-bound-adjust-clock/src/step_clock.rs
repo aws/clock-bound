@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
 
     let initial_time: DateTime<Utc> = Utc::now();
     println!("Initial time is {initial_time:?}");
-    let clock_adjuster = ClockAdjuster::new(KAPIClockAdjuster);
+    let mut clock_adjuster = ClockAdjuster::new(KAPIClockAdjuster);
     clock_adjuster
         .step_clock(phase_correction)
         .map_err(|e| anyhow::anyhow!(e))?;
