@@ -29,8 +29,8 @@ jobs:
           name: ntp-source-test
           path: target/release/ntp-source-test
 
-  NTP_Server_Tests:
-    name: NTP Server tests
+  NTP_Source_Tests:
+    name: NTP Source tests
     needs: build
     runs-on:
       - codebuild-StagingClockBound-${{ github.run_id }}-${{ github.run_attempt }}
@@ -45,5 +45,5 @@ jobs:
       - run: ls
       - run: echo "Change permissions of artifact."
       - run: chmod 755 ntp-source-test
-      - run: echo "Run ntp server source test!"
+      - run: echo "Run ntp source test!"
       - run: ./ntp-source-test

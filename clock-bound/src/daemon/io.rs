@@ -90,7 +90,10 @@ impl SourceIO {
         server_address: SocketAddr,
         event_sender: async_ring_buffer::Sender<event::Ntp>,
     ) {
-        info!("Creating custom ntp server IO source.");
+        info!(
+            "Creating IO source from ntp server at {:#?}.",
+            server_address.ip().to_string()
+        );
 
         if !self.sources.ntp_sources.contains_key(&server_address) {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);

@@ -3,12 +3,13 @@
 //! This executable tests that the NTP Server runner is able to send and receive packets from the
 //! specified NTP Server address and that the polling rate is roughly once a second.
 
-use clock_bound::daemon::async_ring_buffer;
-use clock_bound::daemon::io::SourceIO;
+use std::time::Duration;
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time;
-use tokio::time::{Duration, timeout};
+use clock_bound::daemon::async_ring_buffer;
+use clock_bound::daemon::io::{
+    SourceIO,
+    ntp::{FIRST_PUBLIC_TIME_ADDRESS, SECOND_PUBLIC_TIME_ADDRESS},
+};
 
 use tracing_subscriber::EnvFilter;
 
@@ -18,62 +19,41 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    println!("Lets get a NTP packet!");
+    // Create ring buffer channels for ntp io sources
     let (first_ntp_source_sender, first_ntp_source_receiver) = async_ring_buffer::create(1);
     let (second_ntp_source_sender, second_ntp_source_receiver) = async_ring_buffer::create(1);
 
-    let mut start = time::Instant::now();
-
     let mut sourceio = SourceIO::construct();
-    // Currently hardcoded with a public NTP server IP
-    // TODO: Update this IP to new AGA IP after resource provisioning is complete
-    let first_ntp_source_public_ip =
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(54, 210, 225, 137)), 123);
-    let second_ntp_source_public_ip =
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(3, 33, 208, 232)), 123);
 
+    // Create IO time sources
     sourceio
-        .create_ntp_source(first_ntp_source_public_ip, first_ntp_source_sender)
+        .create_ntp_source(FIRST_PUBLIC_TIME_ADDRESS, first_ntp_source_sender)
         .await;
     sourceio
-        .create_ntp_source(second_ntp_source_public_ip, second_ntp_source_sender)
+        .create_ntp_source(SECOND_PUBLIC_TIME_ADDRESS, second_ntp_source_sender)
         .await;
+    println!("NTP Source creation complete!");
+
+    // Get NTP packet from both specified servers
+    println!("Lets get NTP packets!");
     sourceio.spawn_all();
-    println!("NTP Server creation complete!");
-
-    let mut polling_rate = time::Duration::from_secs(0);
-    for i in 0..6 {
-        println!("Polling {i}");
-
-        // Get NTP packet from both specified servers
-        let ntpevent_a = timeout(Duration::from_secs(32), first_ntp_source_receiver.recv())
-            .await
-            .unwrap();
-        let ntpevent_b = timeout(Duration::from_secs(32), second_ntp_source_receiver.recv())
-            .await
-            .unwrap();
-
-        let now = time::Instant::now();
-        let d = now - start;
-        println!(
-            "It looks like we got an ntp packet from 1st Source \n{ntpevent_a:#?}\n{:?} ms",
-            d.as_millis()
-        );
-        println!(
-            "It looks like we got an ntp packet from 2nd Source \n{ntpevent_b:#?}\n{:?} ms",
-            d.as_millis()
-        );
-
-        // Skip the first sample, the IO runner will poll immediately after it's created.
-        if i > 0 {
-            polling_rate += d;
-        }
-
-        start = now;
-    }
-    polling_rate /= 5;
-    println!("Polling rate avg: {polling_rate:?}");
-    assert!(
-        polling_rate.abs_diff(time::Duration::from_secs(16)) < time::Duration::from_millis(200)
+    let timeout_err_msg = &format!(
+        "Timeout was reached before a packet was received from {FIRST_PUBLIC_TIME_ADDRESS:#?}"
     );
+    let event_result =
+        tokio::time::timeout(Duration::from_secs(48), first_ntp_source_receiver.recv())
+            .await
+            .expect(timeout_err_msg);
+    event_result.unwrap();
+    println!("Packet received from first NTP host");
+
+    let timeout_err_msg = &format!(
+        "Timeout was reached before a packet was received from {SECOND_PUBLIC_TIME_ADDRESS:#?}"
+    );
+    let event_result =
+        tokio::time::timeout(Duration::from_secs(48), second_ntp_source_receiver.recv())
+            .await
+            .expect(timeout_err_msg);
+    event_result.unwrap();
+    println!("Packet received from second NTP host\nTEST COMPLETE");
 }

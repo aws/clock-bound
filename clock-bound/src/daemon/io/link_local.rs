@@ -17,7 +17,7 @@ use crate::daemon::{
     time::tsc::TscCount,
 };
 
-use super::ntp::{INTERVAL_DURATION, LINK_LOCAL_ADDRESS, LINK_LOCAL_TIMEOUT, packet};
+use super::ntp::{LINK_LOCAL_ADDRESS, LINK_LOCAL_INTERVAL_DURATION, LINK_LOCAL_TIMEOUT, packet};
 use packet::Packet;
 
 #[derive(Debug, Error)]
@@ -53,7 +53,7 @@ impl LinkLocal {
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     ) -> Self {
-        let mut link_local_interval = interval(INTERVAL_DURATION);
+        let mut link_local_interval = interval(LINK_LOCAL_INTERVAL_DURATION);
         link_local_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         LinkLocal {
             socket,
@@ -129,10 +129,7 @@ impl LinkLocal {
                     match self.sample().await {
                         Err(e) => {debug!(?e, "Failed to sample link local source.");}
                         Ok(ntp_event) => {
-                            if self.event_sender
-                                .send(ntp_event.clone()).is_err() {
-                                    unreachable!("Buffer Closing is not expected in alpha.")
-                                }
+                            self.event_sender.send(ntp_event.clone()).expect("Buffer Closing is not expected in alpha.");
                             debug!(?ntp_event, "Successfully sent Link Local IO event.");
                         }
 

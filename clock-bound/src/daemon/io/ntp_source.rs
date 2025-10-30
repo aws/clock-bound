@@ -19,7 +19,7 @@ use crate::daemon::{
     time::tsc::TscCount,
 };
 
-use super::ntp::{NTP_SERVER_INTERVAL_DURATION, NTP_SERVER_TIMEOUT, packet};
+use super::ntp::{NTP_SOURCE_INTERVAL_DURATION, NTP_SOURCE_TIMEOUT, packet};
 use packet::Packet;
 
 #[derive(Debug, Error)]
@@ -59,8 +59,8 @@ impl NTPSource {
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     ) -> Self {
-        let mut ntp_server_interval = interval(NTP_SERVER_INTERVAL_DURATION);
-        ntp_server_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut ntp_source_interval = interval(NTP_SOURCE_INTERVAL_DURATION);
+        ntp_source_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         NTPSource {
             socket,
             address,
@@ -68,7 +68,7 @@ impl NTPSource {
             ctrl_receiver,
             clock_disruption_receiver,
             ntp_buffer: [0u8; Packet::SIZE],
-            interval: ntp_server_interval,
+            interval: ntp_source_interval,
         }
     }
 
@@ -88,7 +88,7 @@ impl NTPSource {
         let sent_timestamp = read_timestamp_counter();
 
         // Request and Receive NTP sample.
-        let recv_packet_result = timeout(NTP_SERVER_TIMEOUT, {
+        let recv_packet_result = timeout(NTP_SOURCE_TIMEOUT, {
             self.socket.send_to(&self.ntp_buffer, self.address).await?;
             self.socket.recv_from(&mut self.ntp_buffer)
         })
@@ -134,10 +134,8 @@ impl NTPSource {
                     match self.sample().await {
                         Err(e) => {debug!(?e, "Failed to sample NTP source source.");},
                         Ok(ntp_event) => {
-                            if self.event_sender
-                                .send(ntp_event.clone()).is_err() {
-                                    unreachable!("Buffer Closing is not expected in alpha.")
-                                }
+                            self.event_sender
+                                .send(ntp_event.clone()).expect("Buffer Closing is not expected in alpha.");
                             debug!(?ntp_event, "Successfully sent NTP Source IO event.");
                         }
                     }
