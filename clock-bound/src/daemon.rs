@@ -16,7 +16,20 @@ pub mod event;
 
 pub mod receiver_stream;
 
-use crate::daemon::clock_sync_algorithm::ClockSyncAlgorithm;
+use crate::daemon::{clock_sync_algorithm::ClockSyncAlgorithm, time::tsc::Skew};
+
+/// The maximum dispersion growth every second
+///
+/// Whenever a clock error bound measurement is made, that value increases by this value
+/// for every second that the measurement becomes stale.
+///
+/// If the value is 15,000 parts per billion, for example, then every second we go without an
+/// updated measurement the clock error bound will increase by 15 microseconds.
+///
+/// This number is based on CPU spec sheet error tolerances
+const MAX_DISPERSION_GROWTH_PBB: u32 = 15_000;
+
+const MAX_DISPERSION_GROWTH: Skew = Skew::from_ppb(MAX_DISPERSION_GROWTH_PBB as f64);
 
 pub struct Daemon {
     _io_front_end: io::SourceIO,
@@ -33,7 +46,9 @@ impl Daemon {
         let mut io_front_end = io::SourceIO::construct();
 
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
-            .link_local(clock_sync_algorithm::source::LinkLocal::new())
+            .link_local(clock_sync_algorithm::source::LinkLocal::new(
+                MAX_DISPERSION_GROWTH,
+            ))
             .build();
 
         // FIXME, we are basically starting the application in the constructor

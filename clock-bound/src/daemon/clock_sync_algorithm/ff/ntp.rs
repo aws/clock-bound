@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 use super::event_buffer;
 use crate::daemon::{
     clock_parameters::ClockParameters,
+    clock_sync_algorithm::ff::event_buffer::FeedError,
     clock_sync_algorithm::{ff::UncorrectedClock, ring_buffer::Quarter},
     event::{self, TscRtt},
     time::{
@@ -22,8 +23,13 @@ pub struct Ntp {
     estimate: event_buffer::Estimate<event::Ntp>,
     /// Current calculation of [`ClockParameters`]
     clock_parameters: Option<ClockParameters>,
-    /// Current TSC period estimate
-    period_estimate: Option<Period>,
+    /// Current uncorrected clock
+    uncorrected_clock: Option<UncorrectedClock>,
+    /// Max dispersion growth
+    ///
+    /// Used to compare clock error bounds with older samples while
+    /// taking into account CEB growth from dispersion
+    max_dispersion: Skew,
 }
 
 impl Ntp {
@@ -32,28 +38,128 @@ impl Ntp {
     /// `local_capacity` should be the number of data-points to span an SKM window.
     /// For example, if the source is expected to sample once every second, the `local_capacity`
     /// should have a max value of 1024.
-    pub fn new(_local_capacity: NonZeroUsize) -> Self {
-        todo!()
-        // Self {
-        //     local: event_buffer::Local::new(local_capacity),
-        //     estimate: event_buffer::Estimate::new(),
-        //     clock_parameters: None,
-        //     period_estimate: None,
-        // }
+    pub fn new(local_capacity: NonZeroUsize, max_dispersion: Skew) -> Self {
+        Self {
+            local: event_buffer::Local::new(local_capacity),
+            estimate: event_buffer::Estimate::new(),
+            clock_parameters: None,
+            uncorrected_clock: None,
+            max_dispersion,
+        }
     }
 
     /// Feed an event into this algorithm
     ///
     /// Returns [`Some`] if the event has improved this source's [`ClockParameters`].
-    #[expect(clippy::needless_pass_by_value, reason = "impl will remove this lint")]
-    pub fn feed(&mut self, event: event::Ntp) -> Option<ClockParameters> {
-        tracing::debug!(?event, "feed");
-        None
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "panics documented and only occur from bugs"
+    )]
+    pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
+        let tsc_midpoint = event.tsc_midpoint();
+
+        // First update the internal local (current SKM) and estimate (long term)
+        // sample buffers
+        self.feed_internal_buffers(event)
+            .inspect_err(|error_msg| match error_msg {
+                FeedError::Old { event, .. } => {
+                    tracing::warn!(?event, ?error_msg);
+                }
+            })
+            .ok()?; // early exit only if there was an error with the sample
+
+        // Functionality from this point will fill out the equation
+        // `C(t) = TSC(t) × p^ + K − θ^(t)` where:
+        // - `C(t)` is the absolute time. Corrected. This is effectively the output of the clock sync algorithm
+        // - `TSC(t)` is the tsc reading at a time
+        // - `p^` is the estimation of the clock period
+        // - `K` is the "epoch" (the uncorrected time at `TSC(0)`)
+        // - `θ^(t)` is the time correction
+
+        // Calculate uncorrected clock, aka `p^` and `K`
+        self.uncorrected_clock = Self::calculate_uncorrected_clock(&self.local, &self.estimate);
+
+        // Then calculate the local period using just the local event buffer
+        //
+        // This value is not used in the above equation, but IS reported in the final clock parameters
+        let Some(local_period) = Self::calculate_local_period_and_error(&self.local) else {
+            tracing::debug!("Early exit. Calculate local period returned none");
+            return None;
+        };
+
+        // expect because not having an uncorrected clock is a bug at this point
+        //
+        // If we are able to calculate a local period, then uncorrected clock must be available
+        let uncorrected_clock = self
+            .uncorrected_clock
+            .expect("No uncorrected period but we have local period");
+
+        // Calculate `θ^(t)`
+        let CalculateThetaOutput {
+            theta,
+            clock_error_bound,
+        } = Self::calculate_theta(&self.local, local_period.period_local, uncorrected_clock);
+
+        // Calculate `C(t)`
+        //
+        // `uncorrected_clock.time_at(tsc)` is a function that calculates `TSC(t) × p^ + K`
+        // So this expands to `time = TSC(t) × p^ + K - θ^(t)`
+        //
+        // uses `tsc_midpoint` as that is the value that was used during the `Self::calculate_theta` fn
+        let time = uncorrected_clock.time_at(tsc_midpoint) - theta;
+
+        let clock_parameters = ClockParameters {
+            tsc_count: tsc_midpoint,
+            time,
+            clock_error_bound,
+            period: local_period.period_local,
+            period_max_error: local_period.error,
+        };
+
+        match &mut self.clock_parameters {
+            None => {
+                // This is the first time we have calculated clock parameters. Set it.
+                tracing::info!(?clock_parameters, "Clock Parameters initialized");
+                self.clock_parameters = Some(clock_parameters);
+                self.clock_parameters.as_ref()
+            }
+            Some(current_clock_parameters)
+                if clock_parameters
+                    .more_accurate_than(current_clock_parameters, self.max_dispersion) =>
+            {
+                // We currently have clock_parameters, and the new value is more accurate. Replace it.
+                tracing::debug!(?clock_parameters, "Clock Parameters updated");
+                *current_clock_parameters = clock_parameters;
+                self.clock_parameters.as_ref()
+            }
+            Some(current_clock_parameters) => {
+                // We currently have clock_parameters, and the new value is NOT more accurate. Ignore and return None.
+                tracing::debug!(new_clock_parameters = ?clock_parameters, ?current_clock_parameters, "Clock Parameters not updated");
+                None
+            }
+        }
     }
 
     /// Get the current [`ClockParameters`]
     pub fn clock_parameters(&self) -> Option<&ClockParameters> {
         self.clock_parameters.as_ref()
+    }
+
+    /// Feed the internal buffers with a new event
+    ///
+    /// This updates the local buffer with the event. If a `period` has been calculated already,
+    /// then we can use this value to update the `estimate` buffer as well.
+    #[expect(clippy::result_large_err, reason = "value moved on err is idiomatic")]
+    fn feed_internal_buffers(&mut self, event: event::Ntp) -> Result<(), FeedError<event::Ntp>> {
+        self.local.feed(event)?;
+
+        if let Some(uc) = self.uncorrected_clock {
+            self.local.expunge_old_events(uc.p_estimate);
+            if let Some(new_estimate) = self.estimate.feed(&self.local, uc.p_estimate) {
+                tracing::info!(?new_estimate, "New value added to estimate buffer");
+            }
+        }
+        Ok(())
     }
 
     /// Handle a disruption event
@@ -65,13 +171,14 @@ impl Ntp {
             local,
             estimate,
             clock_parameters,
-            period_estimate,
+            uncorrected_clock,
+            max_dispersion: _, // value currently does not change
         } = self;
 
         local.handle_disruption();
         estimate.handle_disruption();
         *clock_parameters = None;
-        *period_estimate = None;
+        *uncorrected_clock = None;
     }
 
     /// Calculate the estimate period and k value based off of the ring buffers
@@ -227,6 +334,21 @@ impl Ntp {
     /// - `p^` is the estimation of the clock period
     /// - `K` is the "epoch" (the uncorrected time at `TSC(0)`)
     /// - `θ^(t)` is the time correction
+    ///
+    /// Calculation requires calculating
+    /// ```text
+    ///           ∑{ wᵢ × (offsetᵢ + skew × p̂ × (TSCₚₒₛₜ,ₗₐₛₜ − TSCₚₒₛₜ,ᵢ))
+    /// θ̂(tₗₐₛₜ) = ---------------------------------------------------------
+    ///                                  ∑{wᵢ}
+    /// ```
+    ///
+    /// where:
+    /// ```text
+    /// wᵢ = exp(−√(Eᵢ/E))
+    /// and
+    /// Eᵢ = RTTᵢ − min(RTT)
+    /// ```
+    ///  
     ///
     /// # Panics
     /// Panics if `Local` is empty
@@ -666,5 +788,63 @@ mod tests {
             clock_error_bound,
             event1.calculate_clock_error_bound(local_period)
         );
+    }
+
+    #[test]
+    fn feed_two_events() {
+        let mut ff = Ntp::new(NonZeroUsize::new(5).unwrap(), Skew::from_ppm(15.0));
+
+        let event1 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(1_000_000_000))
+            .tsc_post(TscCount::new(1_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(1)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(1)
+                    + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(27),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        let event2 = event::Ntp::builder()
+            .tsc_pre(TscCount::new(2_000_000_000))
+            .tsc_post(TscCount::new(2_000_001_000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1)
+                    + Duration::from_secs(2)
+                    + Duration::from_nanos(100),
+                server_send_time: Instant::from_days(1)
+                    + Duration::from_secs(2)
+                    + Duration::from_nanos(900),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        let result = ff.feed(event1.clone());
+        assert!(result.is_none());
+
+        let result = ff.feed(event2.clone());
+        let clock_params = result.unwrap();
+
+        let expected_time = event2
+            .data()
+            .server_recv_time
+            .midpoint(event2.data().server_send_time);
+        assert_eq!(clock_params.time, expected_time);
+
+        // events are symmetric RTT and at 1GHz
+        approx::assert_abs_diff_eq!(clock_params.period.get(), 1e-9);
+
+        // clock_error_bound should be max value
+        let expected_ceb = event1.calculate_clock_error_bound(clock_params.period);
+        assert_eq!(clock_params.clock_error_bound, expected_ceb);
     }
 }

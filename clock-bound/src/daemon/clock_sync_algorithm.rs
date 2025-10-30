@@ -34,7 +34,7 @@ pub struct ClockSyncAlgorithm {
 impl ClockSyncAlgorithm {
     /// Feed event into the link local
     /// TODO: make this function private and call into it from `fn feed` when we have a routable event
-    pub fn feed_link_local(&mut self, event: event::Ntp) -> Option<ClockParameters> {
+    pub fn feed_link_local(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
         self.link_local.feed(event)
     }
 

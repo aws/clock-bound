@@ -1,7 +1,7 @@
 //! Local and Estimate ring buffers used within a Feed Forward Clock Sync Algorithm
 
 mod local;
-pub use local::Local;
+pub use local::{FeedError, Local};
 
 mod estimate;
 pub use estimate::Estimate;

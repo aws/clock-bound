@@ -6,6 +6,7 @@ use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_sync_algorithm::ff::{self, event_buffer};
 use crate::daemon::event;
 use crate::daemon::time::Duration;
+use crate::daemon::time::tsc::Skew;
 
 /// A Link Local reference clock source
 ///
@@ -28,15 +29,15 @@ impl LinkLocal {
     };
 
     /// Create a new Link Local reference clock source
-    pub fn new() -> Self {
+    pub fn new(max_dispersion: Skew) -> Self {
         Self {
-            inner: ff::Ntp::new(Self::CAPACITY),
+            inner: ff::Ntp::new(Self::CAPACITY, max_dispersion),
         }
     }
 
     /// Feed an event into the link local NTP clock-sync algorithm
     #[tracing::instrument(level = "info", skip_all)]
-    pub fn feed(&mut self, event: event::Ntp) -> Option<ClockParameters> {
+    pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
         self.inner.feed(event)
     }
 
@@ -48,11 +49,5 @@ impl LinkLocal {
         let Self { inner } = self;
 
         inner.handle_disruption();
-    }
-}
-
-impl Default for LinkLocal {
-    fn default() -> Self {
-        Self::new()
     }
 }

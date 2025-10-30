@@ -261,6 +261,11 @@ impl Skew {
         Self(skew * Self::PPM)
     }
 
+    /// Construct a new skew from parts per billion (ppb)
+    pub const fn from_ppb(skew: f64) -> Self {
+        Self(skew * Self::PPM * 1_000.0)
+    }
+
     /// Construct a new skew from percentage
     pub const fn from_percent(skew: f64) -> Self {
         Self(skew * Self::PERCENT)
