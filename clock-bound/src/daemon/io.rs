@@ -24,14 +24,19 @@ use ntp_source::NTPSource;
 pub mod tsc;
 
 mod vmclock;
+use vmclock::VMClock;
 
 /// `SourceIO` acts as the front end for IO tasks.
 ///
 /// `SourceIO` contains the interface from which new IO tasks can be spawned, as well as an interface
 /// to send control commands to the specific IO tasks.
 pub struct SourceIO {
-    /// A mapping between the time source type and the task handle.
-    sources: Sources,
+    /// The link local source.
+    link_local: Option<Source<LinkLocal>>,
+    /// Mapping between the socket ip-address and the ntp io source
+    ntp_sources: HashMap<SocketAddr, Source<NTPSource>>,
+    /// The VMClock source
+    vmclock: Option<Source<VMClock>>,
     /// Contains the channel used to communicate clock disruption events.
     clock_disruption_channels: ClockDisruptionChannels,
 }
@@ -41,7 +46,9 @@ impl SourceIO {
     pub fn construct() -> Self {
         let (sender, receiver) = watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent {});
         SourceIO {
-            sources: Sources::default(),
+            link_local: None,
+            ntp_sources: HashMap::new(),
+            vmclock: None,
             clock_disruption_channels: ClockDisruptionChannels { sender, receiver },
         }
     }
@@ -54,9 +61,9 @@ impl SourceIO {
     pub async fn create_link_local(&mut self, event_sender: async_ring_buffer::Sender<event::Ntp>) {
         info!("Creating link local source.");
 
-        debug!(?self.sources.link_local, "Current source entry status");
-        if self.sources.link_local.is_none() {
-            self.sources.link_local = {
+        debug!(?self.link_local, "Current source entry status");
+        if self.link_local.is_none() {
+            self.link_local = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
                 let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
 
@@ -95,7 +102,7 @@ impl SourceIO {
             server_address.ip().to_string()
         );
 
-        if !self.sources.ntp_sources.contains_key(&server_address) {
+        if !self.ntp_sources.contains_key(&server_address) {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
             let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
 
@@ -115,10 +122,48 @@ impl SourceIO {
                 state: SourceState::Initialized(ntp_source),
                 ctrl_sender,
             };
-            self.sources.ntp_sources.insert(server_address, source);
+            self.ntp_sources.insert(server_address, source);
         }
 
         info!("Source update complete.");
+    }
+
+    /// Spawns the IO task for sampling the VMClock shared memory file.
+    ///
+    /// # Errors
+    /// - If the vmclock shared memory file could not be found.
+    /// - If the vmclock shared memory file is malformed.
+    pub async fn create_vmclock(
+        &mut self,
+        vmclock_shm_path: &str,
+    ) -> Result<(), vmclock::VMClockConstructionError> {
+        info!("Creating link local source.");
+
+        debug!(?self.vmclock, "Current source entry status.");
+        if self.vmclock.is_none() {
+            self.vmclock = {
+                let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
+
+                let vmclock = VMClock::construct(
+                    vmclock_shm_path,
+                    ctrl_receiver,
+                    self.clock_disruption_channels.sender.clone(),
+                )
+                .await?;
+
+                let source = Source {
+                    state: SourceState::Initialized(vmclock),
+                    ctrl_sender,
+                };
+                Some(source)
+            };
+        }
+        Ok(())
+    }
+
+    // Creates a new [`watch::Receiver`] connected to the clock distribution watch [`watch::Sender`].
+    pub fn get_clock_disruption_receiver(&self) -> watch::Receiver<ClockDisruptionEvent> {
+        self.clock_disruption_channels.sender.subscribe()
     }
 
     /// Starts the control flow task.
@@ -137,7 +182,7 @@ impl SourceIO {
         if let Some(Source {
             state,
             ctrl_sender: _,
-        }) = &mut self.sources.link_local
+        }) = &mut self.link_local
         {
             debug!("Attempting to spawn link local source.");
             if let SourceState::Initialized(mut link_local) = state.transition_to_running() {
@@ -150,8 +195,23 @@ impl SourceIO {
             debug!("Could not spawn a link local source. No source data provided.");
         }
 
+        // Spawn vmclock source
+        if let Some(Source {
+            state,
+            ctrl_sender: _,
+        }) = &mut self.vmclock
+        {
+            if let SourceState::Initialized(mut vmclock) = state.transition_to_running() {
+                spawn(async move { vmclock.run().await });
+            } else {
+                warn!("Attempted to spawn a vmclock source when one is currently running.");
+            }
+        } else {
+            debug!("Could not spawn a vmclock source. No source data provided.");
+        }
+
         // Spawn ntp sources
-        for (key, ntp_source) in &mut self.sources.ntp_sources {
+        for (key, ntp_source) in &mut self.ntp_sources {
             debug!("Attempting to spawn {key:?} ntp source.");
             if let SourceState::Initialized(mut ntp_source) =
                 ntp_source.state.transition_to_running()
@@ -184,13 +244,6 @@ pub struct ControlRequest {}
 struct Source<T> {
     state: SourceState<T>,
     ctrl_sender: mpsc::Sender<ControlRequest>,
-}
-
-/// `Sources` is a struct that maps sources to their state and control channels.
-#[derive(Default, Debug)]
-struct Sources {
-    link_local: Option<Source<LinkLocal>>,
-    ntp_sources: HashMap<SocketAddr, Source<NTPSource>>,
 }
 
 /// The possible states a time source can be in.
@@ -259,6 +312,6 @@ mod tests {
         let mut source_io = SourceIO::construct();
         source_io.create_link_local(event_sender).await;
 
-        assert!(source_io.sources.link_local.is_some())
+        assert!(source_io.link_local.is_some())
     }
 }

@@ -13,6 +13,29 @@ use crate::vmclock::{shm::VMClockShmBody, shm_reader::VMClockShmReader};
 
 use super::{ClockDisruptionEvent, ControlRequest};
 
+/// This is a wrapper for the [`VMClockShmReader`] struct used to bypass its !Send rules.
+///
+/// [`VMClockShmReader`] has explicit rules against the implementation of `Send`. These were
+/// implemented, in part, to protect those using Clockbound as a library, where the underlying
+/// pointers in `VMClockShmReader` could result in unexpected behavior due to their unsafe nature.
+/// Unlike the `VMClockShmReader` `Reader` is not apart of the external facing library and in the
+/// context of the ClockBound daemon its use is constrained such that it can be utilized safely.
+/// Within the Clockbound context that means the Reader cannot be copied, the underlying pointers
+/// can not be accessed directly and only one task has access to the struct.
+struct Reader(VMClockShmReader);
+
+impl Reader {
+    fn new(path: &str) -> Result<Self, ShmError> {
+        Ok(Reader(VMClockShmReader::new(path)?))
+    }
+
+    fn snapshot(&mut self) -> Result<&VMClockShmBody, ShmError> {
+        self.0.snapshot()
+    }
+}
+
+unsafe impl Send for Reader {}
+
 const VMCLOCK_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Indicates the current status of the VMClock.
@@ -41,7 +64,7 @@ pub struct VMClock {
     /// Path to the vmclock shared memory file.
     path: String,
     /// Interface used to read the shared memory file.
-    reader: VMClockShmReader,
+    reader: Reader,
     /// Data from the previously read shared memory file.
     previous_shm_body: VMClockShmBody,
     /// The polling interval.
@@ -68,7 +91,7 @@ impl VMClock {
             ));
         }
 
-        let mut reader = VMClockShmReader::new(vmclock_shm_path)?;
+        let mut reader = Reader::new(vmclock_shm_path)?;
         let vmclock_snapshot = *reader.snapshot()?;
         let mut vmclock_interval = interval(VMCLOCK_TIMEOUT);
         vmclock_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
