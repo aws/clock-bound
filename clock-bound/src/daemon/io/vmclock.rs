@@ -42,7 +42,7 @@ const VMCLOCK_TIMEOUT: Duration = Duration::from_millis(100);
 #[derive(Debug, PartialEq)]
 pub enum ClockDisruptionStatus {
     Normal,
-    Disrupted,
+    Disrupted(u64),
 }
 
 #[derive(Debug, Error)]
@@ -113,7 +113,9 @@ impl VMClock {
         // The marker increments by an indeterminate amount every clock disruption event.
         if self.previous_shm_body.disruption_marker != vmclock_snapshot.disruption_marker {
             self.previous_shm_body.disruption_marker = vmclock_snapshot.disruption_marker;
-            return Ok(ClockDisruptionStatus::Disrupted);
+            return Ok(ClockDisruptionStatus::Disrupted(
+                vmclock_snapshot.disruption_marker,
+            ));
         }
         Ok(ClockDisruptionStatus::Normal)
     }
@@ -133,8 +135,8 @@ impl VMClock {
                 _ = self.interval.tick() => {
                     match self.sample() {
                         Ok(s) => {
-                            if matches!(s, ClockDisruptionStatus::Disrupted) {
-                                self.clock_disruption_sender.send(ClockDisruptionEvent{}).unwrap();
+                            if let ClockDisruptionStatus::Disrupted(disruption_marker) = s {
+                                self.clock_disruption_sender.send(ClockDisruptionEvent{ disruption_marker: Some(disruption_marker)}).unwrap();
                                 debug!(?self, "A clock disruption event occurred and a disruption event was sent.");
                             }
                         },
@@ -168,7 +170,7 @@ mod test {
 
     use crate::vmclock::shm::VMClockClockStatus;
     use std::fs::{File, OpenOptions};
-    use std::io::Write;
+    use std::io::{Seek, Write};
     use tempfile::NamedTempFile;
 
     /// Test struct used to hold the expected fields in the VMClock shared memory segment.
@@ -256,7 +258,7 @@ mod test {
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
         let (_, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
-        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent {});
+        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent::default());
         let _ = VMClock::construct(vmclock_shm_path, ctrl_receiver, clock_disruption_sender)
             .await
             .unwrap();
@@ -267,7 +269,7 @@ mod test {
         let filename = "name/of/file/that/shouldnt_exist";
 
         let (_, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
-        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent {});
+        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent::default());
         let construct_result =
             VMClock::construct(filename, ctrl_receiver, clock_disruption_sender).await;
         assert!(construct_result.is_err());
@@ -287,7 +289,7 @@ mod test {
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
         let (_, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
-        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent {});
+        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent::default());
         let mut vmclock =
             VMClock::construct(vmclock_shm_path, ctrl_receiver, clock_disruption_sender)
                 .await
@@ -310,7 +312,7 @@ mod test {
 
         // Construct the VMClock runner
         let (_, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
-        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent {});
+        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent::default());
         let mut vmclock =
             VMClock::construct(vmclock_shm_path, ctrl_receiver, clock_disruption_sender)
                 .await
@@ -331,24 +333,29 @@ mod test {
             .write(true)
             .open(vmclock_shm_path)
             .expect("open vmclock file failed");
-        let vmclock_content = VMClockContent::default();
+        let mut vmclock_content = VMClockContent::default();
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
         // Construct the vmclock runner
         let (_, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
-        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent {});
+        let (clock_disruption_sender, _) = watch::channel(ClockDisruptionEvent::default());
         let mut vmclock =
             VMClock::construct(vmclock_shm_path, ctrl_receiver, clock_disruption_sender)
                 .await
                 .unwrap();
 
         // Update the shared memory file
-        let mut vmclock_content = VMClockContent::default();
+        vmclock_content.seq_count += 10;
         vmclock_content.disruption_marker += 1;
+
+        vmclock_shm_file.rewind().unwrap();
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
         // Sample the vmclock
         let clock_status = vmclock.sample().unwrap();
-        assert_eq!(clock_status, ClockDisruptionStatus::Normal);
+        assert_eq!(
+            clock_status,
+            ClockDisruptionStatus::Disrupted(vmclock_content.disruption_marker)
+        );
     }
 }

@@ -44,7 +44,8 @@ pub struct SourceIO {
 impl SourceIO {
     /// Constructs a new `SourceIO` object and constructs the necessary resources.
     pub fn construct() -> Self {
-        let (sender, receiver) = watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent {});
+        let (sender, receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         SourceIO {
             link_local: None,
             ntp_sources: HashMap::new(),
@@ -231,9 +232,10 @@ struct ClockDisruptionChannels {
     receiver: watch::Receiver<ClockDisruptionEvent>,
 }
 
-// TODO: This is a stub for future clock disruption events.
-#[derive(Clone, Debug)]
-pub struct ClockDisruptionEvent {}
+#[derive(Clone, Debug, Default)]
+pub struct ClockDisruptionEvent {
+    disruption_marker: Option<u64>,
+}
 
 // TODO: This is a stub for future control events.
 #[derive(Debug)]
@@ -277,7 +279,7 @@ mod tests {
         let (event_sender, _) = async_ring_buffer::create::<event::Ntp>(1);
         let (_, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
         let (_, clock_disruption_receiver) =
-            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent {});
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
 
         let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
             .await
