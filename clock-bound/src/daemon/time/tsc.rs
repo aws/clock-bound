@@ -104,9 +104,17 @@ impl std::str::FromStr for TscDiff {
 /// and this includes period values of ticks . This means it is possible
 /// to store frequency values that will have precision loss when converted into
 /// a `period` type and vice versa.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Frequency(f64);
+
+impl std::fmt::Debug for Frequency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Frequency")
+            .field(&format_args!("{:.17E}", self.0))
+            .finish()
+    }
+}
 
 impl Frequency {
     /// Get inner value in hz
@@ -353,9 +361,17 @@ impl std::str::FromStr for Skew {
 /// ## Note on zero valued periods
 /// While not logical for clocks, it can come up for error calculations currently.
 /// FIXME, does a zero error ever make sense?
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Period(f64);
+
+impl std::fmt::Debug for Period {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Period")
+            .field(&format_args!("{:.17E}", self.0))
+            .finish()
+    }
+}
 
 impl Period {
     /// Construct from seconds
@@ -418,8 +434,8 @@ impl Div<TscDiff> for Duration {
     type Output = Period;
 
     fn div(self, rhs: TscDiff) -> Self::Output {
-        let period = self.as_femtos() / rhs.get();
-        Period::from_duration(Duration::from_femtos(period))
+        let period = self.as_seconds_f64() / rhs.get() as f64;
+        Period::from_seconds(period)
     }
 }
 
@@ -428,7 +444,7 @@ impl Div<Period> for Duration {
 
     fn div(self, rhs: Period) -> Self::Output {
         let diff = self.as_seconds_f64() / rhs.get();
-        TscDiff::new(diff as i128) // truncate
+        TscDiff::new(diff.round() as i128)
     }
 }
 
@@ -709,5 +725,18 @@ mod tests {
     fn debug_tsc_diff() {
         let diff = TscDiff::new(1_000_000_000);
         assert_eq!(format!("{diff:?}"), "TscDiff(1000000000)");
+    }
+
+    #[test]
+    fn duration_div_by_tsc_diff() {
+        let expected_period = 1.0 / 3.3e9; // 3.3GHz
+        let one_second = 1.0_f64;
+        let tsc_diff = one_second / expected_period;
+        let tsc_diff = TscDiff::new(tsc_diff.round() as i128);
+
+        let one_second = Duration::from_seconds_f64(one_second);
+        let period = one_second / tsc_diff;
+
+        approx::assert_abs_diff_eq!(period.get(), expected_period);
     }
 }
