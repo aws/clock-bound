@@ -21,6 +21,9 @@ path = "src/adjust_clock_test.rs"
 clock-bound = { version = "2.0", path = "../../clock-bound", features = [
   "daemon",
 ] }
-tokio = { version = "1.47.1", features = ["macros", "rt"] }
+tokio = { version = "1.47.1", features = ["macros", "rt", "test-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }
+
+[dev-dependencies]
+rstest = "0.26"
