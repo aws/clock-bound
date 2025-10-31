@@ -82,7 +82,7 @@
 //! the `CLOCK_REALTIME` adjustment is steered precisely to where we would expect it to be.
 #![allow(clippy::doc_comment_double_space_linebreaks, reason = "hooray ascii")]
 use clock_bound::daemon::{
-    clock_state::{ClockAdjuster, KAPIClockAdjuster, NtpAdjTimeError},
+    clock_state::clock_adjust::{ClockAdjuster, KAPIClockAdjuster, NtpAdjTimeError},
     time::{Duration, Instant, tsc::Skew},
 };
 use tracing::info;
