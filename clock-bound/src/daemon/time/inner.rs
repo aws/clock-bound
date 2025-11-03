@@ -638,12 +638,14 @@ fn debug_femtos(
     prefix: &'static str,
     femtos: i128,
 ) -> std::fmt::Result {
+    let sign = if femtos < 0 { "-" } else { "" };
+    let femtos = femtos.abs();
     let secs = femtos / FEMTOS_PER_SEC;
     let nanos = (femtos / FEMTOS_PER_NANO - secs * 1_000_000_000).abs();
     if nanos == 0 {
         return f
             .debug_tuple(prefix)
-            .field(&format_args!("{secs}.0"))
+            .field(&format_args!("{sign}{secs}.0"))
             .finish();
     }
     let millis = nanos / 1_000_000;
@@ -652,16 +654,16 @@ fn debug_femtos(
     if nanos == 0 && micros == 0 {
         return f
             .debug_tuple(prefix)
-            .field(&format_args!("{secs}.{millis:0>3}"))
+            .field(&format_args!("{sign}{secs}.{millis:0>3}"))
             .finish();
     }
     if nanos == 0 {
         return f
             .debug_tuple(prefix)
-            .field(&format_args!("{secs}.{millis:0>3}_{micros:0>3}"))
+            .field(&format_args!("{sign}{secs}.{millis:0>3}_{micros:0>3}"))
             .finish();
     }
-    let formatted = format_args!("{secs}.{millis:0>3}_{micros:0>3}_{nanos:0>3}");
+    let formatted = format_args!("{sign}{secs}.{millis:0>3}_{micros:0>3}_{nanos:0>3}");
     f.debug_tuple(prefix).field(&formatted).finish()
 }
 
@@ -987,6 +989,7 @@ mod test {
     #[case(Duration::from_seconds_f64(-1.123456), "Duration(-1.123_456)")]
     #[case(Duration::from_secs(0), "Duration(0.0)")]
     #[case(Duration::from_picos(6500), "Duration(0.000_000_006)")]
+    #[case(Duration::from_micros(-1500), "Duration(-0.001_500)")]
     #[case(Duration::from_picos(50), "Duration(0.0)")]
     fn duration_debug(#[case] duration: Duration, #[case] expected: &str) {
         assert_eq!(format!("{duration:?}"), expected);
@@ -1000,6 +1003,7 @@ mod test {
     #[case(Instant::from_micros(-1123456), "Instant(-1.123_456)")]
     #[case(Instant::from_secs(0), "Instant(0.0)")]
     #[case(Instant::from_picos(6500), "Instant(0.000_000_006)")]
+    #[case(Instant::from_nanos(-1500), "Instant(-0.000_001_500)")]
     #[case(Instant::from_picos(50), "Instant(0.0)")]
     fn instant_debug(#[case] instant: Instant, #[case] expected: &str) {
         assert_eq!(format!("{instant:?}"), expected);
