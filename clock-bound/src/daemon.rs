@@ -16,6 +16,8 @@ pub mod event;
 
 pub mod receiver_stream;
 
+pub mod selected_clock;
+
 use crate::daemon::{clock_sync_algorithm::ClockSyncAlgorithm, time::tsc::Skew};
 
 /// The maximum dispersion growth every second
