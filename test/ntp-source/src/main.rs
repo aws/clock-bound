@@ -3,14 +3,14 @@
 //! This executable tests that the NTP Server runner is able to send and receive packets from the
 //! specified NTP Server address and that the polling rate is roughly once a second.
 
-use std::time::Duration;
-
-use clock_bound::daemon::async_ring_buffer;
-use clock_bound::daemon::io::ntp::DaemonInfo;
+use clock_bound::daemon::async_ring_buffer::{self, Receiver};
+use clock_bound::daemon::event::Ntp;
+use clock_bound::daemon::io::ntp::NTPSourceSender;
 use clock_bound::daemon::io::{
     SourceIO,
-    ntp::{FIRST_PUBLIC_TIME_ADDRESS, SECOND_PUBLIC_TIME_ADDRESS},
+    ntp::{AWS_TEMP_PUBLIC_TIME_ADDRESSES, DaemonInfo},
 };
+use std::time::Duration;
 
 use rand::{RngCore, rng};
 use tracing_subscriber::EnvFilter;
@@ -21,10 +21,6 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    // Create ring buffer channels for ntp io sources
-    let (first_ntp_source_sender, first_ntp_source_receiver) = async_ring_buffer::create(1);
-    let (second_ntp_source_sender, second_ntp_source_receiver) = async_ring_buffer::create(1);
-
     let daemon_info = DaemonInfo {
         major_version: 2,
         minor_version: 100,
@@ -32,36 +28,38 @@ async fn main() {
     };
 
     let mut sourceio = SourceIO::construct(daemon_info);
+    let mut receiver_vec: Vec<Receiver<Ntp>> = Vec::new();
 
-    // Create IO time sources
-    sourceio
-        .create_ntp_source(FIRST_PUBLIC_TIME_ADDRESS, first_ntp_source_sender)
-        .await;
-    sourceio
-        .create_ntp_source(SECOND_PUBLIC_TIME_ADDRESS, second_ntp_source_sender)
-        .await;
+    for address in AWS_TEMP_PUBLIC_TIME_ADDRESSES {
+        // Create ring buffer channels for ntp io sources
+        let (tx, rx) = async_ring_buffer::create(1);
+        receiver_vec.push(rx);
+
+        // Create IO time sources
+        let sender_with_address: NTPSourceSender = (address, tx);
+        sourceio.create_ntp_source(sender_with_address).await;
+    }
     println!("NTP Source creation complete!");
 
     // Get NTP packet from both specified servers
     println!("Lets get NTP packets!");
     sourceio.spawn_all();
-    let timeout_err_msg = &format!(
-        "Timeout was reached before a packet was received from {FIRST_PUBLIC_TIME_ADDRESS:#?}"
-    );
-    let event_result =
-        tokio::time::timeout(Duration::from_secs(48), first_ntp_source_receiver.recv())
-            .await
-            .expect(timeout_err_msg);
-    event_result.unwrap();
-    println!("Packet received from first NTP host");
+    for i in 0..AWS_TEMP_PUBLIC_TIME_ADDRESSES.len() {
+        let timeout_err_msg = &format!(
+            "Timeout was reached before a packet was received from {:#?}",
+            AWS_TEMP_PUBLIC_TIME_ADDRESSES[i]
+        );
 
-    let timeout_err_msg = &format!(
-        "Timeout was reached before a packet was received from {SECOND_PUBLIC_TIME_ADDRESS:#?}"
-    );
-    let event_result =
-        tokio::time::timeout(Duration::from_secs(48), second_ntp_source_receiver.recv())
+        let event_result = tokio::time::timeout(Duration::from_secs(48), receiver_vec[i].recv())
             .await
             .expect(timeout_err_msg);
-    event_result.unwrap();
-    println!("Packet received from second NTP host\nTEST COMPLETE");
+
+        event_result.unwrap();
+        println!(
+            "Packet received from host ({} / {})",
+            i + 1,
+            AWS_TEMP_PUBLIC_TIME_ADDRESSES.len()
+        );
+    }
+    println!("TEST COMPLETE");
 }

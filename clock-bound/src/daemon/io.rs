@@ -97,11 +97,8 @@ impl SourceIO {
     /// # Panics
     /// - If not called within the `tokio` runtime.
     /// - If socket binding fails.
-    pub async fn create_ntp_source(
-        &mut self,
-        server_address: SocketAddr,
-        event_sender: async_ring_buffer::Sender<event::Ntp>,
-    ) {
+    pub async fn create_ntp_source(&mut self, source: ntp::NTPSourceSender) {
+        let (server_address, event_sender) = source;
         info!(
             "Creating IO source from ntp server at {:#?}.",
             server_address.ip().to_string()

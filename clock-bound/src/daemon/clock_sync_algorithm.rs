@@ -7,6 +7,9 @@
 pub mod ff;
 
 mod ring_buffer;
+
+use std::net::SocketAddr;
+
 pub use ring_buffer::RingBuffer;
 
 use crate::daemon::{clock_parameters::ClockParameters, event};
@@ -29,6 +32,8 @@ pub mod source;
 pub struct ClockSyncAlgorithm {
     /// The link-local reference clock's ff algorithm
     link_local: source::LinkLocal,
+    // A Vector of ff algorithms for ntp source reference clocks
+    pub ntp_sources: Vec<source::NTPSource>,
 }
 
 impl ClockSyncAlgorithm {
@@ -36,6 +41,22 @@ impl ClockSyncAlgorithm {
     /// TODO: make this function private and call into it from `fn feed` when we have a routable event
     pub fn feed_link_local(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
         self.link_local.feed(event)
+    }
+
+    /// Feed event into ntp source
+    /// TODO: make this function private and call into it from `fn feed` when we have a routable event
+    pub fn feed_ntp_source(
+        &mut self,
+        sender_address: SocketAddr,
+        event: &event::Ntp,
+    ) -> Option<&ClockParameters> {
+        let mut clock_parameters: Option<&ClockParameters> = None;
+        for source in &mut self.ntp_sources {
+            if source.socket_address() == sender_address {
+                clock_parameters = source.feed(event.clone());
+            }
+        }
+        clock_parameters
     }
 
     /// Handle a clock disruption event
@@ -47,9 +68,15 @@ impl ClockSyncAlgorithm {
         // Use the destructure pattern to get a mutable reference to each item.
         //
         // This makes it a compilation error if we add a new field this Self without handling it here
-        let Self { link_local } = self;
+        let Self {
+            link_local,
+            ntp_sources,
+        } = self;
 
         link_local.handle_disruption();
+        for source in ntp_sources {
+            source.handle_disruption();
+        }
         tracing::info!("Handled clock disruption event");
     }
 }

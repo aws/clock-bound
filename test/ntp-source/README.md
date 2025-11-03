@@ -34,7 +34,7 @@ The output should look something like the following:
 $ ./ntp-source-test
 NTP Source creation complete!
 Lets get NTP packets!
-Packet received from first NTP host
-Packet received from second NTP host
+Packet received from host (1 / 2)
+Packet received from host (2 / 2)
 TEST COMPLETE
 ```

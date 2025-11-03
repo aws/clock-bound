@@ -19,7 +19,10 @@ pub mod receiver_stream;
 pub mod selected_clock;
 
 use crate::daemon::{
-    clock_sync_algorithm::ClockSyncAlgorithm, io::ntp::DaemonInfo, time::tsc::Skew,
+    clock_sync_algorithm::{ClockSyncAlgorithm, source::NTPSource},
+    io::ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
+    receiver_stream::{ReceiverStream, RoutableEvent},
+    time::tsc::Skew,
 };
 
 use rand::{RngCore, rng};
@@ -40,29 +43,42 @@ const MAX_DISPERSION_GROWTH: Skew = Skew::from_ppb(MAX_DISPERSION_GROWTH_PBB as 
 pub struct Daemon {
     _io_front_end: io::SourceIO,
     clock_sync_algorithm: ClockSyncAlgorithm,
-    link_local_receiver: async_ring_buffer::Receiver<event::Ntp>,
+    receiver_stream: ReceiverStream,
 }
 
 impl Daemon {
     /// Construct and initialize a new daemon
     /// FIXME: Make this function not async. (Currently required for the io.run methods)
     pub async fn construct() -> Self {
-        let (tx, rx) = async_ring_buffer::create(2);
-
         let daemon_info = DaemonInfo {
             major_version: 2,
             minor_version: 100,
             startup_id: rng().next_u64(),
         };
 
-        let mut io_front_end = io::SourceIO::construct(daemon_info);
-
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .link_local(clock_sync_algorithm::source::LinkLocal::new(
                 MAX_DISPERSION_GROWTH,
             ))
+            .ntp_sources(
+                clock_sync_algorithm::source::NTPSource::create_time_aws_sources(
+                    MAX_DISPERSION_GROWTH,
+                ),
+            )
             .build();
 
+        // Initializing async ring buffers for IO event delivery
+        let (link_local_tx, link_local_rx) = async_ring_buffer::create(2);
+        let (ntp_source_event_senders, ntp_source_event_receivers) =
+            Self::init_ntp_source_buffers(2, &clock_sync_algorithm.ntp_sources);
+
+        // Initializing receiver stream with IO ring buffer receivers
+        let receiver_stream: ReceiverStream = ReceiverStream::builder()
+            .link_local_receiver(link_local_rx)
+            .ntp_source_receiver_vec(ntp_source_event_receivers)
+            .build();
+
+        let mut io_front_end = io::SourceIO::construct(daemon_info);
         // FIXME, we are basically starting the application in the constructor
         // We should be able to construct the link local and spawn it when `run` is called
         //
@@ -74,14 +90,18 @@ impl Daemon {
         // let link_local = io::LinkLocal::construct(rx, ..Args);
         // let io_front_end = SourceIo::builder().link_local(tx, link_local).build();
         // ```
-        io_front_end.create_link_local(tx).await;
-        // TODO: Refactor so that the construction and spawning occurs in separate functions.
+        io_front_end.create_link_local(link_local_tx).await;
+        for source in ntp_source_event_senders {
+            io_front_end.create_ntp_source(source).await;
+        }
+
+        // Start IO polling
         io_front_end.spawn_all();
 
         Self {
             _io_front_end: io_front_end,
             clock_sync_algorithm,
-            link_local_receiver: rx,
+            receiver_stream,
         }
     }
 
@@ -90,14 +110,51 @@ impl Daemon {
         loop {
             // TODO: add live migration watch and statements
             tokio::select! {
-                Ok(event) = self.link_local_receiver.recv() => {
-                    self.handle_event(event);
+                Some(routable_event) = self.receiver_stream.recv() => {
+                    self.handle_event(routable_event);
                 }
             }
         }
     }
 
-    fn handle_event(&mut self, event: event::Ntp) {
-        self.clock_sync_algorithm.feed_link_local(event);
+    fn handle_event(&mut self, routable_event: RoutableEvent) {
+        match routable_event {
+            RoutableEvent::LinkLocalEvent(event) => {
+                self.clock_sync_algorithm.feed_link_local(event);
+            }
+            RoutableEvent::NTPSourceEvent(sender_address, event) => {
+                self.clock_sync_algorithm
+                    .feed_ntp_source(sender_address, &event);
+            }
+            RoutableEvent::PhcEvent => {
+                todo!("Implement PHC IO event delivery")
+            }
+        }
+    }
+
+    /// Takes in a vector of `source::NTPSource` structs and returns the `async_ring_buffer` senders and receivers
+    /// for each `ntp_source`'s IO event delivery.
+    /// # Parameters
+    /// - `ntp_source_buffer_size`: The size of ring buffer to create for each source
+    /// - `ntp_source_vec`: a pointer to a vector of `source::NTPSource`
+    ///
+    /// # Returns
+    /// - A tuple containing two lists:
+    /// > 1. `sender_vec`: Vector of `NTPSourceSender`
+    /// > 2. `receiver_vec`: Vector of `NTPSourceReceiver`
+    fn init_ntp_source_buffers(
+        ntp_source_buffer_size: usize,
+        ntp_source_vec: &Vec<NTPSource>,
+    ) -> (Vec<NTPSourceSender>, Vec<NTPSourceReceiver>) {
+        let mut sender_vec: Vec<NTPSourceSender> = Vec::new();
+        let mut receiver_vec: Vec<NTPSourceReceiver> = Vec::new();
+
+        for source in ntp_source_vec {
+            let (tx, rx) = async_ring_buffer::create(ntp_source_buffer_size);
+            sender_vec.push((source.socket_address(), tx));
+            receiver_vec.push((source.socket_address(), rx));
+        }
+
+        (sender_vec, receiver_vec)
     }
 }

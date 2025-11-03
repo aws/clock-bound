@@ -8,5 +8,7 @@
 //! concerns between different source types.
 
 mod link_local;
+mod ntp_source;
 
 pub use link_local::LinkLocal;
+pub use ntp_source::NTPSource;
