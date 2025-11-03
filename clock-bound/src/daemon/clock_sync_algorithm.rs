@@ -119,6 +119,7 @@ mod tests {
 
         let mut csa = ClockSyncAlgorithm::builder()
             .link_local(source::LinkLocal::new(Skew::from_ppm(15.0)))
+            .ntp_sources(vec![])
             .build();
 
         let clock_parameters = csa.feed_link_local(event.clone());
