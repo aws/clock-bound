@@ -65,10 +65,31 @@ impl<S: ShmWrite, T: NtpAdjTime> ClockState<S, T> {
                 .handle_clock_parameters(clock_parameters, clock_realtime_offset_and_rtt),
         }
     }
+
+    /// Handle a clock disruption event
+    ///
+    /// Call this function after the system detects a VMClock disruption event.
+    ///
+    /// It will go through and clear the state (like startup).
+    pub fn handle_disruption(&mut self, new_disruption_marker: u64) {
+        // Use the destructure pattern to get a mutable reference to each item.
+        //
+        // This makes it a compilation error if we add a new field this Self without handling it here
+        let Self {
+            clock_adjuster,
+            clock_state_writer,
+        } = self;
+
+        clock_adjuster.handle_disruption(new_disruption_marker);
+        clock_state_writer.handle_disruption(new_disruption_marker);
+        tracing::info!("Handled clock disruption event");
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use mockall::predicate::eq;
+
     use crate::{
         daemon::{
             clock_parameters::ClockParameters,
@@ -187,5 +208,26 @@ mod tests {
 
         let mut clock_state = ClockState::new(mock_clock_state_writer, mock_clock_adjuster);
         clock_state.handle_clock_parameters(&clock_parameters);
+    }
+
+    #[test]
+    fn handle_disruption() {
+        let disruption_marker = 123;
+        let mut mock_clock_adjuster: MockClockAdjuster<NoopClockAdjuster> =
+            MockClockAdjuster::new();
+        mock_clock_adjuster
+            .expect_handle_disruption()
+            .once()
+            .with(eq(disruption_marker))
+            .return_const(());
+        let mut mock_clock_state_writer: MockClockStateWriter<ShmWriter> =
+            MockClockStateWriter::new();
+        mock_clock_state_writer
+            .expect_handle_disruption()
+            .once()
+            .with(eq(disruption_marker))
+            .return_const(());
+        let mut clock_state = ClockState::new(mock_clock_state_writer, mock_clock_adjuster);
+        clock_state.handle_disruption(disruption_marker);
     }
 }

@@ -2,7 +2,7 @@
 use errno::Errno;
 use libc::{TIME_DEL, TIME_ERROR, TIME_INS, TIME_OK, TIME_OOP, TIME_WAIT, ntp_adjtime};
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, error, info};
 
 use crate::daemon::{
     clock_parameters::ClockParameters,
@@ -64,6 +64,7 @@ mockall::mock! {
             // This is needed to tell ClockAdjust what phase offset to use.
             clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
         ) -> Result<Timex, NtpAdjTimeError>;
+        pub fn handle_disruption(&mut self, new_disruption_marker: u64);
     }
 }
 
@@ -151,10 +152,46 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
             unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
         }
     }
+
+    /// Handle a clock disruption event
+    ///
+    /// Call this function after the system detects a VMClock disruption event.
+    ///
+    /// It will go through and clear the state (like startup).
+    ///
+    /// # Panics
+    /// If `adjust_clock` fails, e.g. an invalid value was supplied to `ntp_adjtime` (unlikely), or
+    /// insufficient permissions to adjust the clock.
+    pub fn handle_disruption(&mut self, _new_disruption_marker: u64) {
+        // Use the destructure pattern to get a mutable reference to each item.
+        //
+        // This makes it a compilation error if we add a new field to Self without handling it here
+        let Self {
+            ntp_adjtime: _,
+            should_step: _,
+        } = self;
+        // At least stop any ongoing phase correction slew or frequency correction, if the clock is disrupted.
+        // Notably, phase correction slew is recalculated at the top of a second, so we still might end up having some moderate slew
+        // of the clock happening til that time.
+        info!("Resetting ntp_adjtime parameters to zero any phase or frequency corrections");
+        match self.adjust_clock(Duration::from_secs(0), Skew::from_ppm(0.0)) {
+            failed_adjtime @ Err(NtpAdjTimeError::Failure(_)) => {
+                failed_adjtime.unwrap();
+            }
+            Err(unexpected_adjtime_status) => {
+                error!("Unexpected adjtime result: {unexpected_adjtime_status}");
+            }
+            _ => {}
+        }
+        // TODO: We may want to reset `should_step` if we think it is acceptable to step the clock on next adjustment
+        // for faster recovery..
+        tracing::info!("Handled clock disruption event");
+    }
 }
 
 #[cfg(test)]
 mod test {
+    use mockall::predicate::eq;
     use rstest::rstest;
 
     use super::*;
@@ -275,5 +312,42 @@ mod test {
         // Call step_clock with test values
         clock_adjuster.step_clock(input_phase_correction).unwrap();
         assert!(!clock_adjuster.should_step);
+    }
+
+    #[test]
+    fn handle_disruption() {
+        let disruption_marker = 123;
+        let expected_tx = Timex::clock_adjustment()
+            .phase_correction(Duration::from_secs(0))
+            .skew(Skew::from_ppm(0.0))
+            .call();
+        let mut mock_ntp_adj_time = MockNtpAdjTime::new();
+        mock_ntp_adj_time
+            .expect_ntp_adjtime()
+            .once()
+            .with(eq(expected_tx))
+            .return_once(|_| 0);
+
+        let mut clock_adjuster = ClockAdjuster::new(mock_ntp_adj_time);
+        clock_adjuster.handle_disruption(disruption_marker);
+    }
+
+    #[test]
+    #[should_panic]
+    fn handle_disruption_panics_if_hard_failure_to_adjust_clock() {
+        let disruption_marker = 123;
+        let expected_tx = Timex::clock_adjustment()
+            .phase_correction(Duration::from_secs(0))
+            .skew(Skew::from_ppm(0.0))
+            .call();
+        let mut mock_ntp_adj_time = MockNtpAdjTime::new();
+        mock_ntp_adj_time
+            .expect_ntp_adjtime()
+            .once()
+            .with(eq(expected_tx))
+            .return_once(|_| -1);
+
+        let mut clock_adjuster = ClockAdjuster::new(mock_ntp_adj_time);
+        clock_adjuster.handle_disruption(disruption_marker);
     }
 }

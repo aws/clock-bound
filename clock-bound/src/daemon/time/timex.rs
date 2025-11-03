@@ -16,7 +16,7 @@ const MAX_SKEW: Skew = Skew::from_ppm(512.0);
 
 /// Newtype wrapping `libc::timex` to provide valid
 /// constructors for each type of `adjtimex`/`ntp_adjtime` operation.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Timex(timex);
 
 #[bon]

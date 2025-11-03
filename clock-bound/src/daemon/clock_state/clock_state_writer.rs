@@ -1,5 +1,6 @@
 //! Write clockbound shared memory and manage clock state
 use nix::sys::time::TimeSpec;
+use tracing::info;
 
 use crate::{
     daemon::{
@@ -36,6 +37,7 @@ mockall::mock! {
             // This is needed to tell ClockAdjust what phase offset to use.
             clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
         );
+        pub fn handle_disruption(&mut self, new_disruption_marker: u64);
     }
 }
 
@@ -68,6 +70,9 @@ impl<T: ShmWrite> ClockStateWriter<T> {
         // This is needed to tell ClockAdjust what phase offset to use.
         clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
     ) {
+        // If we've received `ClockParameters`, it means we were able to construct a valid `ClockBound` clock.
+        // Thus, mark ourselves as synchronized.
+        self.clock_status = ClockStatus::Synchronized;
         let bound = get_bound(clock_parameters, clock_realtime_offset_and_rtt);
         // Unwrap safety: sane error bound should be less than `i64::MAX`
         let bound_nsec = i64::try_from(bound.as_nanos()).unwrap();
@@ -102,6 +107,30 @@ impl<T: ShmWrite> ClockStateWriter<T> {
             self.clock_disruption_support_enabled,
         );
         self.shm_writer.write(&ceb);
+    }
+
+    /// Handle a clock disruption event
+    ///
+    /// Call this function after the system detects a VMClock disruption event.
+    ///
+    /// It will go through and clear the state (like startup).
+    pub fn handle_disruption(&mut self, new_disruption_marker: u64) {
+        // Use the destructure pattern to get a mutable reference to each item.
+        //
+        // This makes it a compilation error if we add a new field to Self without handling it here
+        let Self {
+            clock_status,
+            clock_disruption_support_enabled: _,
+            shm_writer: _,
+            max_drift_ppb: _,
+            disruption_marker,
+        } = self;
+        *clock_status = ClockStatus::Disrupted;
+        *disruption_marker = new_disruption_marker;
+        let as_of = MonotonicCoarse.get_time();
+        info!("Writing `ClockStatus::Disrupted` to SHM with 0 `bound_nsec`");
+        self.write_shm(as_of, 0); // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
+        tracing::info!("Handled clock disruption event");
     }
 }
 
@@ -226,7 +255,7 @@ mod tests {
                     && ceb.bound_nsec() == 2250
                     && ceb.disruption_marker() == disruption_marker
                     && ceb.max_drift_ppb() == max_drift_ppb
-                    && ceb.clock_status() == ClockStatus::Unknown // default on `ClockStateWriter` constructor
+                    && ceb.clock_status() == ClockStatus::Synchronized // If we're getting clock parameters, we're "Synchronized"
                     && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
             })
             .times(1)
@@ -300,5 +329,43 @@ mod tests {
     ) {
         let bound_nsec = get_bound(&clock_parameters, clock_realtime_offset_and_rtt);
         assert_eq!(bound_nsec, expected);
+    }
+
+    #[test]
+    fn handle_disruption() {
+        let clock_disruption_support_enabled = false;
+        let max_drift_ppb = 0;
+        let initial_disruption_marker = 0;
+        let final_disruption_marker = 1;
+        let mut shm_writer = MockShmWriter::new();
+        shm_writer
+            .expect_write()
+            .withf(move |ceb: &ClockErrorBound| {
+                ceb.void_after()
+                    == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
+                    && ceb.bound_nsec() == 0
+                    && ceb.disruption_marker() == final_disruption_marker
+                    && ceb.max_drift_ppb() == max_drift_ppb
+                    && ceb.clock_status() == ClockStatus::Disrupted
+                    && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
+            })
+            .times(1)
+            .return_const(());
+        let mut clock_state_writer = ClockStateWriter::builder()
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
+            .shm_writer(shm_writer)
+            .max_drift_ppb(max_drift_ppb)
+            .disruption_marker(initial_disruption_marker)
+            .build();
+        assert_eq!(clock_state_writer.clock_status, ClockStatus::Unknown);
+        assert_eq!(
+            clock_state_writer.disruption_marker,
+            initial_disruption_marker
+        );
+        clock_state_writer.handle_disruption(final_disruption_marker);
+        assert_eq!(
+            clock_state_writer.disruption_marker,
+            final_disruption_marker
+        );
     }
 }
