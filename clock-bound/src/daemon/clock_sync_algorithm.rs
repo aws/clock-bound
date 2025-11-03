@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 
 pub use ring_buffer::RingBuffer;
 
-use crate::daemon::{clock_parameters::ClockParameters, event};
+use crate::daemon::{clock_parameters::ClockParameters, event, subscriber::PRIMER_TARGET};
 
 pub mod source;
 
@@ -39,8 +39,17 @@ pub struct ClockSyncAlgorithm {
 impl ClockSyncAlgorithm {
     /// Feed event into the link local
     /// TODO: make this function private and call into it from `fn feed` when we have a routable event
+    #[expect(clippy::missing_panics_doc, reason = "serialization will not fail")]
     pub fn feed_link_local(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
-        self.link_local.feed(event)
+        let serialized = serde_json::to_string(&event).unwrap();
+        let output = self.link_local.feed(event);
+        tracing::info!(
+            target: PRIMER_TARGET,
+            event = serialized,
+            output = serde_json::to_string(&output).unwrap(),
+            "feed link local"
+        );
+        output
     }
 
     /// Feed event into ntp source
@@ -78,5 +87,51 @@ impl ClockSyncAlgorithm {
             source.handle_disruption();
         }
         tracing::info!("Handled clock disruption event");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::daemon::{
+        event::Stratum,
+        time::{Duration, Instant, TscCount, tsc::Skew},
+    };
+
+    use super::*;
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn feed_link_local_event() {
+        // Most logs are permeable to change. Make sure that we log a json event.
+
+        let event = event::Ntp::builder()
+            .tsc_pre(TscCount::new(500))
+            .tsc_post(TscCount::new(1000))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1),
+                server_send_time: Instant::from_days(2),
+                root_delay: Duration::from_micros(50),
+                root_dispersion: Duration::from_millis(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+
+        let mut csa = ClockSyncAlgorithm::builder()
+            .link_local(source::LinkLocal::new(Skew::from_ppm(15.0)))
+            .build();
+
+        let clock_parameters = csa.feed_link_local(event.clone());
+        assert!(clock_parameters.is_none());
+
+        let serialized_event = serde_json::to_string(&event).unwrap();
+        let serialized_output = serde_json::to_string(&clock_parameters).unwrap();
+
+        // tracing escapes quotes
+        let serialized_event = serialized_event.replace("\"", r#"\""#);
+        let serialized_output = serialized_output.replace("\"", r#"\""#);
+
+        assert!(logs_contain(&serialized_event));
+        assert!(logs_contain(&serialized_output));
     }
 }

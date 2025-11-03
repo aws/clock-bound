@@ -15,6 +15,7 @@ pub mod time;
 pub mod event;
 
 pub mod receiver_stream;
+pub mod subscriber;
 
 pub mod selected_clock;
 

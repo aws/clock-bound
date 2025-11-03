@@ -13,7 +13,7 @@ use crate::daemon::{
 /// Contains the NTP and time stamp counter samples to be used by synchronization algorithm.
 ///
 /// `tsc_post` must be greater than `tsc_pre`
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Ntp {
     /// TSC value before sending event
     tsc_pre: TscCount,
@@ -130,7 +130,7 @@ impl TscRtt for Ntp {
 }
 
 /// NTP-specific data
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NtpData {
     /// NTP Server recv time
     pub server_recv_time: Instant,
@@ -147,7 +147,10 @@ pub struct NtpData {
 }
 
 /// An NTP stratum
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(try_from = "u8", into = "u8")]
 pub enum Stratum {
     /// Unspecified or invalid.
     ///

@@ -17,6 +17,7 @@ bon = { version = "3.8.0", optional = true }
 byteorder = "1"
 bytes = { version = "1", optional = true }
 chrono = { version = "0.4", optional = true }
+clap = { version = "4.5.50", features = ["derive"], optional = true }
 errno = { version = "0.3.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = [
   "extra_traits",
@@ -24,6 +25,7 @@ libc = { version = "0.2", default-features = false, features = [
 nix = { version = "0.26", features = ["feature", "time"] }
 nom = { version = "8", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = "1.0.145"
 thiserror = { version = "2.0", optional = true }
 tokio = { version = "1.47.1", features = [
   "fs",
@@ -35,7 +37,13 @@ tokio = { version = "1.47.1", features = [
   "time",
 ], optional = true }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["std", "fmt", "json"] }
+tracing-appender = { version = "0.2", optional = true }
+tracing-subscriber = { version = "0.3", features = [
+  "std",
+  "fmt",
+  "json",
+  "registry",
+] }
 futures = "0.3"
 rand = "0.9.2"
 
@@ -46,17 +54,20 @@ mockall = "0.13.1"
 mockall_double = "0.3.1"
 rstest = "0.26"
 tempfile = "3.13"
+tracing-test = "0.2.5"
 
 [features]
 client = []
 daemon = [
   "dep:bon",
+  "dep:clap",
   "dep:serde",
   "dep:tokio",
   "dep:chrono",
   "dep:bytes",
   "dep:nom",
   "dep:thiserror",
+  "dep:tracing-appender",
   "tracing-subscriber/env-filter",
 ]
 time-string-parse = ["dep:nom"]
