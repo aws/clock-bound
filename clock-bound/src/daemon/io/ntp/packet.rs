@@ -22,7 +22,7 @@ mod header;
 mod short;
 mod timestamp;
 
-pub use extension::ExtensionField;
+pub use extension::{ExtensionField, Fec2V1Value};
 pub use header::{LeapIndicator, Mode, Version};
 pub use short::Short;
 pub use timestamp::Timestamp;

@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::time::Duration;
 
 pub mod packet;
-pub use packet::Packet;
+pub use packet::{Fec2V1Value as DaemonInfo, Packet};
 
 pub const UNSPECIFIED_SOCKET_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 pub const LINK_LOCAL_ADDRESS: SocketAddrV4 =

@@ -3,10 +3,11 @@
 //! This executable tests that the link local runner is able to send and receive packets from the
 //! link local address and that the polling rate is roughly once a second.
 
-use clock_bound::daemon::async_ring_buffer;
 use clock_bound::daemon::io::SourceIO;
+use clock_bound::daemon::{async_ring_buffer, io::ntp::DaemonInfo};
 use std::time;
 
+use rand::{RngCore, rng};
 use tokio::time::{Duration, timeout};
 use tracing_subscriber::EnvFilter;
 
@@ -21,7 +22,13 @@ async fn main() {
 
     let mut start = time::Instant::now();
 
-    let mut sourceio = SourceIO::construct();
+    let daemon_info = DaemonInfo {
+        major_version: 2,
+        minor_version: 100,
+        startup_id: rng().next_u64(),
+    };
+
+    let mut sourceio = SourceIO::construct(daemon_info);
     sourceio.create_link_local(link_local_sender).await;
     sourceio.spawn_all();
 

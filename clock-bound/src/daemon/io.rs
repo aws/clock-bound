@@ -13,6 +13,7 @@ use tokio::task::spawn;
 use tracing::{debug, info, warn};
 
 pub mod ntp;
+use crate::daemon::io::ntp::DaemonInfo;
 use crate::daemon::{async_ring_buffer, event};
 
 mod link_local;
@@ -39,11 +40,13 @@ pub struct SourceIO {
     vmclock: Option<Source<VMClock>>,
     /// Contains the channel used to communicate clock disruption events.
     clock_disruption_channels: ClockDisruptionChannels,
+    /// Daemon metadata
+    daemon_info: DaemonInfo,
 }
 
 impl SourceIO {
     /// Constructs a new `SourceIO` object and constructs the necessary resources.
-    pub fn construct() -> Self {
+    pub fn construct(daemon_info: DaemonInfo) -> Self {
         let (sender, receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         SourceIO {
@@ -51,6 +54,7 @@ impl SourceIO {
             ntp_sources: HashMap::new(),
             vmclock: None,
             clock_disruption_channels: ClockDisruptionChannels { sender, receiver },
+            daemon_info,
         }
     }
 
@@ -117,6 +121,7 @@ impl SourceIO {
                 event_sender,
                 ctrl_receiver,
                 clock_disruption_receiver,
+                self.daemon_info.clone(),
             );
 
             let source = Source {
@@ -311,7 +316,13 @@ mod tests {
     async fn source_io_verify_link_local_creation() {
         let (event_sender, _) = async_ring_buffer::create::<event::Ntp>(1);
 
-        let mut source_io = SourceIO::construct();
+        let info = DaemonInfo {
+            major_version: 2,
+            minor_version: 100,
+            startup_id: 0xABCD_BCDE_CDEF_DEFA,
+        };
+
+        let mut source_io = SourceIO::construct(info);
         source_io.create_link_local(event_sender).await;
 
         assert!(source_io.link_local.is_some())

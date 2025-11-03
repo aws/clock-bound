@@ -18,7 +18,11 @@ pub mod receiver_stream;
 
 pub mod selected_clock;
 
-use crate::daemon::{clock_sync_algorithm::ClockSyncAlgorithm, time::tsc::Skew};
+use crate::daemon::{
+    clock_sync_algorithm::ClockSyncAlgorithm, io::ntp::DaemonInfo, time::tsc::Skew,
+};
+
+use rand::{RngCore, rng};
 
 /// The maximum dispersion growth every second
 ///
@@ -45,7 +49,13 @@ impl Daemon {
     pub async fn construct() -> Self {
         let (tx, rx) = async_ring_buffer::create(2);
 
-        let mut io_front_end = io::SourceIO::construct();
+        let daemon_info = DaemonInfo {
+            major_version: 2,
+            minor_version: 100,
+            startup_id: rng().next_u64(),
+        };
+
+        let mut io_front_end = io::SourceIO::construct(daemon_info);
 
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .link_local(clock_sync_algorithm::source::LinkLocal::new(

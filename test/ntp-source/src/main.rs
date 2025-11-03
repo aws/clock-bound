@@ -6,11 +6,13 @@
 use std::time::Duration;
 
 use clock_bound::daemon::async_ring_buffer;
+use clock_bound::daemon::io::ntp::DaemonInfo;
 use clock_bound::daemon::io::{
     SourceIO,
     ntp::{FIRST_PUBLIC_TIME_ADDRESS, SECOND_PUBLIC_TIME_ADDRESS},
 };
 
+use rand::{RngCore, rng};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main(flavor = "current_thread")]
@@ -23,7 +25,13 @@ async fn main() {
     let (first_ntp_source_sender, first_ntp_source_receiver) = async_ring_buffer::create(1);
     let (second_ntp_source_sender, second_ntp_source_receiver) = async_ring_buffer::create(1);
 
-    let mut sourceio = SourceIO::construct();
+    let daemon_info = DaemonInfo {
+        major_version: 2,
+        minor_version: 100,
+        startup_id: rng().next_u64(),
+    };
+
+    let mut sourceio = SourceIO::construct(daemon_info);
 
     // Create IO time sources
     sourceio

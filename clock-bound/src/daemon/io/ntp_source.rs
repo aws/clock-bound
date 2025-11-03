@@ -15,7 +15,7 @@ use super::tsc::read_timestamp_counter;
 use crate::daemon::{
     async_ring_buffer,
     event::{self, NtpData},
-    io::{ClockDisruptionEvent, ControlRequest},
+    io::{ClockDisruptionEvent, ControlRequest, DaemonInfo},
     time::tsc::TscCount,
 };
 
@@ -48,6 +48,7 @@ pub struct NTPSource {
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     ntp_buffer: [u8; Packet::SIZE],
     interval: Interval,
+    daemon_info: DaemonInfo,
 }
 
 impl NTPSource {
@@ -58,6 +59,7 @@ impl NTPSource {
         event_sender: async_ring_buffer::Sender<event::Ntp>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
+        daemon_info: DaemonInfo,
     ) -> Self {
         let mut ntp_source_interval = interval(NTP_SOURCE_INTERVAL_DURATION);
         ntp_source_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -69,6 +71,7 @@ impl NTPSource {
             clock_disruption_receiver,
             ntp_buffer: [0u8; Packet::SIZE],
             interval: ntp_source_interval,
+            daemon_info,
         }
     }
 
