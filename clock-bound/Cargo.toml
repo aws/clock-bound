@@ -70,6 +70,8 @@ daemon = [
   "dep:tracing-appender",
   "tracing-subscriber/env-filter",
 ]
+test-side-by-side = [
+] # run without changing system clock. And compare against system clock
 time-string-parse = ["dep:nom"]
 
 default = ["client", "daemon"]

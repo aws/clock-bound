@@ -91,21 +91,35 @@ impl LinkLocal {
 
         let received_timestamp = read_timestamp_counter();
 
+        #[cfg(all(not(test), feature = "test-side-by-side"))]
+        let system_clock_reading = crate::daemon::event::SystemClockMeasurement::now();
+
         let (_, ntp_packet) = Packet::parse_from_bytes(&self.ntp_buffer)
             .map_err(|e| LinkLocalError::PacketParsing(e.to_string()))?;
 
         let ntp_data = NtpData::try_from(ntp_packet)
             .map_err(|e| LinkLocalError::PacketParsing(e.to_string()))?;
 
-        let ntp_event = event::Ntp::builder()
+        let builder = event::Ntp::builder()
             .tsc_pre(TscCount::new(sent_timestamp.into()))
             .tsc_post(TscCount::new(received_timestamp.into()))
-            .ntp_data(ntp_data)
-            .build()
-            .ok_or(LinkLocalError::TscOrder {
-                pre: sent_timestamp,
-                post: received_timestamp,
-            })?;
+            .ntp_data(ntp_data);
+
+        let ntp_event = {
+            #[cfg(all(not(test), feature = "test-side-by-side"))]
+            {
+                builder.system_clock(system_clock_reading).build()
+            }
+            #[cfg(any(test, not(feature = "test-side-by-side")))]
+            {
+                builder.build()
+            }
+        };
+
+        let ntp_event = ntp_event.ok_or(LinkLocalError::TscOrder {
+            pre: sent_timestamp,
+            post: received_timestamp,
+        })?;
 
         debug!(?recv_packet_result, "Received packet.");
         Ok(ntp_event)

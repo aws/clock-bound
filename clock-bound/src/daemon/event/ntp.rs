@@ -21,6 +21,9 @@ pub struct Ntp {
     tsc_post: TscCount,
     /// NTP Packet data
     data: NtpData,
+    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    #[serde(skip)]
+    system_clock: Option<super::SystemClockMeasurement>,
 }
 
 #[bon::bon]
@@ -29,12 +32,21 @@ impl Ntp {
     ///
     /// Returns `None` if `tsc_post <= tsc_pre`
     #[builder]
-    pub fn new(tsc_pre: TscCount, tsc_post: TscCount, ntp_data: NtpData) -> Option<Self> {
+    pub fn new(
+        tsc_pre: TscCount,
+        tsc_post: TscCount,
+        ntp_data: NtpData,
+        #[cfg(all(not(test), feature = "test-side-by-side"))] system_clock: Option<
+            super::SystemClockMeasurement,
+        >,
+    ) -> Option<Self> {
         if tsc_post > tsc_pre {
             Some(Self {
                 tsc_pre,
                 tsc_post,
                 data: ntp_data,
+                #[cfg(all(not(test), feature = "test-side-by-side"))]
+                system_clock,
             })
         } else {
             None
@@ -56,6 +68,12 @@ impl Ntp {
     /// `data` getter
     pub fn data(&self) -> &NtpData {
         &self.data
+    }
+
+    /// system time getter
+    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    pub fn system_clock(&self) -> Option<&super::SystemClockMeasurement> {
+        self.system_clock.as_ref()
     }
 
     /// Calculate a period by using 2 NTP events using return path

@@ -42,7 +42,40 @@ impl ClockSyncAlgorithm {
     #[expect(clippy::missing_panics_doc, reason = "serialization will not fail")]
     pub fn feed_link_local(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
         let serialized = serde_json::to_string(&event).unwrap();
-        let output = self.link_local.feed(event);
+
+        let output = {
+            #[cfg(all(feature = "test-side-by-side", not(test)))]
+            {
+                let Some(system_clock) = event.system_clock() else {
+                    return self.link_local.feed(event);
+                };
+                let system = system_clock.system_time;
+                let system_tsc = system_clock.tsc;
+                let tsc_rtt = event.tsc_post() - event.tsc_pre();
+                let retval = self.link_local.feed(event);
+                if let Some(new_params) = &retval {
+                    let system_clock_tsc_age = system_tsc - new_params.tsc_count;
+                    let system_clock_age = system_clock_tsc_age * new_params.period;
+
+                    let comparable_time = new_params.time + system_clock_age;
+                    let offset_from_system_clock = comparable_time - system;
+                    let ntp_rtt = tsc_rtt * new_params.period;
+
+                    tracing::info!(
+                        ?system_clock_tsc_age,
+                        ?offset_from_system_clock,
+                        ?ntp_rtt,
+                        ?tsc_rtt
+                    );
+                }
+                retval
+            }
+            #[cfg(any(not(feature = "test-side-by-side"), test))]
+            {
+                self.link_local.feed(event)
+            }
+        };
+
         tracing::info!(
             target: PRIMER_TARGET,
             event = serialized,
