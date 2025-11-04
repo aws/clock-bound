@@ -10,7 +10,7 @@ use crate::{
             instant::Utc,
         },
     },
-    shm::{ClockErrorBound, ClockStatus, ShmWrite},
+    shm::{ClockErrorBound, ClockStatus, ShmWrite, ShmWriter},
 };
 
 /// The drift rate/maximal frequency error in parts-per-billion
@@ -18,6 +18,25 @@ use crate::{
 /// expand by this * the duration since `as_of`.
 #[expect(unused)]
 const FREQUENCY_ERROR_PPB: u32 = 15_000;
+
+/// Newtype wrapper around `ShmWriter` so we can implement `Send` + `Sync`,
+/// and thus construct this as part of an async task.
+/// `ShmWriter` itself does not implement these because of its usage of a raw
+/// pointer, but semantics in our daemon are that only one such `ShmWriter` should exist
+/// at all, so `SafeShmWriter` does that for us.
+pub struct SafeShmWriter(ShmWriter);
+impl SafeShmWriter {
+    pub fn new(shm_writer: ShmWriter) -> Self {
+        Self(shm_writer)
+    }
+}
+impl ShmWrite for SafeShmWriter {
+    fn write(&mut self, ceb: &ClockErrorBound) {
+        self.0.write(ceb);
+    }
+}
+unsafe impl Send for SafeShmWriter {}
+unsafe impl Sync for SafeShmWriter {}
 
 pub struct ClockStateWriter<T> {
     clock_status: ClockStatus,
@@ -27,43 +46,22 @@ pub struct ClockStateWriter<T> {
     disruption_marker: u64,
 }
 
-#[cfg(test)]
-mockall::mock! {
-    pub ClockStateWriter<T> {
-        pub fn handle_clock_parameters(
-            &mut self,
-            // This is needed to tell ClockAdjust what frequency to use.
-            _clock_parameters: &ClockParameters,
-            // This is needed to tell ClockAdjust what phase offset to use.
-            clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
-        );
-        pub fn handle_disruption(&mut self, new_disruption_marker: u64);
-    }
+#[cfg_attr(test, mockall::automock)]
+pub(crate) trait ClockStateWrite {
+    fn handle_clock_parameters(
+        &mut self,
+        clock_parameters: &ClockParameters,
+        clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
+    );
+    fn handle_disruption(&mut self, new_disruption_marker: u64);
 }
 
-#[bon::bon]
-impl<T: ShmWrite> ClockStateWriter<T> {
-    #[builder]
-    pub fn new(
-        clock_disruption_support_enabled: bool,
-        shm_writer: T,
-        max_drift_ppb: u32,
-        disruption_marker: u64,
-    ) -> Self {
-        Self {
-            clock_status: ClockStatus::Unknown,
-            clock_disruption_support_enabled,
-            shm_writer,
-            max_drift_ppb,
-            disruption_marker,
-        }
-    }
-
+impl<T: ShmWrite> ClockStateWrite for ClockStateWriter<T> {
     /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector.
     ///
     /// # Panics
     /// Panics if error bound calculated exceeds `i64::MAX`
-    pub fn handle_clock_parameters(
+    fn handle_clock_parameters(
         &mut self,
         // This is needed to tell ClockAdjust what frequency to use.
         clock_parameters: &ClockParameters,
@@ -87,6 +85,49 @@ impl<T: ShmWrite> ClockStateWriter<T> {
         self.write_shm(as_of, bound_nsec);
     }
 
+    /// Handle a clock disruption event
+    ///
+    /// Call this function after the system detects a VMClock disruption event.
+    ///
+    /// It will go through and clear the state (like startup).
+    fn handle_disruption(&mut self, new_disruption_marker: u64) {
+        // Use the destructure pattern to get a mutable reference to each item.
+        //
+        // This makes it a compilation error if we add a new field to Self without handling it here
+        let Self {
+            clock_status,
+            clock_disruption_support_enabled: _,
+            shm_writer: _,
+            max_drift_ppb: _,
+            disruption_marker,
+        } = self;
+        *clock_status = ClockStatus::Disrupted;
+        *disruption_marker = new_disruption_marker;
+        let as_of = MonotonicCoarse.get_time();
+        info!("Writing `ClockStatus::Disrupted` to SHM with 0 `bound_nsec`");
+        self.write_shm(as_of, 0); // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
+        tracing::info!("Handled clock disruption event");
+    }
+}
+
+#[bon::bon]
+impl<T: ShmWrite> ClockStateWriter<T> {
+    #[builder]
+    pub fn new(
+        clock_disruption_support_enabled: bool,
+        shm_writer: T,
+        max_drift_ppb: u32,
+        disruption_marker: u64,
+    ) -> Self {
+        Self {
+            clock_status: ClockStatus::Unknown,
+            clock_disruption_support_enabled,
+            shm_writer,
+            max_drift_ppb,
+            disruption_marker,
+        }
+    }
+
     fn write_shm(&mut self, as_of: Instant, bound_nsec: i64) {
         let void_after = as_of + Duration::from_secs(1000);
         // TODO: It may be worthwhile to add to this max drift ppb base the following components:
@@ -107,30 +148,6 @@ impl<T: ShmWrite> ClockStateWriter<T> {
             self.clock_disruption_support_enabled,
         );
         self.shm_writer.write(&ceb);
-    }
-
-    /// Handle a clock disruption event
-    ///
-    /// Call this function after the system detects a VMClock disruption event.
-    ///
-    /// It will go through and clear the state (like startup).
-    pub fn handle_disruption(&mut self, new_disruption_marker: u64) {
-        // Use the destructure pattern to get a mutable reference to each item.
-        //
-        // This makes it a compilation error if we add a new field to Self without handling it here
-        let Self {
-            clock_status,
-            clock_disruption_support_enabled: _,
-            shm_writer: _,
-            max_drift_ppb: _,
-            disruption_marker,
-        } = self;
-        *clock_status = ClockStatus::Disrupted;
-        *disruption_marker = new_disruption_marker;
-        let as_of = MonotonicCoarse.get_time();
-        info!("Writing `ClockStatus::Disrupted` to SHM with 0 `bound_nsec`");
-        self.write_shm(as_of, 0); // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
-        tracing::info!("Handled clock disruption event");
     }
 }
 

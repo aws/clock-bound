@@ -20,12 +20,16 @@ pub mod subscriber;
 pub mod selected_clock;
 
 use crate::daemon::{
+    clock_state::{
+        ClockState,
+        clock_adjust::{ClockAdjuster, KAPIClockAdjuster},
+        clock_state_writer::{ClockStateWriter, SafeShmWriter},
+    },
     clock_sync_algorithm::{ClockSyncAlgorithm, source::NTPSource},
     io::ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
     receiver_stream::{ReceiverStream, RoutableEvent},
     time::tsc::Skew,
 };
-
 use rand::{RngCore, rng};
 
 /// The maximum dispersion growth every second
@@ -45,6 +49,7 @@ pub struct Daemon {
     _io_front_end: io::SourceIO,
     clock_sync_algorithm: ClockSyncAlgorithm,
     receiver_stream: ReceiverStream,
+    clock_state: ClockState<ClockAdjuster<KAPIClockAdjuster>, ClockStateWriter<SafeShmWriter>>,
 }
 
 impl Daemon {
@@ -56,6 +61,7 @@ impl Daemon {
             minor_version: 100,
             startup_id: rng().next_u64(),
         };
+        let clock_state = ClockState::construct();
 
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .link_local(clock_sync_algorithm::source::LinkLocal::new(
@@ -103,6 +109,7 @@ impl Daemon {
             _io_front_end: io_front_end,
             clock_sync_algorithm,
             receiver_stream,
+            clock_state,
         }
     }
 
@@ -121,11 +128,17 @@ impl Daemon {
     fn handle_event(&mut self, routable_event: RoutableEvent) {
         match routable_event {
             RoutableEvent::LinkLocalEvent(event) => {
-                self.clock_sync_algorithm.feed_link_local(event);
+                if let Some(params) = self.clock_sync_algorithm.feed_link_local(event) {
+                    self.clock_state.handle_clock_parameters(params);
+                }
             }
             RoutableEvent::NTPSourceEvent(sender_address, event) => {
-                self.clock_sync_algorithm
-                    .feed_ntp_source(sender_address, &event);
+                if let Some(params) = self
+                    .clock_sync_algorithm
+                    .feed_ntp_source(sender_address, &event)
+                {
+                    self.clock_state.handle_clock_parameters(params);
+                }
             }
             RoutableEvent::PhcEvent => {
                 todo!("Implement PHC IO event delivery")

@@ -54,35 +54,22 @@ pub struct ClockAdjuster<T> {
     should_step: bool,
 }
 
-#[cfg(test)]
-mockall::mock! {
-    pub ClockAdjuster<T> {
-        pub fn handle_clock_parameters(
-            &mut self,
-            // This is needed to tell ClockAdjust what frequency to use.
-            _clock_parameters: &ClockParameters,
-            // This is needed to tell ClockAdjust what phase offset to use.
-            clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
-        ) -> Result<Timex, NtpAdjTimeError>;
-        pub fn handle_disruption(&mut self, new_disruption_marker: u64);
-    }
+#[cfg_attr(test, mockall::automock)]
+pub(crate) trait ClockAdjust {
+    fn handle_clock_parameters(
+        &mut self,
+        clock_parameters: &ClockParameters,
+        clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
+    ) -> Result<Timex, NtpAdjTimeError>;
+    fn handle_disruption(&mut self, new_disruption_marker: u64);
 }
 
-impl<T: NtpAdjTime> ClockAdjuster<T> {
-    pub fn new(ntp_adjtime: T) -> Self {
-        // Should step on first adjustment.
-        let should_step = true;
-        Self {
-            ntp_adjtime,
-            should_step,
-        }
-    }
-
+impl<T: NtpAdjTime> ClockAdjust for ClockAdjuster<T> {
     /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector.
     ///
     /// # Errors
     /// This method returns [`NtpAdjTimeError`] if the call has failed or has an unexpected return code.
-    pub fn handle_clock_parameters(
+    fn handle_clock_parameters(
         &mut self,
         // This is needed to tell ClockAdjust what frequency to use.
         _clock_parameters: &ClockParameters,
@@ -96,63 +83,6 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
         }
     }
 
-    /// Performs an adjustment of the clock, to apply the given phase correction
-    /// and skew values, in a single system call.
-    ///
-    /// # Errors
-    /// `NtpAdjTimeError::Failure` if `ntp_adjtime` returns -1, meaning the system call failed, along with errno
-    /// `NtpAdjTimeError::BadState` if some state other than `TIME_OK` is returned from `ntp_adjtime`
-    /// `NtpAdjTimeError::InvalidState` if some invalid or not well-documented state is returned from `ntp_adjtime`
-    pub fn adjust_clock(
-        &self,
-        phase_correction: Duration,
-        skew: Skew,
-    ) -> Result<Timex, NtpAdjTimeError> {
-        let mut tx = Timex::clock_adjustment()
-            .phase_correction(phase_correction)
-            .skew(skew)
-            .call();
-
-        debug!("calling ntp_adjtime with {:?}", tx);
-        match self.ntp_adjtime.ntp_adjtime(&mut tx) {
-            TIME_OK => Ok(tx),
-            cs @ (TIME_ERROR | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
-                Err(NtpAdjTimeError::BadState(cs))
-            }
-            -1 => Err(NtpAdjTimeError::Failure(errno::errno())),
-            unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
-        }
-    }
-
-    /// Applies an instantaneous step of `CLOCK_REALTIME` based on the passed `phase_correction` value.
-    ///
-    /// # Errors
-    /// `NtpAdjTimeError::Failure` if `ntp_adjtime` returns -1, meaning the system call failed, along with errno
-    /// `NtpAdjTimeError::BadState` if some state other than `TIME_ERROR` is returned from `ntp_adjtime`
-    /// `NtpAdjTimeError::InvalidState` if some invalid or not well-documented state is returned from `ntp_adjtime`
-    pub fn step_clock(&mut self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError> {
-        let mut tx = Timex::clock_step()
-            .phase_correction(phase_correction)
-            .call();
-
-        debug!("calling ntp_adjtime with {:?}", tx);
-        // NOTE: we actually expect TIME_ERROR if the clock adjustment succeeds, since
-        // that indicates the clock is now "unsynchronized" (expected after we step the clock
-        // discontinuously)
-        match self.ntp_adjtime.ntp_adjtime(&mut tx) {
-            TIME_ERROR => {
-                // Step was successful, so we should not step again.
-                self.should_step = false;
-                Ok(tx)
-            }
-            cs @ (TIME_OK | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
-                Err(NtpAdjTimeError::BadState(cs))
-            }
-            -1 => Err(NtpAdjTimeError::Failure(errno::errno())),
-            unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
-        }
-    }
-
     /// Handle a clock disruption event
     ///
     /// Call this function after the system detects a VMClock disruption event.
@@ -162,7 +92,7 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
     /// # Panics
     /// If `adjust_clock` fails, e.g. an invalid value was supplied to `ntp_adjtime` (unlikely), or
     /// insufficient permissions to adjust the clock.
-    pub fn handle_disruption(&mut self, _new_disruption_marker: u64) {
+    fn handle_disruption(&mut self, _new_disruption_marker: u64) {
         // Use the destructure pattern to get a mutable reference to each item.
         //
         // This makes it a compilation error if we add a new field to Self without handling it here
@@ -186,6 +116,79 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
         // TODO: We may want to reset `should_step` if we think it is acceptable to step the clock on next adjustment
         // for faster recovery..
         tracing::info!("Handled clock disruption event");
+    }
+}
+
+impl<T: NtpAdjTime> ClockAdjuster<T> {
+    pub fn new(ntp_adjtime: T) -> Self {
+        // Should step on first adjustment.
+        let should_step = true;
+        Self {
+            ntp_adjtime,
+            should_step,
+        }
+    }
+
+    /// Performs an adjustment of the clock, to apply the given phase correction
+    /// and skew values, in a single system call.
+    ///
+    /// # Errors
+    /// `NtpAdjTimeError::Failure` if `ntp_adjtime` returns -1, meaning the system call failed, along with errno
+    /// `NtpAdjTimeError::BadState` if some state other than `TIME_OK` is returned from `ntp_adjtime`
+    /// `NtpAdjTimeError::InvalidState` if some invalid or not well-documented state is returned from `ntp_adjtime`
+    pub fn adjust_clock(
+        &self,
+        phase_correction: Duration,
+        skew: Skew,
+    ) -> Result<Timex, NtpAdjTimeError> {
+        let mut tx = Timex::clock_adjustment()
+            .phase_correction(phase_correction)
+            .skew(skew)
+            .call();
+
+        debug!(
+            "calling ntp_adjtime to adjust clock with phase_correction {phase_correction:?} and skew {skew:?}"
+        );
+        match self.ntp_adjtime.ntp_adjtime(&mut tx) {
+            TIME_OK => Ok(tx),
+            cs @ (TIME_ERROR | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
+                Err(NtpAdjTimeError::BadState(cs))
+            }
+            -1 => Err(NtpAdjTimeError::Failure(errno::errno())),
+            unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
+        }
+    }
+
+    /// Applies an instantaneous step of `CLOCK_REALTIME` based on the passed `phase_correction` value.
+    ///
+    /// # Errors
+    /// `NtpAdjTimeError::Failure` if `ntp_adjtime` returns -1, meaning the system call failed, along with errno
+    /// `NtpAdjTimeError::BadState` if some state other than `TIME_ERROR` is returned from `ntp_adjtime`
+    /// `NtpAdjTimeError::InvalidState` if some invalid or not well-documented state is returned from `ntp_adjtime`
+    pub fn step_clock(&mut self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError> {
+        let mut tx = Timex::clock_step()
+            .phase_correction(phase_correction)
+            .call();
+
+        debug!(
+            "calling ntp_adjtime to step clock with phase_correction {phase_correction:?} {:?}",
+            tx
+        );
+        // NOTE: we actually expect TIME_ERROR if the clock adjustment succeeds, since
+        // that indicates the clock is now "unsynchronized" (expected after we step the clock
+        // discontinuously)
+        match self.ntp_adjtime.ntp_adjtime(&mut tx) {
+            TIME_ERROR => {
+                // Step was successful, so we should not step again.
+                self.should_step = false;
+                Ok(tx)
+            }
+            cs @ (TIME_OK | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
+                Err(NtpAdjTimeError::BadState(cs))
+            }
+            -1 => Err(NtpAdjTimeError::Failure(errno::errno())),
+            unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
+        }
     }
 }
 

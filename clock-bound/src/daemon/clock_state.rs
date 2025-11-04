@@ -4,34 +4,33 @@ pub mod clock_state_writer;
 
 use tracing::error;
 
-use crate::daemon::clock_state::clock_adjust::NtpAdjTimeError;
-#[cfg_attr(test, mockall_double::double)]
+use crate::daemon::clock_state::clock_adjust::{ClockAdjust, KAPIClockAdjuster, NtpAdjTimeError};
+use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
 use crate::daemon::clock_state::{
     clock_adjust::ClockAdjuster, clock_state_writer::ClockStateWriter,
 };
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::time::clocks::RealTime;
-use crate::{
-    daemon::{
-        clock_parameters::ClockParameters,
-        clock_state::clock_adjust::NtpAdjTime,
-        time::{ClockExt, clocks::ClockBound},
-    },
-    shm::ShmWrite,
+use crate::daemon::{
+    clock_parameters::ClockParameters,
+    time::{ClockExt, clocks::ClockBound},
 };
+use crate::shm::ShmWriter;
+
+const CLOCKBOUND_SHM_DEFAULT_PATH: &str = "/var/run/clockbound/shm0";
 
 /// The whole `ClockState` component struct.
 /// This encompasses both `ClockAdjust` component which interfaces
 /// with the `CLOCK_REALTIME` kernel clock to synchronize it with `ClockBound` estimate
 /// of UTC (`ClockBound` clock), and `ClockStateWriter` which manages writing
 /// the `ClockErrorBound` to SHM segment for the client to read.
-pub struct ClockState<S, T> {
-    clock_state_writer: ClockStateWriter<S>,
-    clock_adjuster: ClockAdjuster<T>,
+pub(crate) struct ClockState<A, S> {
+    clock_state_writer: S,
+    clock_adjuster: A,
 }
 
-impl<S: ShmWrite, T: NtpAdjTime> ClockState<S, T> {
-    pub fn new(clock_state_writer: ClockStateWriter<S>, clock_adjust: ClockAdjuster<T>) -> Self {
+impl<A: ClockAdjust, S: ClockStateWrite> ClockState<A, S> {
+    pub fn new(clock_state_writer: S, clock_adjust: A) -> Self {
         Self {
             clock_state_writer,
             clock_adjuster: clock_adjust,
@@ -71,6 +70,7 @@ impl<S: ShmWrite, T: NtpAdjTime> ClockState<S, T> {
     /// Call this function after the system detects a VMClock disruption event.
     ///
     /// It will go through and clear the state (like startup).
+    #[cfg_attr(not(test), expect(unused))]
     pub fn handle_disruption(&mut self, new_disruption_marker: u64) {
         // Use the destructure pattern to get a mutable reference to each item.
         //
@@ -86,28 +86,38 @@ impl<S: ShmWrite, T: NtpAdjTime> ClockState<S, T> {
     }
 }
 
+impl ClockState<ClockAdjuster<KAPIClockAdjuster>, ClockStateWriter<SafeShmWriter>> {
+    pub fn construct() -> Self {
+        let shm_writer = ShmWriter::new(std::path::Path::new(CLOCKBOUND_SHM_DEFAULT_PATH)).unwrap();
+        let safe_shm_writer = SafeShmWriter::new(shm_writer);
+        let clock_state_writer: ClockStateWriter<SafeShmWriter> = ClockStateWriter::builder()
+            .clock_disruption_support_enabled(true)
+            .shm_writer(safe_shm_writer)
+            .max_drift_ppb(15_000)
+            .disruption_marker(0)
+            .build();
+        let clock_adjuster: ClockAdjuster<KAPIClockAdjuster> =
+            ClockAdjuster::new(KAPIClockAdjuster);
+        Self::new(clock_state_writer, clock_adjuster)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use mockall::predicate::eq;
 
-    use crate::{
-        daemon::{
-            clock_parameters::ClockParameters,
-            clock_state::{
-                ClockState,
-                clock_adjust::{MockClockAdjuster, NoopClockAdjuster, NtpAdjTimeError},
-                clock_state_writer::MockClockStateWriter,
-            },
-            time::{
-                Duration, Instant, TscCount,
-                inner::ClockOffsetAndRtt,
-                instant::Utc,
-                timex::Timex,
-                tsc::{Period, Skew},
-            },
+    use crate::daemon::{
+        clock_state::{clock_adjust::MockClockAdjust, clock_state_writer::MockClockStateWrite},
+        time::{
+            Duration, Instant, TscCount,
+            inner::ClockOffsetAndRtt,
+            instant::Utc,
+            timex::Timex,
+            tsc::{Period, Skew},
         },
-        shm::ShmWriter,
     };
+
+    use super::*;
 
     fn get_sample_clock_parameters() -> ClockParameters {
         ClockParameters {
@@ -123,8 +133,7 @@ mod tests {
     fn handle_clock_parameters() {
         let clock_parameters = get_sample_clock_parameters();
         let clock_parameters_clone = clock_parameters.clone();
-        let mut mock_clock_adjuster: MockClockAdjuster<NoopClockAdjuster> =
-            MockClockAdjuster::new();
+        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
         mock_clock_adjuster
             .expect_handle_clock_parameters()
             .times(1)
@@ -141,8 +150,7 @@ mod tests {
             });
 
         let clock_parameters_clone = clock_parameters.clone();
-        let mut mock_clock_state_writer: MockClockStateWriter<ShmWriter> =
-            MockClockStateWriter::new();
+        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         mock_clock_state_writer
             .expect_handle_clock_parameters()
             .once()
@@ -162,8 +170,7 @@ mod tests {
     fn handle_clock_parameters_clock_adjust_hard_failure() {
         let clock_parameters = get_sample_clock_parameters();
         let clock_parameters_clone = clock_parameters.clone();
-        let mut mock_clock_adjuster: MockClockAdjuster<NoopClockAdjuster> =
-            MockClockAdjuster::new();
+        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
         mock_clock_adjuster
             .expect_handle_clock_parameters()
             .times(1)
@@ -174,8 +181,7 @@ mod tests {
             )
             .return_once(|_, _| Err(NtpAdjTimeError::Failure(errno::errno())));
 
-        let mut mock_clock_state_writer: MockClockStateWriter<ShmWriter> =
-            MockClockStateWriter::new();
+        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         mock_clock_state_writer
             .expect_handle_clock_parameters()
             .never();
@@ -188,8 +194,7 @@ mod tests {
     fn handle_clock_parameters_clock_adjust_soft_failure() {
         let clock_parameters = get_sample_clock_parameters();
         let clock_parameters_clone = clock_parameters.clone();
-        let mut mock_clock_adjuster: MockClockAdjuster<NoopClockAdjuster> =
-            MockClockAdjuster::new();
+        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
         mock_clock_adjuster
             .expect_handle_clock_parameters()
             .times(1)
@@ -200,8 +205,7 @@ mod tests {
             )
             .return_once(|_, _| Err(NtpAdjTimeError::BadState(0)));
 
-        let mut mock_clock_state_writer: MockClockStateWriter<ShmWriter> =
-            MockClockStateWriter::new();
+        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         mock_clock_state_writer
             .expect_handle_clock_parameters()
             .never();
@@ -213,15 +217,13 @@ mod tests {
     #[test]
     fn handle_disruption() {
         let disruption_marker = 123;
-        let mut mock_clock_adjuster: MockClockAdjuster<NoopClockAdjuster> =
-            MockClockAdjuster::new();
+        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
         mock_clock_adjuster
             .expect_handle_disruption()
             .once()
             .with(eq(disruption_marker))
             .return_const(());
-        let mut mock_clock_state_writer: MockClockStateWriter<ShmWriter> =
-            MockClockStateWriter::new();
+        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         mock_clock_state_writer
             .expect_handle_disruption()
             .once()
