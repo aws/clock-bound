@@ -1,110 +1,233 @@
 //! A client library to communicate with ClockBound daemon. This client library is written in pure Rust.
 //!
+pub use crate::shm::CLOCKBOUND_SHM_DEFAULT_PATH;
 pub use crate::shm::ClockStatus;
-use crate::shm::ShmError;
-use crate::vmclock::VMClock;
+use crate::shm::ShmReader;
+use crate::shm::{ClockErrorBound, ShmError};
 pub use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
+use crate::vmclock::shm_reader::VMClockShmReader;
 use errno::Errno;
 use nix::sys::time::TimeSpec;
+use std::ffi::CString;
 use std::path::Path;
 
-pub const CLOCKBOUND_SHM_DEFAULT_PATH: &str = "/var/run/clockbound/shm0";
-
+/// The `ClockBoundClient`
+///
+/// Use it to return current time, the clock error bound and clock status associated with it.
 pub struct ClockBoundClient {
-    vmclock: VMClock,
+    clockbound_shm: ClockBoundSHM,
+    vmclock_shm: VMClockSHM,
 }
 
 impl ClockBoundClient {
     /// Creates and returns a new `ClockBoundClient`.
     ///
-    /// The creation process also initializes a shared memory reader
-    /// with the shared memory default path that is used by
-    /// the ClockBound daemon.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    /// The client accesses two shared memory segments. One written to by the ClockBound daemon.
+    /// The second one by the VMClock device (if available).
+    ///
+    /// Use default paths to the two shared memory segments.
+    ///
+    /// # Errors
+    /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
     pub fn new() -> Result<ClockBoundClient, ClockBoundError> {
-        // Validate that the default ClockBound shared memory path exists.
-        if !Path::new(CLOCKBOUND_SHM_DEFAULT_PATH).exists() {
-            let mut error = ClockBoundError::from(ShmError::SegmentNotInitialized);
-            error.detail = String::from(
-                "Default path for the ClockBound shared memory segment does not exist: ",
-            );
-            error.detail.push_str(CLOCKBOUND_SHM_DEFAULT_PATH);
-            return Err(error);
-        }
-
-        // Create a ClockBoundClient that makes use of the ClockBound daemon and VMClock.
-        //
-        // Clock disruption is expected to be handled by ClockBound daemon
-        // in coordination with this VMClock.
-        let vmclock = VMClock::new(CLOCKBOUND_SHM_DEFAULT_PATH, VMCLOCK_SHM_DEFAULT_PATH)?;
-
-        Ok(ClockBoundClient { vmclock })
+        Self::new_with_path(CLOCKBOUND_SHM_DEFAULT_PATH)
     }
 
-    /// Creates and returns a new `ClockBoundClient`, specifying a shared
-    /// memory path that is being used by the ClockBound daemon.
-    /// The VMClock will be accessed by reading the default VMClock
-    /// shared memory path.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    /// Creates and returns a new `ClockBoundClient`.
+    ///
+    /// The client accesses two shared memory segments. One written to by the ClockBound daemon.
+    /// The second one by the VMClock device (if available).
+    ///
+    /// Specify the path to the shared memory segment written to by the VMClock device.
+    /// Use the default paths to the ClockBound daemon shared memory segment.
+    ///
+    /// # Errors
+    /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
     pub fn new_with_path(clockbound_shm_path: &str) -> Result<ClockBoundClient, ClockBoundError> {
-        // Validate that the provided ClockBound shared memory path exists.
-        if !Path::new(clockbound_shm_path).exists() {
-            let mut error = ClockBoundError::from(ShmError::SegmentNotInitialized);
-            error.detail = String::from("Path in argument `clockbound_shm_path` does not exist: ");
-            error.detail.push_str(clockbound_shm_path);
-            return Err(error);
-        }
-
-        // Create a ClockBoundClient that makes use of the ClockBound daemon and VMClock.
-        //
-        // Clock disruption is expected to be handled by ClockBound daemon
-        // in coordination with this VMClock.
-        let vmclock = VMClock::new(clockbound_shm_path, VMCLOCK_SHM_DEFAULT_PATH)?;
-
-        Ok(ClockBoundClient { vmclock })
+        Self::new_with_paths(clockbound_shm_path, VMCLOCK_SHM_DEFAULT_PATH)
     }
 
-    /// Creates and returns a new `ClockBoundClient`, specifying a shared
-    /// memory paths that are being used by the ClockBound daemon and by the VMClock,
-    /// respectively.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    /// Creates and returns a new `ClockBoundClient`.
+    ///
+    /// The client accesses two shared memory segments. One written to by the ClockBound daemon.
+    /// The second one by the VMClock device (if available).
+    ///
+    /// Explicitly specifies the paths to the two shared memory segments.
+    ///
+    /// # Errors
+    /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
     pub fn new_with_paths(
         clockbound_shm_path: &str,
         vmclock_shm_path: &str,
     ) -> Result<ClockBoundClient, ClockBoundError> {
-        // Validate that the provided shared memory paths exists.
-        if !Path::new(clockbound_shm_path).exists() {
-            let mut error = ClockBoundError::from(ShmError::SegmentNotInitialized);
-            error.detail = String::from("Path in argument `clockbound_shm_path` does not exist: ");
-            error.detail.push_str(clockbound_shm_path);
-            return Err(error);
-        }
+        // Create the clockbound shared memory accessor
+        let mut clockbound_shm = ClockBoundSHM::new(clockbound_shm_path)?;
 
-        let vmclock = VMClock::new(clockbound_shm_path, vmclock_shm_path)?;
+        // Read the segment to determine whether the daemon has been instructed to provide support
+        // for clock disruption. If true, the VMClock will be accessed.
+        let cb_snapshot = clockbound_shm.snapshot()?;
 
-        Ok(ClockBoundClient { vmclock })
+        // Create the VMClock shared memory accessor
+        let vmclock_shm = VMClockSHM::new(
+            vmclock_shm_path,
+            cb_snapshot.clock_disruption_support_enabled,
+        )?;
+
+        Ok(ClockBoundClient {
+            clockbound_shm,
+            vmclock_shm,
+        })
     }
 
-    /// Obtains the clock error bound and clock status at the current moment.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    /// Read the current time, but with a bound on accuracy and a status.
+    ///
+    /// Returns a pair of (earliest, latest) timespec between which current time exists. The
+    /// interval width is twice the clock error bound (ceb) such that:
+    ///   (earliest, latest) = ((now - ceb), (now + ceb))
+    ///
+    /// The function also returns a clock status to assert that the clock is being synchronized, or
+    /// free-running, or ...
+    ///
+    /// # Errors
+    /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
     pub fn now(&mut self) -> Result<ClockBoundNowResult, ClockBoundError> {
-        let (earliest, latest, clock_status) = self.vmclock.now()?;
+        // The very first thing to do is to read from the ClockBound shared memory segment, take a
+        // snapshot to obtain the clock parameters and bound on error, and create a timestamp.
+        let cb_snap = self.clockbound_shm.snapshot()?;
+        let (earliest, latest, clock_status) = cb_snap.now()?;
+
+        // Now that the timestamp is created, check whether the clockbound daemon has been
+        // restarted and the option to enable the clock disruption support has been turned on. If
+        // so, need to create a reader for the VMClock device shared memory.
+        if self.vmclock_shm.vmclock_shm_reader.is_none() && cb_snap.clock_disruption_support_enabled
+        {
+            self.vmclock_shm.vmclock_shm_reader = Some(VMClockShmReader::new(
+                self.vmclock_shm.vmclock_shm_path.as_str(),
+            )?);
+        }
+
+        // Check whether the clock is disrupted. If the support to capture the clock disruption
+        // signal has been explicitly disabled, there is nothing to do. Otherwise, and if the
+        // VMClock shared memory is successfully read, this compares the value of the disruption
+        // marker between the clockbound daemon and the VMClock. If these disagree, a disruption
+        // has occured, and the clockbound daemon has not recovered from it yet.
+        let is_not_disrupted =
+            self.vmclock_shm.disruption_marker()? == Some(cb_snap.disruption_marker);
+
+        // If the clock is disrupted, overwrite the status
+        let result_status = if is_not_disrupted {
+            clock_status
+        } else {
+            ClockStatus::Disrupted
+        };
 
         Ok(ClockBoundNowResult {
             earliest,
             latest,
-            clock_status,
+            clock_status: result_status,
         })
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
-pub enum ClockBoundErrorKind {
-    Syscall,
-    SegmentNotInitialized,
-    SegmentMalformed,
-    CausalityBreach,
-    SegmentVersionNotSupported,
+/// `ClockBoundSHM` handles access to the shared memory segment populated by the ClockBound daemon.
+struct ClockBoundSHM {
+    #[allow(dead_code)]
+    clockbound_shm_path: String,
+    clockbound_shm_reader: ShmReader,
+}
+
+impl ClockBoundSHM {
+    /// Create a new [`ClockBoundSHM`] and open the shared memory segment for reading.
+    ///
+    /// # Errors
+    /// Returns a [`ClockErrorBound`] with an appropriate `Errno`. If the content of the segment is
+    /// uninitialized, unparseable, or otherwise malformed.
+    fn new(clockbound_shm_path: &str) -> Result<ClockBoundSHM, ClockBoundError> {
+        // Fail early if the provided shared memory path does not exist.
+        if !Path::new(clockbound_shm_path).exists() {
+            let mut error = ClockBoundError::from(ShmError::SegmentNotInitialized);
+            error.detail = format!(
+                "Path to clockbound daemon shared memory segment does not exist: {clockbound_shm_path}"
+            );
+            return Err(error);
+        }
+
+        let shm_path = CString::new(clockbound_shm_path).expect("CString::new failed");
+        let shm_reader = ShmReader::new(shm_path.as_c_str())?;
+
+        Ok(ClockBoundSHM {
+            clockbound_shm_path: String::from(clockbound_shm_path),
+            clockbound_shm_reader: shm_reader,
+        })
+    }
+
+    /// Returns a snapshot of the shared memory segment last populated by the ClockBound daemon.
+    fn snapshot(&mut self) -> Result<&ClockErrorBound, ShmError> {
+        self.clockbound_shm_reader.snapshot()
+    }
+}
+
+/// `VMClockSHM` handles access to the shared memory segment populated by the VMClock device.
+struct VMClockSHM {
+    vmclock_shm_path: String,
+    vmclock_shm_reader: Option<VMClockShmReader>,
+}
+
+impl VMClockSHM {
+    /// Create a new [`VMClockSHM`] and open the shared memory segment for reading, if needed.
+    ///
+    /// # Errors
+    /// Returns a [`ClockErrorBound`] with an appropriate `Errno`. If the content of the segment is
+    /// uninitialized, unparseable, or otherwise malformed.
+    fn new(
+        vmclock_shm_path: &str,
+        clock_disruption_support_enabled: bool,
+    ) -> Result<VMClockSHM, ClockBoundError> {
+        // Note that the support for clock disruption signal may be disabled on the ClockBound
+        // daemon, in which case, no reader is created.
+        let mut vmclock_shm_reader: Option<VMClockShmReader> = None;
+        if clock_disruption_support_enabled {
+            // Fail early if the provided shared memory path does not exist.
+            if !Path::new(vmclock_shm_path).exists() {
+                let mut error = ClockBoundError::from(ShmError::SegmentNotInitialized);
+                error.detail = format!(
+                    "Path to VMClock device shared memory segment does not exist: {vmclock_shm_path}"
+                );
+                return Err(error);
+            }
+            vmclock_shm_reader = Some(VMClockShmReader::new(vmclock_shm_path)?);
+        }
+
+        Ok(VMClockSHM {
+            vmclock_shm_path: String::from(vmclock_shm_path),
+            vmclock_shm_reader,
+        })
+    }
+
+    /// Take a snapshot of the VMClock shared memory segment and extract the disruption marker.
+    ///
+    /// Note that None is returned if no SHM reader is present.
+    ///
+    /// # Errors
+    /// Returns a [`ShmError`] if the content of the segment is uninitialized, unparseable, or
+    /// otherwise malformed.
+    fn disruption_marker(&mut self) -> Result<Option<u64>, ShmError> {
+        if let Some(ref mut vmclock_shm_reader) = self.vmclock_shm_reader {
+            let snap = vmclock_shm_reader.snapshot()?;
+            return Ok(Some(snap.disruption_marker));
+        }
+
+        // The clock disruption support is not enabled
+        Ok(None)
+    }
+}
+
+/// Result of the `ClockBoundClient::now()` function.
+#[derive(PartialEq, Clone, Debug)]
+pub struct ClockBoundNowResult {
+    pub earliest: TimeSpec,
+    pub latest: TimeSpec,
+    pub clock_status: ClockStatus,
 }
 
 #[derive(Debug)]
@@ -145,19 +268,21 @@ impl From<ShmError> for ClockBoundError {
     }
 }
 
-/// Result of the `ClockBoundClient::now()` function.
-#[derive(PartialEq, Clone, Debug)]
-pub struct ClockBoundNowResult {
-    pub earliest: TimeSpec,
-    pub latest: TimeSpec,
-    pub clock_status: ClockStatus,
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+pub enum ClockBoundErrorKind {
+    Syscall,
+    SegmentNotInitialized,
+    SegmentMalformed,
+    CausalityBreach,
+    SegmentVersionNotSupported,
 }
 
 #[cfg(test)]
 mod lib_tests {
     use super::*;
     use crate::shm::{ClockErrorBound, ShmWrite, ShmWriter};
-    use crate::vmclock::shm::VMClockClockStatus;
+    use crate::vmclock::shm::{VMClockClockStatus, VMClockShmBody};
+    use crate::vmclock::shm_writer::{VMClockShmWrite, VMClockShmWriter};
     use byteorder::{NativeEndian, WriteBytesExt};
     use std::ffi::CStr;
     use std::fs::{File, OpenOptions};
@@ -220,6 +345,29 @@ mod lib_tests {
         };
     }
 
+    macro_rules! vmclockshmbody {
+        () => {
+            VMClockShmBody {
+                disruption_marker: 10,
+                flags: 0_u64,
+                _padding: [0x00, 0x00],
+                clock_status: VMClockClockStatus::Unknown,
+                leap_second_smearing_hint: 0,
+                tai_offset_sec: 37_i16,
+                leap_indicator: 0,
+                counter_period_shift: 0,
+                counter_value: 0,
+                counter_period_frac_sec: 0,
+                counter_period_esterror_rate_frac_sec: 0,
+                counter_period_maxerror_rate_frac_sec: 0,
+                time_sec: 0,
+                time_frac_sec: 0,
+                time_esterror_nanosec: 0,
+                time_maxerror_nanosec: 0,
+            }
+        };
+    }
+
     /// Test struct used to hold the expected fields in the VMClock shared memory segment.
     #[repr(C)]
     #[derive(Debug, Copy, Clone, PartialEq)]
@@ -262,13 +410,84 @@ mod lib_tests {
         file.sync_all().expect("Sync to disk failed");
     }
 
-    fn remove_path_if_exists(path_shm: &str) {
-        let path = Path::new(path_shm);
-        if path.exists() {
-            if path.is_dir() {
-                std::fs::remove_dir_all(path_shm).expect("failed to remove file");
+    /// Helper function to remove files created during unit tests.
+    fn remove_file_or_directory(path: &str) {
+        // Busy looping on deleting the previous file, good enough for unit test
+        let p = Path::new(&path);
+        while p.exists() {
+            if p.is_dir() {
+                std::fs::remove_dir_all(&path).expect("failed to remove file");
             } else {
-                std::fs::remove_file(path_shm).expect("failed to remove file");
+                std::fs::remove_file(&path).expect("failed to remove file");
+            }
+        }
+    }
+
+    /// Assert that VMClock can be created successfully and the disruption marker is retrieved when
+    /// clock_disruption_support_enabled is true and a valid file exists at the vmclock_shm_path.
+    #[test]
+    fn test_vmclock_now_with_clock_disruption_support_enabled_success() {
+        let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
+        let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
+        let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
+        remove_file_or_directory(&vmclock_shm_path);
+
+        // Create and write the VMClock memory segment.
+        let vmclock_shm_body = vmclockshmbody!();
+        let mut vmclock_shm_writer = VMClockShmWriter::new(Path::new(&vmclock_shm_path))
+            .expect("Failed to create a VMClockShmWriter");
+        vmclock_shm_writer.write(&vmclock_shm_body);
+
+        // Create the VMClock, and assert that the creation was successful.
+        let vmclock_new_result = VMClockSHM::new(&vmclock_shm_path, true);
+        match vmclock_new_result {
+            Ok(mut vmclock) => {
+                // Assert that now() does not return an error.
+                let marker_result = vmclock.disruption_marker();
+                assert!(marker_result.is_ok());
+                assert!(marker_result.unwrap() == Some(10_u64));
+            }
+            Err(_) => {
+                assert!(false);
+            }
+        }
+    }
+
+    /// Assert that VMClock will fail to be created when clock_disruption_support_enabled is true
+    /// and no file exists at the vmclock_shm_path.
+    #[test]
+    fn test_vmclock_now_with_clock_disruption_support_enabled_failure() {
+        let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
+        let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
+        let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
+        remove_file_or_directory(&vmclock_shm_path);
+
+        // Create the VMClock, and assert that the creation was successful.
+        let vmclock_new_result = VMClockSHM::new(&vmclock_shm_path, true);
+        assert!(vmclock_new_result.is_err());
+    }
+
+    /// Assert that VMClock can be created successfully when clock_disruption_support_enabled is
+    /// false and no file exists at the vmclock_shm_path.
+    #[test]
+    fn test_vmclock_now_with_clock_disruption_support_not_enabled() {
+        let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
+        let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
+        let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
+        remove_file_or_directory(&vmclock_shm_path);
+
+        // Create the VMClock, and assert that the creation was successful.
+        // There should be no error even though there is no file located at vmclock_shm_path.
+        let vmclock_new_result = VMClockSHM::new(&vmclock_shm_path, false);
+        match vmclock_new_result {
+            Ok(mut vmclock) => {
+                // Assert that now() does not return an error.
+                let marker_result = vmclock.disruption_marker();
+                assert!(marker_result.is_ok());
+                assert!(marker_result.unwrap() == None)
+            }
+            Err(_) => {
+                assert!(false);
             }
         }
     }
@@ -278,7 +497,7 @@ mod lib_tests {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
-        remove_path_if_exists(clockbound_shm_path);
+        remove_file_or_directory(clockbound_shm_path);
         let result = ClockBoundClient::new_with_path(clockbound_shm_path);
         assert!(result.is_err());
     }
@@ -345,7 +564,7 @@ mod lib_tests {
             }
         };
 
-        assert_eq!(now_result.clock_status, ClockStatus::Unknown);
+        assert_eq!(now_result.clock_status, ClockStatus::Disrupted);
     }
 
     #[test]
@@ -354,11 +573,11 @@ mod lib_tests {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
-        remove_path_if_exists(clockbound_shm_path);
+        remove_file_or_directory(clockbound_shm_path);
         let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
-        remove_path_if_exists(vmclock_shm_path);
+        remove_file_or_directory(vmclock_shm_path);
         let result = ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path);
         assert!(result.is_err());
 
@@ -374,16 +593,16 @@ mod lib_tests {
         let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
-        remove_path_if_exists(vmclock_shm_path);
+        remove_file_or_directory(vmclock_shm_path);
         let result = ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path);
         assert!(result.is_err());
-        remove_path_if_exists(clockbound_shm_path);
+        remove_file_or_directory(clockbound_shm_path);
 
         // Test clockbound file does not exist but vmclock file exists.
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
-        remove_path_if_exists(clockbound_shm_path);
+        remove_file_or_directory(clockbound_shm_path);
         let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();

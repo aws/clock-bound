@@ -9,6 +9,9 @@ pub mod shm;
 pub mod shm_reader;
 pub mod shm_writer;
 
+/// TODO: remove this module once the ffi code relies on the `ClockBoundClient` rather than the
+/// VMClock struct here.
+///
 /// VMClock provides the following capabilities:
 ///
 /// - Error-bounded timestamps obtained from ClockBound daemon.

@@ -25,6 +25,8 @@ use std::fmt;
 
 use common::{CLOCK_MONOTONIC, CLOCK_REALTIME, clock_gettime_safe};
 
+pub const CLOCKBOUND_SHM_DEFAULT_PATH: &str = "/var/run/clockbound/shm0";
+
 const CLOCKBOUND_RESTART_GRACE_PERIOD: TimeSpec = TimeSpec::new(5, 0);
 
 /// Convenience macro to build a `ShmError::SyscallError` with extra info from errno and custom
