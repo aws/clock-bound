@@ -4,7 +4,9 @@
 //! link local address and that the polling rate is roughly once a second.
 
 use clock_bound::daemon::io::SourceIO;
+use clock_bound::daemon::selected_clock::SelectedClockSource;
 use clock_bound::daemon::{async_ring_buffer, io::ntp::DaemonInfo};
+use std::sync::Arc;
 use std::time;
 
 use rand::{RngCore, rng};
@@ -28,7 +30,7 @@ async fn main() {
         startup_id: rng().next_u64(),
     };
 
-    let mut sourceio = SourceIO::construct(daemon_info);
+    let mut sourceio = SourceIO::construct(Arc::new(SelectedClockSource::default()), daemon_info);
     sourceio.create_link_local(link_local_sender).await;
     sourceio.spawn_all();
 

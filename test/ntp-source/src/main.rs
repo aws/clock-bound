@@ -10,6 +10,8 @@ use clock_bound::daemon::io::{
     SourceIO,
     ntp::{AWS_TEMP_PUBLIC_TIME_ADDRESSES, DaemonInfo},
 };
+use clock_bound::daemon::selected_clock::SelectedClockSource;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rand::{RngCore, rng};
@@ -27,7 +29,7 @@ async fn main() {
         startup_id: rng().next_u64(),
     };
 
-    let mut sourceio = SourceIO::construct(daemon_info);
+    let mut sourceio = SourceIO::construct(Arc::new(SelectedClockSource::default()), daemon_info);
     let mut receiver_vec: Vec<Receiver<Ntp>> = Vec::new();
 
     for address in AWS_TEMP_PUBLIC_TIME_ADDRESSES {

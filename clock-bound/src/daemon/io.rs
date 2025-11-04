@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
 use tokio::task::spawn;
@@ -14,6 +15,7 @@ use tracing::{debug, info, warn};
 
 pub mod ntp;
 use crate::daemon::io::ntp::DaemonInfo;
+use crate::daemon::selected_clock::SelectedClockSource;
 use crate::daemon::{async_ring_buffer, event};
 
 mod link_local;
@@ -40,13 +42,15 @@ pub struct SourceIO {
     vmclock: Option<Source<VMClock>>,
     /// Contains the channel used to communicate clock disruption events.
     clock_disruption_channels: ClockDisruptionChannels,
+    /// Shared reference to the current selected clock source
+    selected_clock: Arc<SelectedClockSource>,
     /// Daemon metadata
     daemon_info: DaemonInfo,
 }
 
 impl SourceIO {
     /// Constructs a new `SourceIO` object and constructs the necessary resources.
-    pub fn construct(daemon_info: DaemonInfo) -> Self {
+    pub fn construct(selected_clock: Arc<SelectedClockSource>, daemon_info: DaemonInfo) -> Self {
         let (sender, receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         SourceIO {
@@ -54,6 +58,7 @@ impl SourceIO {
             ntp_sources: HashMap::new(),
             vmclock: None,
             clock_disruption_channels: ClockDisruptionChannels { sender, receiver },
+            selected_clock,
             daemon_info,
         }
     }
@@ -319,7 +324,7 @@ mod tests {
             startup_id: 0xABCD_BCDE_CDEF_DEFA,
         };
 
-        let mut source_io = SourceIO::construct(info);
+        let mut source_io = SourceIO::construct(Arc::new(SelectedClockSource::default()), info);
         source_io.create_link_local(event_sender).await;
 
         assert!(source_io.link_local.is_some())

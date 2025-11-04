@@ -19,6 +19,8 @@ pub mod subscriber;
 
 pub mod selected_clock;
 
+use std::sync::Arc;
+
 use crate::daemon::{
     clock_state::{
         ClockState,
@@ -28,6 +30,7 @@ use crate::daemon::{
     clock_sync_algorithm::{ClockSyncAlgorithm, source::NTPSource},
     io::ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
     receiver_stream::{ReceiverStream, RoutableEvent},
+    selected_clock::SelectedClockSource,
     time::tsc::Skew,
 };
 use rand::{RngCore, rng};
@@ -63,6 +66,7 @@ impl Daemon {
         };
         let clock_state = ClockState::construct();
 
+        let selected_clock = Arc::new(SelectedClockSource::default());
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .link_local(clock_sync_algorithm::source::LinkLocal::new(
                 MAX_DISPERSION_GROWTH,
@@ -72,6 +76,7 @@ impl Daemon {
                     MAX_DISPERSION_GROWTH,
                 ),
             )
+            .selected_clock(selected_clock.clone())
             .build();
 
         // Initializing async ring buffers for IO event delivery
@@ -85,7 +90,7 @@ impl Daemon {
             .ntp_source_receiver_vec(ntp_source_event_receivers)
             .build();
 
-        let mut io_front_end = io::SourceIO::construct(daemon_info);
+        let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
         // FIXME, we are basically starting the application in the constructor
         // We should be able to construct the link local and spawn it when `run` is called
         //

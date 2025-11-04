@@ -8,11 +8,14 @@ pub mod ff;
 
 mod ring_buffer;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 pub use ring_buffer::RingBuffer;
 
-use crate::daemon::{clock_parameters::ClockParameters, event, subscriber::PRIMER_TARGET};
+use crate::daemon::{
+    clock_parameters::ClockParameters, event, selected_clock::SelectedClockSource,
+    subscriber::PRIMER_TARGET,
+};
 
 pub mod source;
 
@@ -28,12 +31,14 @@ pub mod source;
 ///
 /// # Usage
 /// TODO
-#[derive(Debug, Clone, PartialEq, bon::Builder)]
+#[derive(Debug, Clone, bon::Builder)]
 pub struct ClockSyncAlgorithm {
     /// The link-local reference clock's ff algorithm
     link_local: source::LinkLocal,
     // A Vector of ff algorithms for ntp source reference clocks
     pub ntp_sources: Vec<source::NTPSource>,
+    /// Shared reference to the current selected clock source
+    selected_clock: Arc<SelectedClockSource>,
 }
 
 impl ClockSyncAlgorithm {
@@ -113,8 +118,10 @@ impl ClockSyncAlgorithm {
         let Self {
             link_local,
             ntp_sources,
+            selected_clock,
         } = self;
 
+        selected_clock.none();
         link_local.handle_disruption();
         for source in ntp_sources {
             source.handle_disruption();
@@ -153,6 +160,7 @@ mod tests {
         let mut csa = ClockSyncAlgorithm::builder()
             .link_local(source::LinkLocal::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
+            .selected_clock(Arc::new(SelectedClockSource::default()))
             .build();
 
         let clock_parameters = csa.feed_link_local(event.clone());
