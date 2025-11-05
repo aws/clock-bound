@@ -16,7 +16,8 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::daemon::async_ring_buffer::{BufferClosedError, Receiver};
-use crate::daemon::event::{Event, Ntp};
+use crate::daemon::event::{Event, Ntp, TscRtt};
+use crate::daemon::time::TscCount;
 
 use super::io::ntp::NTPSourceReceiver;
 
@@ -141,13 +142,52 @@ enum SourceId {
     NTPSource(SocketAddr),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum RoutableEvent {
     LinkLocalEvent(Ntp),
     NTPSourceEvent(SocketAddr, Ntp),
     // FIXME: The PhcEvent should wrap around phc data.
     // The phc data struct has yet to be implemented. Below enum is a placeholder
     PhcEvent,
+}
+
+impl RoutableEvent {
+    /// Get the system clock info
+    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    pub fn system_clock(&self) -> Option<&crate::daemon::event::SystemClockMeasurement> {
+        match self {
+            RoutableEvent::LinkLocalEvent(data) | RoutableEvent::NTPSourceEvent(_, data) => {
+                data.system_clock()
+            }
+            RoutableEvent::PhcEvent => {
+                todo!("Implement PHC IO source and data struct");
+            }
+        }
+    }
+}
+
+impl TscRtt for RoutableEvent {
+    fn tsc_pre(&self) -> TscCount {
+        match self {
+            RoutableEvent::LinkLocalEvent(data) | RoutableEvent::NTPSourceEvent(_, data) => {
+                data.tsc_pre()
+            }
+            RoutableEvent::PhcEvent => {
+                todo!("Implement PHC IO source and data struct");
+            }
+        }
+    }
+
+    fn tsc_post(&self) -> TscCount {
+        match self {
+            RoutableEvent::LinkLocalEvent(data) | RoutableEvent::NTPSourceEvent(_, data) => {
+                data.tsc_post()
+            }
+            RoutableEvent::PhcEvent => {
+                todo!("Implement PHC IO source and data struct");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

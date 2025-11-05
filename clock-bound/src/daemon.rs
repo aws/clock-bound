@@ -22,16 +22,18 @@ pub mod selected_clock;
 use std::sync::Arc;
 
 use crate::daemon::{
-    clock_state::{
-        ClockState,
-        clock_adjust::{ClockAdjuster, KAPIClockAdjuster},
-        clock_state_writer::{ClockStateWriter, SafeShmWriter},
-    },
     clock_sync_algorithm::{ClockSyncAlgorithm, source::NTPSource},
     io::ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
     receiver_stream::{ReceiverStream, RoutableEvent},
     selected_clock::SelectedClockSource,
     time::tsc::Skew,
+};
+
+#[cfg(not(feature = "test-side-by-side"))]
+use crate::daemon::clock_state::{
+    ClockState,
+    clock_adjust::{ClockAdjuster, KAPIClockAdjuster},
+    clock_state_writer::{ClockStateWriter, SafeShmWriter},
 };
 use rand::{RngCore, rng};
 
@@ -52,6 +54,7 @@ pub struct Daemon {
     _io_front_end: io::SourceIO,
     clock_sync_algorithm: ClockSyncAlgorithm,
     receiver_stream: ReceiverStream,
+    #[cfg(not(feature = "test-side-by-side"))]
     clock_state: ClockState<ClockAdjuster<KAPIClockAdjuster>, ClockStateWriter<SafeShmWriter>>,
 }
 
@@ -64,6 +67,7 @@ impl Daemon {
             minor_version: 100,
             startup_id: rng().next_u64(),
         };
+        #[cfg(not(feature = "test-side-by-side"))]
         let clock_state = ClockState::construct();
 
         let selected_clock = Arc::new(SelectedClockSource::default());
@@ -114,6 +118,7 @@ impl Daemon {
             _io_front_end: io_front_end,
             clock_sync_algorithm,
             receiver_stream,
+            #[cfg(not(feature = "test-side-by-side"))]
             clock_state,
         }
     }
@@ -131,24 +136,12 @@ impl Daemon {
     }
 
     fn handle_event(&mut self, routable_event: RoutableEvent) {
-        match routable_event {
-            RoutableEvent::LinkLocalEvent(event) => {
-                if let Some(params) = self.clock_sync_algorithm.feed_link_local(event) {
-                    self.clock_state.handle_clock_parameters(params);
-                }
-            }
-            RoutableEvent::NTPSourceEvent(sender_address, event) => {
-                if let Some(params) = self
-                    .clock_sync_algorithm
-                    .feed_ntp_source(sender_address, &event)
-                {
-                    self.clock_state.handle_clock_parameters(params);
-                }
-            }
-            RoutableEvent::PhcEvent => {
-                todo!("Implement PHC IO event delivery")
-            }
+        #[cfg(not(feature = "test-side-by-side"))]
+        if let Some(params) = self.clock_sync_algorithm.feed(routable_event) {
+            self.clock_state.handle_clock_parameters(params);
         }
+        #[cfg(feature = "test-side-by-side")]
+        let _ = self.clock_sync_algorithm.feed(routable_event);
     }
 
     /// Takes in a vector of `source::NTPSource` structs and returns the `async_ring_buffer` senders and receivers

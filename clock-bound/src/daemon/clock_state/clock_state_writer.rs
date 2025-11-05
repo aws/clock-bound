@@ -47,7 +47,7 @@ pub struct ClockStateWriter<T> {
 }
 
 #[cfg_attr(test, mockall::automock)]
-pub(crate) trait ClockStateWrite {
+pub trait ClockStateWrite {
     fn handle_clock_parameters(
         &mut self,
         clock_parameters: &ClockParameters,

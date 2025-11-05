@@ -24,7 +24,7 @@ const CLOCKBOUND_SHM_DEFAULT_PATH: &str = "/var/run/clockbound/shm0";
 /// with the `CLOCK_REALTIME` kernel clock to synchronize it with `ClockBound` estimate
 /// of UTC (`ClockBound` clock), and `ClockStateWriter` which manages writing
 /// the `ClockErrorBound` to SHM segment for the client to read.
-pub(crate) struct ClockState<A, S> {
+pub struct ClockState<A, S> {
     clock_state_writer: S,
     clock_adjuster: A,
 }
@@ -70,7 +70,6 @@ impl<A: ClockAdjust, S: ClockStateWrite> ClockState<A, S> {
     /// Call this function after the system detects a VMClock disruption event.
     ///
     /// It will go through and clear the state (like startup).
-    #[cfg_attr(not(test), expect(unused))]
     pub fn handle_disruption(&mut self, new_disruption_marker: u64) {
         // Use the destructure pattern to get a mutable reference to each item.
         //
@@ -87,6 +86,7 @@ impl<A: ClockAdjust, S: ClockStateWrite> ClockState<A, S> {
 }
 
 impl ClockState<ClockAdjuster<KAPIClockAdjuster>, ClockStateWriter<SafeShmWriter>> {
+    #[expect(clippy::missing_panics_doc, reason = "unwrap")]
     pub fn construct() -> Self {
         let shm_writer = ShmWriter::new(std::path::Path::new(CLOCKBOUND_SHM_DEFAULT_PATH)).unwrap();
         let safe_shm_writer = SafeShmWriter::new(shm_writer);

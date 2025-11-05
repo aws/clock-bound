@@ -55,7 +55,8 @@ pub struct ClockAdjuster<T> {
 }
 
 #[cfg_attr(test, mockall::automock)]
-pub(crate) trait ClockAdjust {
+#[expect(clippy::missing_errors_doc, reason = "tphan to update")]
+pub trait ClockAdjust {
     fn handle_clock_parameters(
         &mut self,
         clock_parameters: &ClockParameters,
