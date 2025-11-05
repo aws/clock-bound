@@ -16,7 +16,7 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::daemon::async_ring_buffer::{BufferClosedError, Receiver};
-use crate::daemon::event::{Event, Ntp, TscRtt};
+use crate::daemon::event::{self, TscRtt};
 use crate::daemon::time::TscCount;
 
 use super::io::ntp::NTPSourceReceiver;
@@ -29,31 +29,14 @@ pub enum ReceiverStreamError {
 
 /// Type to hold the stream produced from each `SourceIO` components receiver
 type EventStream<'a> =
-    Pin<Box<dyn Stream<Item = (SourceId, Result<Event, BufferClosedError>)> + 'a + Send>>;
+    Pin<Box<dyn Stream<Item = Result<RoutableEvent, BufferClosedError>> + 'a + Send>>;
 
+#[derive(Debug, bon::Builder)]
 pub struct ReceiverStream {
-    ntp_sources: HashMap<SourceId, Receiver<Ntp>>,
-    link_local: Receiver<Ntp>,
-}
-
-#[bon::bon]
-impl ReceiverStream {
-    /// Initializer for `ReceiverStream` struct
-    #[builder]
-    pub fn new(
-        link_local_receiver: Receiver<Ntp>,
-        ntp_source_receiver_vec: Vec<NTPSourceReceiver>,
-    ) -> Self {
-        let mut rs = ReceiverStream {
-            ntp_sources: HashMap::new(),
-            link_local: link_local_receiver,
-        };
-        for source in ntp_source_receiver_vec {
-            rs.add_ntp_source(source);
-        }
-
-        rs
-    }
+    #[builder(default)]
+    ntp_sources: HashMap<SocketAddr, Receiver<event::Ntp>>,
+    link_local: Receiver<event::Ntp>,
+    phc: Option<Receiver<event::Phc>>,
 }
 
 /// `ReceiverStream` provides methods for aggregating the events delivered
@@ -61,15 +44,14 @@ impl ReceiverStream {
 impl ReceiverStream {
     /// Adds a new ntp source to the `ntp_sources`
     pub fn add_ntp_source(&mut self, source: NTPSourceReceiver) {
-        let (id, receiver) = source;
-        let _ = &self.ntp_sources.insert(SourceId::NTPSource(id), receiver);
+        let (socket_addr, receiver) = source;
+        let _ = &self.ntp_sources.insert(socket_addr, receiver);
     }
 
     /// Removes an ntp source from `ntp_sources`
-    pub fn remove_ntp_source(&mut self, id: SocketAddr) {
-        let source_id = &SourceId::NTPSource(id);
-        if self.ntp_sources.contains_key(source_id) {
-            self.ntp_sources.remove(source_id);
+    pub fn remove_ntp_source(&mut self, id: &SocketAddr) {
+        if self.ntp_sources.contains_key(id) {
+            self.ntp_sources.remove(id);
         }
     }
 
@@ -80,16 +62,22 @@ impl ReceiverStream {
         // Add NTP source streams
         for (source_id, source_receiver) in &mut self.ntp_sources {
             let source_id = *source_id;
-            streams.push(Box::pin(
-                once(source_receiver.recv()).map(move |result| (source_id, result.map(Event::Ntp))),
-            ));
+            streams.push(Box::pin(once(source_receiver.recv()).map(move |result| {
+                result.map(|event| RoutableEvent::NtpSource(source_id, event))
+            })));
         }
 
         // Add the link_local receiver to the streams
         streams.push(Box::pin(
-            once(self.link_local.recv())
-                .map(|result| (SourceId::LinkLocal, result.map(Event::Ntp))),
+            once(self.link_local.recv()).map(|result| result.map(RoutableEvent::LinkLocal)),
         ));
+
+        // Add PHC if it's available
+        if let Some(phc_receiver) = &mut self.phc {
+            streams.push(Box::pin(
+                once(phc_receiver.recv()).map(|result| result.map(RoutableEvent::Phc)),
+            ));
+        }
 
         // Shuffles vector to avoid unfair treatment of any preloaded events.
         // Context: Without this shuffle, if events are loaded into the buffer before `recv` is called,
@@ -110,45 +98,25 @@ impl ReceiverStream {
     ///
     /// # Returns
     /// a `RoutableEvent` wrapping the first event returned by the aggregate stream.
+    #[expect(clippy::missing_panics_doc, reason = "not expected in alpha")]
     pub async fn recv(&mut self) -> Option<RoutableEvent> {
         let mut result_stream = self.get_aggregate_stream();
         // Handle first result from the stream
-        let Some((source_id, event_result)) = result_stream.next().await else {
+        let Some(event_result) = result_stream.next().await else {
             info!("Aggregate stream is empty, no futures to await");
             return None;
         };
 
-        match event_result {
-            Ok(Event::Ntp(ntp_event)) => match source_id {
-                SourceId::LinkLocal => Some(RoutableEvent::LinkLocalEvent(ntp_event)),
-                SourceId::NTPSource(id) => Some(RoutableEvent::NTPSourceEvent(id, ntp_event)),
-            },
-            Ok(Event::Phc) => {
-                // FIXME: returned event should house data delivered from the PHC read
-                todo!("Implement PHC IO source and data struct");
-            }
-            Err(_) => {
-                todo!(
-                    "Implement logic for buffers closing. We do not expect this to happen as a part of the alpha release implementation"
-                );
-            }
-        }
+        let routable_event = event_result.expect("todo: Implement logic for buffers closing. We do not expect this to happen as a part of the alpha release implementation");
+        Some(routable_event)
     }
-}
-
-#[derive(Debug, Hash, PartialEq, std::cmp::Eq, Clone, Copy)]
-enum SourceId {
-    LinkLocal,
-    NTPSource(SocketAddr),
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RoutableEvent {
-    LinkLocalEvent(Ntp),
-    NTPSourceEvent(SocketAddr, Ntp),
-    // FIXME: The PhcEvent should wrap around phc data.
-    // The phc data struct has yet to be implemented. Below enum is a placeholder
-    PhcEvent,
+    LinkLocal(event::Ntp),
+    NtpSource(SocketAddr, event::Ntp),
+    Phc(event::Phc),
 }
 
 impl RoutableEvent {
@@ -156,12 +124,10 @@ impl RoutableEvent {
     #[cfg(all(not(test), feature = "test-side-by-side"))]
     pub fn system_clock(&self) -> Option<&crate::daemon::event::SystemClockMeasurement> {
         match self {
-            RoutableEvent::LinkLocalEvent(data) | RoutableEvent::NTPSourceEvent(_, data) => {
+            RoutableEvent::LinkLocal(data) | RoutableEvent::NtpSource(_, data) => {
                 data.system_clock()
             }
-            RoutableEvent::PhcEvent => {
-                todo!("Implement PHC IO source and data struct");
-            }
+            RoutableEvent::Phc(data) => data.system_clock(),
         }
     }
 }
@@ -169,23 +135,15 @@ impl RoutableEvent {
 impl TscRtt for RoutableEvent {
     fn tsc_pre(&self) -> TscCount {
         match self {
-            RoutableEvent::LinkLocalEvent(data) | RoutableEvent::NTPSourceEvent(_, data) => {
-                data.tsc_pre()
-            }
-            RoutableEvent::PhcEvent => {
-                todo!("Implement PHC IO source and data struct");
-            }
+            RoutableEvent::LinkLocal(data) | RoutableEvent::NtpSource(_, data) => data.tsc_pre(),
+            RoutableEvent::Phc(data) => data.tsc_pre(),
         }
     }
 
     fn tsc_post(&self) -> TscCount {
         match self {
-            RoutableEvent::LinkLocalEvent(data) | RoutableEvent::NTPSourceEvent(_, data) => {
-                data.tsc_post()
-            }
-            RoutableEvent::PhcEvent => {
-                todo!("Implement PHC IO source and data struct");
-            }
+            RoutableEvent::LinkLocal(data) | RoutableEvent::NtpSource(_, data) => data.tsc_post(),
+            RoutableEvent::Phc(data) => data.tsc_post(),
         }
     }
 }
@@ -196,7 +154,7 @@ mod tests {
 
     use super::*;
     use crate::daemon::async_ring_buffer::create;
-    use crate::daemon::event::{Ntp, NtpData, Stratum};
+    use crate::daemon::event::{Ntp, NtpData, PhcData, Stratum};
     use crate::daemon::time::{Duration, Instant, TscCount};
 
     #[tokio::test]
@@ -207,8 +165,8 @@ mod tests {
         let dummy_ntp_source_ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 123);
 
         let mut rx_stream = ReceiverStream::builder()
-            .link_local_receiver(link_local_rx)
-            .ntp_source_receiver_vec(vec![(dummy_ntp_source_ip, ntp_source_rx)])
+            .link_local(link_local_rx)
+            .ntp_sources(HashMap::from([(dummy_ntp_source_ip, ntp_source_rx)]))
             .build();
 
         let dummy_ntp_data = Ntp::builder()
@@ -224,28 +182,28 @@ mod tests {
             .build()
             .unwrap();
 
-        let _ = link_local_tx.send(dummy_ntp_data.clone());
-        let _ = ntp_source_tx.send(dummy_ntp_data.clone());
+        link_local_tx.send(dummy_ntp_data.clone()).unwrap();
+        ntp_source_tx.send(dummy_ntp_data.clone()).unwrap();
         let num_events = 2;
         let mut counter = 0;
 
         for _ in 0..num_events {
             match rx_stream.recv().await.unwrap() {
-                RoutableEvent::LinkLocalEvent(data) => {
+                RoutableEvent::LinkLocal(data) => {
                     counter += 1;
                     assert_eq!(
-                        RoutableEvent::LinkLocalEvent(dummy_ntp_data.clone()),
-                        RoutableEvent::LinkLocalEvent(data)
+                        RoutableEvent::LinkLocal(dummy_ntp_data.clone()),
+                        RoutableEvent::LinkLocal(data)
                     );
                 }
-                RoutableEvent::NTPSourceEvent(ip, data) => {
+                RoutableEvent::NtpSource(ip, data) => {
                     counter += 1;
                     assert_eq!(
-                        RoutableEvent::NTPSourceEvent(dummy_ntp_source_ip, dummy_ntp_data.clone()),
-                        RoutableEvent::NTPSourceEvent(ip, data)
+                        RoutableEvent::NtpSource(dummy_ntp_source_ip, dummy_ntp_data.clone()),
+                        RoutableEvent::NtpSource(ip, data)
                     );
                 }
-                RoutableEvent::PhcEvent => {
+                RoutableEvent::Phc(_data) => {
                     assert!(false, "Phc event delivery has yet to be implemented")
                 }
             };
@@ -257,6 +215,36 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn phc_stream() {
+        let (_link_local_tx, link_local_rx) = create(1);
+        let (phc_tx, phc_rx) = create(1);
+
+        let mut rx_stream = ReceiverStream::builder()
+            .link_local(link_local_rx)
+            .phc(phc_rx)
+            .build();
+
+        let phc_data = event::Phc::builder()
+            .tsc_pre(TscCount::new(1))
+            .tsc_post(TscCount::new(2))
+            .data(PhcData {
+                clock_error_bound: Duration::from_micros(20),
+                time: Instant::from_days(3),
+            })
+            .build()
+            .unwrap();
+
+        phc_tx.send(phc_data.clone()).unwrap();
+
+        let result = rx_stream.recv().await.unwrap();
+        let RoutableEvent::Phc(data) = &result else {
+            panic!("Expected to receive a Phc event, got {result:?}")
+        };
+
+        assert_eq!(*data, phc_data);
+    }
+
     #[test]
     fn add_ntp_source() {
         let (_, link_local_rx) = create(1);
@@ -265,10 +253,7 @@ mod tests {
         let dummy_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 123);
         let dummy_ntp_source_receiver: NTPSourceReceiver = (dummy_address, ntp_source_rx);
 
-        let mut rx_stream = ReceiverStream::builder()
-            .link_local_receiver(link_local_rx)
-            .ntp_source_receiver_vec(vec![])
-            .build();
+        let mut rx_stream = ReceiverStream::builder().link_local(link_local_rx).build();
 
         assert!(rx_stream.ntp_sources.is_empty());
 
@@ -286,13 +271,13 @@ mod tests {
         let dummy_ntp_source_receiver: NTPSourceReceiver = (dummy_address, ntp_source_rx);
 
         let mut rx_stream = ReceiverStream::builder()
-            .link_local_receiver(link_local_rx)
-            .ntp_source_receiver_vec(vec![dummy_ntp_source_receiver])
+            .link_local(link_local_rx)
+            .ntp_sources(HashMap::from([dummy_ntp_source_receiver]))
             .build();
 
         assert!(rx_stream.ntp_sources.len() == 1);
 
-        rx_stream.remove_ntp_source(dummy_address);
+        rx_stream.remove_ntp_source(&dummy_address);
 
         assert!(rx_stream.ntp_sources.is_empty());
     }

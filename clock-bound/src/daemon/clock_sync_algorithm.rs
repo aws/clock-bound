@@ -80,11 +80,11 @@ impl ClockSyncAlgorithm {
     /// Convenience function to allow for easy instrumenting
     fn feed_inner(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
         match routable_event {
-            RoutableEvent::LinkLocalEvent(event) => self.feed_link_local(event),
-            RoutableEvent::NTPSourceEvent(sender_address, event) => {
+            RoutableEvent::LinkLocal(event) => self.feed_link_local(event),
+            RoutableEvent::NtpSource(sender_address, event) => {
                 self.feed_ntp_source(sender_address, &event)
             }
-            RoutableEvent::PhcEvent => {
+            RoutableEvent::Phc(_data) => {
                 todo!("Implement PHC IO event delivery")
             }
         }

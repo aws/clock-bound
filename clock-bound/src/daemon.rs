@@ -90,8 +90,8 @@ impl Daemon {
 
         // Initializing receiver stream with IO ring buffer receivers
         let receiver_stream: ReceiverStream = ReceiverStream::builder()
-            .link_local_receiver(link_local_rx)
-            .ntp_source_receiver_vec(ntp_source_event_receivers)
+            .link_local(link_local_rx)
+            .ntp_sources(ntp_source_event_receivers.into_iter().collect())
             .build();
 
         let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);

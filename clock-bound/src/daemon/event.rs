@@ -4,13 +4,17 @@
 mod ntp;
 pub use ntp::{Ntp, NtpData, Stratum, TryFromU8Error, ValidStratumLevel};
 
+mod phc;
+pub use phc::{Phc, PhcData};
+
 use crate::daemon::time::{TscCount, TscDiff};
 
 /// A time synchronization event handled by ClockBound
 pub enum Event {
     /// NTP Event
     Ntp(Ntp),
-    Phc,
+    /// PHC Event
+    Phc(Phc),
 }
 
 /// Simple abstraction around types that have a TSC read before and after reference clock reads
