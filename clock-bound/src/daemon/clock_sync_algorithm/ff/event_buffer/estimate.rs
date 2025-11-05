@@ -5,7 +5,7 @@ use super::Local;
 use crate::daemon::{
     clock_sync_algorithm::RingBuffer,
     event::TscRtt,
-    time::{Duration, TscCount, tsc::Period},
+    time::{TscCount, tsc::Period},
 };
 
 /// An estimate ring buffer
@@ -145,7 +145,7 @@ impl<T: TscRtt + Clone> Estimate<T> {
         let diff = now_event_tsc_post - last_tsc_post;
         let duration = diff * period_estimate;
 
-        if duration < Duration::from_secs(1000) {
+        if duration < super::Local::<T>::SKM_WINDOW {
             // SKM window hasn't expired yet. Bail out
             None
         } else {
@@ -302,8 +302,8 @@ mod tests {
 
         let events: Vec<_> = (1..=100)
             .map(|i| {
-                //local buffer gets events from 902 seconds to 1001. Last one triggers
-                TestEvent::pre_and_rtt((i + 901) * 1_000_000_000, 100)
+                //local buffer gets events from 926 seconds to 1025. Last one triggers
+                TestEvent::pre_and_rtt((i + 925) * 1_000_000_000, 100)
             })
             .collect();
 
@@ -349,8 +349,8 @@ mod tests {
 
         let events: Vec<_> = (1..=100)
             .map(|i| {
-                //local buffer gets events from 902 seconds to 1001. Last one triggers
-                TestEvent::pre_and_rtt((i + 901) * 1_000_000_000, 100)
+                //local buffer gets events from 926 seconds to 1025. Last one triggers
+                TestEvent::pre_and_rtt((i + 925) * 1_000_000_000, 100)
             })
             .collect();
 
@@ -363,7 +363,7 @@ mod tests {
         };
 
         // Overwrite the last event to have the minimum RTT
-        events[100] = TestEvent::pre_and_rtt(1001 * 1_000_000_000, 25);
+        events[100] = TestEvent::pre_and_rtt(1025 * 1_000_000_000, 25);
 
         // Feed everything but the last event. Estimate feed should return `None` since SKM never expired
         for i in 0..100 {
