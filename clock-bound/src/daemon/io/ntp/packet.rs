@@ -16,6 +16,7 @@ use std::fmt::Display;
 use bon::Builder;
 use nom::Parser;
 use nom::number::{be_i8, be_u8};
+use thiserror::Error;
 
 mod extension;
 mod header;
@@ -217,32 +218,85 @@ impl Packet {
 }
 
 impl TryFrom<Packet> for NtpData {
-    type Error = TryFromU8Error;
+    type Error = TryFromPacketError;
 
     fn try_from(value: Packet) -> Result<Self, Self::Error> {
-        let root_delay = ClockBoundDuration::from(value.root_delay);
-        let root_dispersion = ClockBoundDuration::from(value.root_dispersion);
-        let server_recv_time = ClockBoundInstant::from(value.receive_timestamp);
-        let server_send_time = ClockBoundInstant::from(value.transmit_timestamp);
+        match value {
+            // kiss-o'-death packet
+            //
+            // [rfc5905 7.4](https://datatracker.ietf.org/doc/html/rfc5905#section-7.4)
+            // When a packets stratum is set to "0" it implies that the packet is either invalid or
+            // unspecified. In either case the Reference ID field will contain a four letter ascii
+            // code specified the nature of the error.
+            Packet {
+                stratum: 0,
+                reference_id,
+                ..
+            } => Err(Self::Error::KissoDeath(reference_id)),
+            // Unsynchronized host
+            //
+            // Generally NTP servers identify themselves as unsynchronized by their stratum level
+            // and leap indicator value. A stratum of "16" and a leap indicator of "0x3" (Unknown)
+            // are the most widely used indicators.
+            Packet {
+                stratum: 16,
+                leap_indicator: LeapIndicator::Unknown,
+                ..
+            } => Err(Self::Error::Unsynchronized),
+            // Bad time stamp
+            //
+            // If the packet was received after it was sent, something has gone wrong and the
+            // packet's time stamps should not be used when synchronizing the clock.
+            Packet {
+                transmit_timestamp,
+                receive_timestamp,
+                ..
+            } if receive_timestamp > transmit_timestamp => Err(Self::Error::BadTimestamps),
+            // Useable packet
+            Packet {
+                root_delay,
+                root_dispersion,
+                receive_timestamp,
+                transmit_timestamp,
+                stratum,
+                ..
+            } => {
+                let root_delay = ClockBoundDuration::from(root_delay);
+                let root_dispersion = ClockBoundDuration::from(root_dispersion);
+                let server_recv_time = ClockBoundInstant::from(receive_timestamp);
+                let server_send_time = ClockBoundInstant::from(transmit_timestamp);
+                let stratum = Stratum::try_from(stratum)?;
+                Ok(NtpData {
+                    server_recv_time,
+                    server_send_time,
 
-        let stratum = Stratum::try_from(value.stratum)?;
+                    root_delay,
+                    root_dispersion,
 
-        Ok(NtpData {
-            server_recv_time,
-            server_send_time,
-
-            root_delay,
-            root_dispersion,
-
-            stratum,
-        })
+                    stratum,
+                })
+            }
+        }
     }
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum TryFromPacketError {
+    #[error("Could not parse stratum value.")]
+    ParsingStratum(#[from] TryFromU8Error),
+    #[error("Unspecified or invalid packet.")]
+    KissoDeath([u8; 4]),
+    #[error("The packet's timestamp indicates that it was received after it was transmitted.")]
+    BadTimestamps,
+    #[error("Server indicates that it is unsynchronized.")]
+    Unsynchronized,
 }
 
 #[cfg(test)]
 mod test {
     use chrono::{DateTime, TimeDelta};
     use hex_literal::hex;
+    use rstest::rstest;
 
     use crate::daemon::io::ntp::packet::extension::Fec2V1Value;
 
@@ -361,5 +415,34 @@ mod test {
         assert_eq!(custom_packet.stratum, 1);
         assert_eq!(custom_packet.reference_id, [0xa9, 0xfe, 0xa9, 0x7a]);
         assert_eq!(custom_packet.extensions.len(), 1);
+    }
+
+    #[rstest]
+    #[case::kiss_o_death(
+        Packet::builder().build(),
+        Err(TryFromPacketError::KissoDeath([0, 0, 0,0]))
+    )]
+    #[case::healthy(
+       Packet::builder()
+        .stratum(16)
+        .leap_indicator(LeapIndicator::Unknown)
+        .build(),
+        Err(TryFromPacketError::Unsynchronized)
+    )]
+    #[case::healthy(
+       Packet::builder()
+        .stratum(1)
+        .receive_timestamp(Timestamp::new(10))
+        .transmit_timestamp(Timestamp::new(9))
+        .build(),
+        Err(TryFromPacketError::BadTimestamps)
+    )]
+    fn packet_is_unuseable(
+        #[case] packet: Packet,
+        #[case] ntp_data: Result<NtpData, TryFromPacketError>,
+    ) {
+        // This unit tests only tests for failures.
+        // The happy path is tested in `conversion_packet_to_ntp_data`.
+        assert_eq!(packet.try_into(), ntp_data);
     }
 }
