@@ -13,7 +13,7 @@ pub const LINK_LOCAL_BURST_DURATION: Duration = Duration::from_secs(1);
 pub const UNSPECIFIED_SOCKET_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 pub const LINK_LOCAL_ADDRESS: SocketAddrV4 =
     SocketAddrV4::new(Ipv4Addr::new(169, 254, 169, 123), 123);
-pub const LINK_LOCAL_INTERVAL_DURATION: Duration = Duration::from_secs(1);
+pub const LINK_LOCAL_INTERVAL_DURATION: Duration = Duration::from_secs(2);
 pub const LINK_LOCAL_TIMEOUT: Duration = Duration::from_millis(100);
 pub const AWS_TEMP_PUBLIC_TIME_ADDRESSES: [SocketAddr; 2] = [
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(166, 117, 111, 42)), 123),

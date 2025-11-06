@@ -57,5 +57,5 @@ async fn main() {
     }
     polling_rate /= 10;
     println!("Polling rate avg: {polling_rate:?}");
-    assert!(polling_rate.abs_diff(time::Duration::from_secs(1)) < time::Duration::from_millis(100));
+    assert!(polling_rate.abs_diff(time::Duration::from_secs(2)) < time::Duration::from_millis(100));
 }
