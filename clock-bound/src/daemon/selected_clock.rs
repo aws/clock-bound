@@ -2,9 +2,11 @@
 
 use std::{
     fmt::Display,
-    net::Ipv4Addr,
+    net::IpAddr,
     sync::atomic::{AtomicU64, Ordering},
 };
+
+use md5;
 
 use crate::daemon::event::Stratum;
 
@@ -33,22 +35,29 @@ impl SelectedClockSource {
     }
 
     /// Set the clock source to PHC
-    pub fn phc(&self) {
+    pub fn set_to_phc(&self) {
         self.set(ClockSource::Phc, Stratum::Unspecified);
     }
 
     /// Set the clock source to a remote NTP server
-    pub fn server(&self, ip: Ipv4Addr, stratum: Stratum) {
-        self.set(ClockSource::Server(ip), stratum);
+    pub fn set_to_server(&self, ip: IpAddr, stratum: Stratum) {
+        let refid = match ip {
+            IpAddr::V4(ipv4) => u32::from(ipv4),
+            IpAddr::V6(ipv6) => {
+                let hash = md5::compute(ipv6.octets());
+                u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]])
+            }
+        };
+        self.set(ClockSource::Server(refid), stratum);
     }
 
     /// Set the clock source to unsynchronized state
-    pub fn none(&self) {
+    pub fn set_to_none(&self) {
         self.set(ClockSource::None, Stratum::Unsynchronized);
     }
 
     /// Set the clock source to VMClock
-    pub fn vmclock(&self) {
+    pub fn set_to_vmclock(&self) {
         self.set(ClockSource::VMClock, Stratum::Unspecified);
     }
 
@@ -60,12 +69,17 @@ impl SelectedClockSource {
                     v if v == u32::from_be_bytes(*b"INIT") => ClockSource::Init,
                     v if v == u32::from_be_bytes(*b"XPHC") => ClockSource::Phc,
                     v if v == u32::from_be_bytes(*b"XVMC") => ClockSource::VMClock,
-                    _ => ClockSource::Init, // Defensively fallback to INIT;
-                                            // Shouldn't occur given the restricted API
+                    _ => {
+                        let bytes = refid.to_be_bytes();
+                        unreachable!(
+                            "Unknown kiss code [{}, {}, {}, {}]; should not occur with restricted API",
+                            bytes[0], bytes[1], bytes[2], bytes[3]
+                        )
+                    }
                 }
             }
+            Stratum::Level(_) => ClockSource::Server(refid),
             Stratum::Unsynchronized => ClockSource::None,
-            Stratum::Level(_) => ClockSource::Server(Ipv4Addr::from(refid)),
         }
     }
 
@@ -103,8 +117,8 @@ pub enum ClockSource {
     None,
     /// PTP Hardware Clock
     Phc,
-    /// Remote NTP server
-    Server(Ipv4Addr),
+    /// NTP server (stores reference ID: IPv4 address or first 4 octets of IPv6 MD5 hash)
+    Server(u32),
     /// Time and clock frequency from Linux hypervisor
     VMClock,
 }
@@ -115,7 +129,7 @@ impl From<ClockSource> for u32 {
             ClockSource::Init => u32::from_be_bytes(*b"INIT"),
             ClockSource::None => 0,
             ClockSource::Phc => u32::from_be_bytes(*b"XPHC"),
-            ClockSource::Server(addr) => u32::from(addr),
+            ClockSource::Server(refid) => refid,
             ClockSource::VMClock => u32::from_be_bytes(*b"XVMC"),
         }
     }
@@ -127,7 +141,14 @@ impl Display for ClockSource {
             ClockSource::Init => write!(f, "INIT"),
             ClockSource::None => write!(f, "None"),
             ClockSource::Phc => write!(f, "PHC"),
-            ClockSource::Server(addr) => write!(f, "{addr}"),
+            ClockSource::Server(refid) => {
+                let bytes = refid.to_be_bytes();
+                write!(
+                    f,
+                    "Server([{}, {}, {}, {}])",
+                    bytes[0], bytes[1], bytes[2], bytes[3]
+                )
+            }
             ClockSource::VMClock => write!(f, "VMClock"),
         }
     }
@@ -152,7 +173,7 @@ mod tests {
     #[case(ClockSource::Phc, Stratum::Unspecified)]
     #[case(ClockSource::VMClock, Stratum::Unspecified)]
     #[case(ClockSource::None, Stratum::Unsynchronized)]
-    #[case(ClockSource::Server("192.168.1.1".parse().unwrap()), Stratum::TWO)]
+    #[case(ClockSource::Server(0xC0A80101), Stratum::TWO)] // 192.168.1.1
     fn set_and_get_roundtrip(#[case] source: ClockSource, #[case] stratum: Stratum) {
         let clock = SelectedClockSource::default();
         clock.set(source.clone(), stratum);
@@ -167,26 +188,35 @@ mod tests {
         let clock = SelectedClockSource::default();
 
         // Test PHC
-        clock.phc();
+        clock.set_to_phc();
         let (source, stratum) = clock.get();
         assert_eq!(source, ClockSource::Phc);
         assert_eq!(stratum, Stratum::Unspecified);
 
         // Test VMClock
-        clock.vmclock();
+        clock.set_to_vmclock();
         let (source, stratum) = clock.get();
         assert_eq!(source, ClockSource::VMClock);
         assert_eq!(stratum, Stratum::Unspecified);
 
-        // Test Server
-        let ip = "169.254.169.123".parse().unwrap();
-        clock.server(ip, Stratum::ONE);
+        // Test Server IPv4
+        let ip: IpAddr = "169.254.169.123".parse().unwrap();
+        clock.set_to_server(ip, Stratum::ONE);
         let (source, stratum) = clock.get();
-        assert_eq!(source, ClockSource::Server(ip));
+        assert_eq!(source, ClockSource::Server(0xA9FEA97B)); // 169.254.169.123 as u32
         assert_eq!(stratum, Stratum::ONE);
 
+        // Test Server IPv6
+        let ipv6: IpAddr = "2001:db8::1".parse().unwrap();
+        clock.set_to_server(ipv6, Stratum::TWO);
+        let (source, stratum) = clock.get();
+        // MD5 hash of 2001:db8::1 is 39ab9b3749629b8f2c7ccf39226f680c
+        // First 4 octets: 39ab9b37
+        assert_eq!(source, ClockSource::Server(0x39ab9b37));
+        assert_eq!(stratum, Stratum::TWO);
+
         // Test Unsynchronized
-        clock.none();
+        clock.set_to_none();
         let (source, stratum) = clock.get();
         assert_eq!(source, ClockSource::None);
         assert_eq!(stratum, Stratum::Unsynchronized);
@@ -197,7 +227,7 @@ mod tests {
     #[case(ClockSource::None, "None")]
     #[case(ClockSource::Phc, "PHC")]
     #[case(ClockSource::VMClock, "VMClock")]
-    #[case(ClockSource::Server("192.168.1.1".parse().unwrap()), "192.168.1.1")]
+    #[case(ClockSource::Server(0xC0A80101), "Server([192, 168, 1, 1])")]
     fn clock_source_display(#[case] source: ClockSource, #[case] expected: &str) {
         assert_eq!(source.to_string(), expected);
     }
@@ -207,7 +237,7 @@ mod tests {
     #[case(ClockSource::None, 0)]
     #[case(ClockSource::Phc, 0x5850_4843)] // "XPHC"
     #[case(ClockSource::VMClock, 0x5856_4D43)] // "XVMC"
-    #[case(ClockSource::Server("192.168.1.1".parse().unwrap()), 0xC0A8_0101)]
+    #[case(ClockSource::Server(0xC0A8_0101), 0xC0A8_0101)]
     fn clock_source_to_u32(#[case] source: ClockSource, #[case] expected: u32) {
         assert_eq!(u32::from(source), expected);
     }
@@ -217,13 +247,25 @@ mod tests {
         let clock = SelectedClockSource::default();
         assert_eq!(clock.to_string(), "INIT (stratum 0)");
 
-        clock.phc();
+        clock.set_to_phc();
         assert_eq!(clock.to_string(), "PHC (stratum 0)");
 
-        clock.server("169.254.169.123".parse().unwrap(), Stratum::ONE);
-        assert_eq!(clock.to_string(), "169.254.169.123 (stratum 1)");
+        clock.set_to_vmclock();
+        assert_eq!(clock.to_string(), "VMClock (stratum 0)");
 
-        clock.none();
+        clock.set_to_server("169.254.169.123".parse().unwrap(), Stratum::ONE);
+        assert_eq!(
+            clock.to_string(),
+            "Server([169, 254, 169, 123]) (stratum 1)"
+        );
+
+        clock.set_to_server("169.254.169.123".parse().unwrap(), Stratum::TWO);
+        assert_eq!(
+            clock.to_string(),
+            "Server([169, 254, 169, 123]) (stratum 2)"
+        );
+
+        clock.set_to_none();
         assert_eq!(clock.to_string(), "None (stratum 16)");
     }
 }

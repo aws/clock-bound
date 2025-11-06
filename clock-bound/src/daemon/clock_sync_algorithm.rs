@@ -139,7 +139,7 @@ impl ClockSyncAlgorithm {
             selected_clock,
         } = self;
 
-        selected_clock.none();
+        selected_clock.set_to_none();
         link_local.handle_disruption();
         for source in ntp_sources {
             source.handle_disruption();
