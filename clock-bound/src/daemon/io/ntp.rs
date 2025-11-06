@@ -8,6 +8,8 @@ pub use packet::{Fec2V1Value as DaemonInfo, Packet};
 
 use crate::daemon::{async_ring_buffer, event};
 
+pub const LINK_LOCAL_BURST_DURATION: Duration = Duration::from_secs(1);
+
 pub const UNSPECIFIED_SOCKET_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 pub const LINK_LOCAL_ADDRESS: SocketAddrV4 =
     SocketAddrV4::new(Ipv4Addr::new(169, 254, 169, 123), 123);
