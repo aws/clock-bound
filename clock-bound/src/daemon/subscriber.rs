@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use tracing::Level;
 use tracing_subscriber::{
     EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
 };
@@ -27,7 +28,11 @@ pub fn init(log_directory: impl AsRef<Path>) {
 
     let log_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout) // this is the default, just making it explicit
-        .with_filter(EnvFilter::from_default_env())
+        .with_filter(
+            EnvFilter::builder()
+                .with_default_directive(Level::INFO.into())
+                .from_env_lossy(),
+        )
         .with_filter(filter_fn(|md| !md.target().starts_with(PRIMER_TARGET)));
 
     tracing_subscriber::registry()
