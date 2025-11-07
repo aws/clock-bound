@@ -80,15 +80,26 @@ impl<T> Sender<T> {
     /// Returns [`BufferClosedError`] if the receiver dropped, and therefore nothing
     /// is available to receive messages.
     #[expect(clippy::missing_panics_doc, reason = "not handling poisoned mutex")]
-    pub fn send(&self, value: T) -> Result<(), BufferClosedError> {
+    pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         let mut guard = self.inner.lock().unwrap();
         if guard.receiver_dropped {
-            return Err(BufferClosedError);
+            return Err(BufferClosedError.into());
+        }
+        if let Some(Side::Receiver) = guard.disruption_handled {
+            return Err(SendError::Disrupted(value));
         }
         guard.push(value);
         drop(guard);
         self.notifier.notify_one();
         Ok(())
+    }
+
+    /// Handle a clock disruption event
+    ///
+    /// This clears the internal buffer and leaves a marker that sender has handled it.
+    pub fn handle_disruption(&self) {
+        #[expect(clippy::missing_panics_doc, reason = "not handling poisoned mutex")]
+        self.inner.lock().unwrap().handle_disruption_sender();
     }
 
     /// Return true if the buffer is empty
@@ -152,12 +163,24 @@ impl<T> Receiver<T> {
                 if guard.sender_dropped {
                     return Err(BufferClosedError);
                 }
+                if let Some(Side::Sender) = guard.disruption_handled {
+                    // it's a bug for this to repeatedly fire from the same channel
+                    tracing::debug!("Receiving when sender handled disruption");
+                }
                 if let Some(value) = guard.pop() {
                     return Ok(value);
                 }
             }
             self.notifiee.notified().await;
         }
+    }
+
+    /// Handle a clock disruption event
+    ///
+    /// This clears the internal buffer and leaves a marker that the receiver has handled it.
+    pub fn handle_disruption(&self) {
+        #[expect(clippy::missing_panics_doc, reason = "not handling poisoned mutex")]
+        self.inner.lock().unwrap().handle_disruption_receiver();
     }
 
     /// Returns `true` if the sender has dropped, and therefore the channel is closed
@@ -181,6 +204,7 @@ struct Buffer<T> {
     capacity: usize,
     sender_dropped: bool,
     receiver_dropped: bool,
+    disruption_handled: Option<Side>,
 }
 
 impl<T> Buffer<T> {
@@ -190,6 +214,7 @@ impl<T> Buffer<T> {
             capacity,
             sender_dropped: false,
             receiver_dropped: false,
+            disruption_handled: None,
         }
     }
 
@@ -214,6 +239,52 @@ impl<T> Buffer<T> {
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
+
+    fn handle_disruption_sender(&mut self) {
+        match self.disruption_handled {
+            None => {
+                // not handled yet. Clear the buffer
+                self.data.clear();
+                self.disruption_handled = Some(Side::Sender);
+            }
+            Some(Side::Sender) => tracing::warn!("handle disruption sender called multiple times"),
+            Some(Side::Receiver) => {
+                // already handled. Clear disruption_handled flag
+                self.disruption_handled = None;
+            }
+        }
+    }
+
+    fn handle_disruption_receiver(&mut self) {
+        match self.disruption_handled {
+            None => {
+                // not handled yet. Clear the buffer
+                self.data.clear();
+                self.disruption_handled = Some(Side::Receiver);
+            }
+            Some(Side::Sender) => {
+                // already handled. Clear disruption_handled flag
+                self.disruption_handled = None;
+            }
+            Some(Side::Receiver) => {
+                tracing::warn!("handle disruption receiver called multiple times");
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Sender,
+    Receiver,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SendError<T> {
+    #[error(transparent)]
+    BufferClosed(#[from] BufferClosedError),
+    #[error("Send when disrupted")]
+    Disrupted(T),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -312,7 +383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cancel_safety() {
+    async fn cancel_safety() {
         let (tx, rx) = create(2);
         tx.send(1).unwrap();
 
@@ -328,5 +399,82 @@ mod tests {
 
         // The value should still be available
         assert_eq!(rx.recv().await.unwrap(), 1);
+    }
+
+    // nothing async, but needs tokio runtime due to inner notify
+    #[tokio::test]
+    async fn handle_disruption_sender_first() {
+        let (tx, rx) = create(2);
+        tx.send(1).unwrap();
+
+        tx.handle_disruption();
+        {
+            let inner = tx.inner.lock().unwrap();
+            assert!(inner.data.is_empty());
+            assert_eq!(inner.disruption_handled, Some(Side::Sender));
+        }
+        rx.handle_disruption();
+        let inner = rx.inner.lock().unwrap();
+        assert!(inner.data.is_empty());
+        assert_eq!(inner.disruption_handled, None);
+    }
+
+    #[tokio::test]
+    async fn handle_disruption_receiver_first() {
+        let (tx, rx) = create(2);
+        tx.send(1).unwrap();
+
+        rx.handle_disruption();
+        {
+            let inner = rx.inner.lock().unwrap();
+            assert!(inner.data.is_empty());
+            assert_eq!(inner.disruption_handled, Some(Side::Receiver));
+        }
+        tx.handle_disruption();
+        let inner = tx.inner.lock().unwrap();
+        assert!(inner.data.is_empty());
+        assert_eq!(inner.disruption_handled, None);
+    }
+
+    #[tokio::test]
+    async fn handle_disruption_send_after_receive_handles() {
+        let (tx, rx) = create(2);
+        tx.send(1).unwrap();
+
+        // this should clear
+        rx.handle_disruption();
+
+        // this should still send
+        let res = tx.send(42);
+        let Err(SendError::Disrupted(val)) = &res else {
+            panic!("Expected send to be disrupted {res:?}");
+        };
+
+        assert_eq!(*val, 42);
+    }
+
+    #[tokio::test]
+    async fn sender_handles_disruption_while_recv() {
+        let (tx, rx) = create(2);
+        let recv_fut = rx.recv();
+
+        tokio::select! {
+            biased;
+            _ = recv_fut => {
+                panic!("This branch should not complete first");
+            }
+            _ = async {
+                tx.handle_disruption();
+                tx.send(5).unwrap();
+            } => {
+                // this branch should complete first
+            }
+        }
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received, 5);
+
+        // this should clear
+        rx.handle_disruption();
     }
 }
