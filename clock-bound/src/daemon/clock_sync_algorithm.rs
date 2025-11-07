@@ -4,17 +4,23 @@
     expect(dead_code, reason = "remove when RoutableEvent is added")
 )]
 
+mod selector;
+pub use selector::{Selector, SourceInfo};
+
 pub mod ff;
 
 mod ring_buffer;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 pub use ring_buffer::RingBuffer;
 
 use crate::daemon::{
-    clock_parameters::ClockParameters, event, receiver_stream::RoutableEvent,
-    selected_clock::SelectedClockSource, subscriber::PRIMER_TARGET,
+    clock_parameters::ClockParameters, event, io::ntp::LINK_LOCAL_ADDRESS,
+    receiver_stream::RoutableEvent, selected_clock::SelectedClockSource, subscriber::PRIMER_TARGET,
 };
 
 pub mod source;
@@ -39,6 +45,8 @@ pub struct ClockSyncAlgorithm {
     pub ntp_sources: Vec<source::NTPSource>,
     /// Shared reference to the current selected clock source
     selected_clock: Arc<SelectedClockSource>,
+    /// Selector. Chooses the best clock source
+    selector: Selector,
 }
 
 impl ClockSyncAlgorithm {
@@ -77,26 +85,44 @@ impl ClockSyncAlgorithm {
         }
     }
 
+    /// Get the current best clock parameters
+    pub fn clock_parameters(&self) -> Option<&ClockParameters> {
+        self.selector.current().map(|o| &o.clock_parameters)
+    }
+
     /// Convenience function to allow for easy instrumenting
     fn feed_inner(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
-        match routable_event {
-            RoutableEvent::LinkLocal(event) => self.feed_link_local(event),
+        // First route the event to the correct inner source
+        let alg_output = match routable_event {
+            RoutableEvent::LinkLocal(event) => Self::feed_link_local(&mut self.link_local, event),
             RoutableEvent::NtpSource(sender_address, event) => {
-                self.feed_ntp_source(sender_address, &event)
+                Self::feed_ntp_source(&mut self.ntp_sources, sender_address, event)
             }
             RoutableEvent::Phc(_data) => {
                 todo!("Implement PHC IO event delivery")
             }
+        };
+        let (clock_parameters, source_info) = alg_output?;
+
+        let output = self.selector.update(clock_parameters, source_info);
+        if output.is_some() {
+            Self::update_selected_clock(&self.selected_clock, source_info);
         }
+
+        output
     }
 
     /// Feed event into the link local
-    /// TODO: make this function private and call into it from `fn feed` when we have a routable event
-    #[expect(clippy::missing_panics_doc, reason = "serialization will not fail")]
-    pub fn feed_link_local(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
+    fn feed_link_local(
+        link_local: &mut source::LinkLocal,
+        event: event::Ntp,
+    ) -> Option<(&ClockParameters, SourceInfo)> {
+        // associated method to help borrow checker
         let serialized = serde_json::to_string(&event).unwrap();
 
-        let output = self.link_local.feed(event);
+        let stratum = event.data().stratum;
+
+        let output = link_local.feed(event);
 
         tracing::info!(
             target: PRIMER_TARGET,
@@ -104,24 +130,36 @@ impl ClockSyncAlgorithm {
             output = serde_json::to_string(&output).unwrap(),
             "feed link local"
         );
-        output
+
+        output.map(|params| (params, SourceInfo::LinkLocal(stratum)))
     }
 
     /// Feed event into ntp source
-    /// TODO: make this function private and call into it from `fn feed` when we have a routable event
-    pub fn feed_ntp_source(
-        &mut self,
+    fn feed_ntp_source(
+        ntp_sources: &mut [source::NTPSource],
         sender_address: SocketAddr,
-        event: &event::Ntp,
-    ) -> Option<&ClockParameters> {
-        let mut clock_parameters: Option<&ClockParameters> = None;
-        for source in &mut self.ntp_sources {
-            if source.socket_address() == sender_address {
-                clock_parameters = source.feed(event.clone());
-                break;
+        event: event::Ntp,
+    ) -> Option<(&ClockParameters, SourceInfo)> {
+        // associated method to help borrow checker
+        let stratum = event.data().stratum;
+        ntp_sources
+            .iter_mut()
+            .find(|source| source.socket_address() == sender_address)
+            .and_then(|source| source.feed(event))
+            .map(|params| (params, SourceInfo::NtpSource(sender_address, stratum)))
+    }
+
+    fn update_selected_clock(selected_clock: &Arc<SelectedClockSource>, source_info: SourceInfo) {
+        // associated method to help borrow checker
+        match source_info {
+            SourceInfo::LinkLocal(stratum) => {
+                selected_clock.set_to_server(IpAddr::V4(*LINK_LOCAL_ADDRESS.ip()), stratum);
             }
+            SourceInfo::NtpSource(address, stratum) => {
+                selected_clock.set_to_server(address.ip(), stratum);
+            }
+            SourceInfo::Phc => selected_clock.set_to_phc(),
         }
-        clock_parameters
     }
 
     /// Handle a clock disruption event
@@ -137,6 +175,7 @@ impl ClockSyncAlgorithm {
             link_local,
             ntp_sources,
             selected_clock,
+            selector,
         } = self;
 
         selected_clock.set_to_none();
@@ -144,14 +183,21 @@ impl ClockSyncAlgorithm {
         for source in ntp_sources {
             source.handle_disruption();
         }
+        selector.handle_disruption();
         tracing::info!("Handled clock disruption event");
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use core::str;
+    use std::{net::Ipv4Addr, str::FromStr};
+
+    use rstest::rstest;
+
     use crate::daemon::{
         event::Stratum,
+        selected_clock::ClockSource,
         time::{Duration, Instant, TscCount, tsc::Skew},
     };
 
@@ -179,13 +225,15 @@ mod tests {
             .link_local(source::LinkLocal::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
+            .selector(Selector::new(Skew::from_ppm(15.0)))
             .build();
 
-        let clock_parameters = csa.feed_link_local(event.clone());
+        let clock_parameters =
+            ClockSyncAlgorithm::feed_link_local(&mut csa.link_local, event.clone());
         assert!(clock_parameters.is_none());
 
         let serialized_event = serde_json::to_string(&event).unwrap();
-        let serialized_output = serde_json::to_string(&clock_parameters).unwrap();
+        let serialized_output = serde_json::to_string(&clock_parameters.map(|out| out.0)).unwrap();
 
         // tracing escapes quotes
         let serialized_event = serialized_event.replace("\"", r#"\""#);
@@ -193,5 +241,22 @@ mod tests {
 
         assert!(logs_contain(&serialized_event));
         assert!(logs_contain(&serialized_output));
+    }
+
+    #[rstest]
+    #[case(SourceInfo::LinkLocal(Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("169.254.169.123").unwrap().into()), Stratum::TWO)]
+    #[case(SourceInfo::NtpSource("169.254.169.101:123".parse().unwrap(), Stratum::ONE), ClockSource::Server(Ipv4Addr::from_str("169.254.169.101").unwrap().into()), Stratum::ONE)]
+    #[case(SourceInfo::NtpSource("[2001:db8::1:1234]:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("199.132.19.175").unwrap().into()), Stratum::TWO)]
+    #[case(SourceInfo::Phc, ClockSource::Phc, Stratum::Unspecified)]
+    fn update_selected_clock(
+        #[case] source_info: SourceInfo,
+        #[case] expected_clock_source: ClockSource,
+        #[case] expected_stratum: Stratum,
+    ) {
+        let selected_clock_source = Arc::new(SelectedClockSource::default());
+        ClockSyncAlgorithm::update_selected_clock(&selected_clock_source, source_info);
+        let (clock_source, stratum) = selected_clock_source.get();
+        assert_eq!(clock_source, expected_clock_source);
+        assert_eq!(stratum, expected_stratum);
     }
 }

@@ -23,7 +23,7 @@ pub mod selected_clock;
 use std::sync::Arc;
 
 use crate::daemon::{
-    clock_sync_algorithm::{ClockSyncAlgorithm, source::NTPSource},
+    clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source::NTPSource},
     io::ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
     receiver_stream::{ReceiverStream, RoutableEvent},
     selected_clock::SelectedClockSource,
@@ -82,6 +82,7 @@ impl Daemon {
                 ),
             )
             .selected_clock(selected_clock.clone())
+            .selector(Selector::new(MAX_DISPERSION_GROWTH))
             .build();
 
         // Initializing async ring buffers for IO event delivery
