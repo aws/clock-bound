@@ -1,7 +1,5 @@
 //! Adjust system clock
-use errno::Errno;
-use libc::{TIME_DEL, TIME_ERROR, TIME_INS, TIME_OK, TIME_OOP, TIME_WAIT, ntp_adjtime};
-use thiserror::Error;
+use libc::{TIME_DEL, TIME_ERROR, TIME_INS, TIME_OK, TIME_OOP, TIME_WAIT};
 use tracing::{debug, error, info};
 
 use crate::daemon::{
@@ -9,45 +7,10 @@ use crate::daemon::{
     time::{Duration, inner::ClockOffsetAndRtt, instant::Utc, timex::Timex, tsc::Skew},
 };
 
-/// Error type returned when dealing with underlying `adjtimex` or `ntp_adjtime`
-/// results.
-#[derive(Debug, Error)]
-pub enum NtpAdjTimeError {
-    #[error("Failed to adjust the clock: {0}")]
-    Failure(Errno),
-    #[error("Unexpected bad state return value from ntp_adjtime: {0}")]
-    BadState(i32),
-    #[error("Invalid return value from ntp_adjtime: {0}")]
-    InvalidState(i32),
-}
-
-/// Concrete struct implementing `ntp_adjtime` by delegating to the `libc`
-/// implementation. Should be the only actual concrete implementation.
-pub struct KAPIClockAdjuster;
-impl NtpAdjTime for KAPIClockAdjuster {
-    fn ntp_adjtime(&self, tx: &mut Timex) -> i32 {
-        // # Safety
-        // `tx` should point to a valid struct because of validation guarantees of `Timex`
-        unsafe { ntp_adjtime(tx.expose()) }
-    }
-}
-
-/// Noop Clock Adjuster, which doesn't actually adjust the clock parameters but just
-/// returns `TIME_OK`.
-pub struct NoopClockAdjuster;
-impl NtpAdjTime for NoopClockAdjuster {
-    fn ntp_adjtime(&self, _tx: &mut Timex) -> i32 {
-        TIME_OK
-    }
-}
-
-/// Lightweight trait around `ntp_adjtime` function (formerly `adjtimex`).
-/// Useful for mocking, or potentially as an abstraction around modifying
-/// other clocks' parameters in the future.
-#[cfg_attr(test, mockall::automock)]
-pub trait NtpAdjTime {
-    fn ntp_adjtime(&self, tx: &mut Timex) -> i32;
-}
+mod ntp_adjtime;
+pub use ntp_adjtime::{
+    KAPIClockAdjuster, NoopClockAdjuster, NtpAdjTime, NtpAdjTimeError, NtpAdjTimeExt,
+};
 
 pub struct ClockAdjuster<T> {
     ntp_adjtime: T,
@@ -196,127 +159,10 @@ impl<T: NtpAdjTime> ClockAdjuster<T> {
 #[cfg(test)]
 mod test {
     use mockall::predicate::eq;
-    use rstest::rstest;
+
+    use crate::daemon::clock_state::clock_adjust::ntp_adjtime::MockNtpAdjTime;
 
     use super::*;
-
-    #[rstest]
-    #[case::positives(Duration::from_nanos(500), Skew::from_ppm(1.0))]
-    #[case::negatives(Duration::from_nanos(-500), Skew::from_ppm(-1.0))]
-    #[case::zeroes(Duration::from_nanos(0), Skew::from_ppm(0.0))]
-    #[case::positive_offset_negative_skew(Duration::from_nanos(500), Skew::from_ppm(-1.0))]
-    #[case::negative_offset_positive_skew(Duration::from_nanos(-500), Skew::from_ppm(1.0))]
-    fn adjust_clock_happy_paths(
-        #[case] input_phase_correction: Duration,
-        #[case] input_skew: Skew,
-    ) {
-        let mock_ntp_adj_time = MockNtpAdjTime::new();
-        let mut clock_adjuster = ClockAdjuster::new(mock_ntp_adj_time);
-        assert!(clock_adjuster.should_step);
-
-        // Set up mock expectations
-        clock_adjuster
-            .ntp_adjtime
-            .expect_ntp_adjtime()
-            .times(1)
-            .return_const(TIME_OK);
-
-        // Call adjust_clock with test values
-        let result = clock_adjuster.adjust_clock(input_phase_correction, input_skew);
-
-        assert!(result.is_ok());
-        assert!(clock_adjuster.should_step);
-    }
-
-    #[test]
-    fn adjust_clock_failure() {
-        let mock_ntp_adj_time = MockNtpAdjTime::new();
-        let mut clock_adjuster = ClockAdjuster::new(mock_ntp_adj_time);
-        assert!(clock_adjuster.should_step);
-
-        // Set up mock expectations
-        clock_adjuster
-            .ntp_adjtime
-            .expect_ntp_adjtime()
-            .times(1)
-            .return_const(-1);
-
-        // Call adjust_clock with test values
-        assert!(matches!(
-            clock_adjuster
-                .adjust_clock(Duration::from_nanos(500), Skew::from_ppm(1.0))
-                .unwrap_err(),
-            NtpAdjTimeError::Failure(_)
-        ));
-        assert!(clock_adjuster.should_step);
-    }
-
-    #[test]
-    fn adjust_clock_bad_state() {
-        let mock_ntp_adj_time = MockNtpAdjTime::new();
-        let mut clock_adjuster = ClockAdjuster::new(mock_ntp_adj_time);
-        assert!(clock_adjuster.should_step);
-
-        // Set up mock expectations
-        clock_adjuster
-            .ntp_adjtime
-            .expect_ntp_adjtime()
-            .times(1)
-            .return_const(TIME_ERROR);
-
-        // Call adjust_clock with test values
-        assert!(matches!(
-            clock_adjuster
-                .adjust_clock(Duration::from_nanos(500), Skew::from_ppm(1.0))
-                .unwrap_err(),
-            NtpAdjTimeError::BadState(_)
-        ));
-        assert!(clock_adjuster.should_step);
-    }
-
-    #[test]
-    fn adjust_clock_unexpected_value() {
-        let mock_ntp_adj_time = MockNtpAdjTime::new();
-        let mut clock_adjuster = ClockAdjuster::new(mock_ntp_adj_time);
-        assert!(clock_adjuster.should_step);
-
-        // Set up mock expectations
-        clock_adjuster
-            .ntp_adjtime
-            .expect_ntp_adjtime()
-            .times(1)
-            .return_const(12345);
-
-        // Call adjust_clock with test values
-        assert!(matches!(
-            clock_adjuster
-                .adjust_clock(Duration::from_nanos(500), Skew::from_ppm(1.0))
-                .unwrap_err(),
-            NtpAdjTimeError::InvalidState(_)
-        ));
-        assert!(clock_adjuster.should_step);
-    }
-
-    #[rstest]
-    #[case::positive(Duration::from_millis(100))]
-    #[case::negative(-Duration::from_millis(100))]
-    #[case::zero(Duration::from_millis(0))]
-    fn step_clock_happy_paths(#[case] input_phase_correction: Duration) {
-        let mock_ntp_adj_time = MockNtpAdjTime::new();
-        let mut clock_adjuster = ClockAdjuster::new(mock_ntp_adj_time);
-        assert!(clock_adjuster.should_step);
-
-        // Set up mock expectations
-        clock_adjuster
-            .ntp_adjtime
-            .expect_ntp_adjtime()
-            .times(1)
-            .return_const(TIME_ERROR);
-
-        // Call step_clock with test values
-        clock_adjuster.step_clock(input_phase_correction).unwrap();
-        assert!(!clock_adjuster.should_step);
-    }
 
     #[test]
     fn handle_disruption() {

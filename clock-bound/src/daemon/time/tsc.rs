@@ -298,6 +298,26 @@ impl Skew {
     /// 2^16=65536 is 1 ppm.  This is the case for both input values (in
     /// the case of freq) and output values.
     /// ref: See NOTES in <https://man7.org/linux/man-pages/man2/adjtimex.2.html>
+    ///
+    /// This function constructs a `Skew` value from a given kernel value.
+    pub fn from_timex_freq(timex_freq: i64) -> Self {
+        if timex_freq >= 0 {
+            Self::from_ppm((timex_freq >> 16) as f64)
+        } else {
+            // i64::MAX = -i64::MIN - 1, prefer to `saturating_neg` rather
+            // than overflow and wrap
+            -Self::from_ppm((timex_freq.saturating_neg() >> 16) as f64)
+        }
+    }
+
+    /// In struct timex, freq, ppsfreq, and stabil are ppm (parts per
+    /// million) with a 16-bit fractional part, which means that a value
+    /// of 1 in one of those fields actually means 2^-16 ppm, and
+    /// 2^16=65536 is 1 ppm.  This is the case for both input values (in
+    /// the case of freq) and output values.
+    /// ref: See NOTES in <https://man7.org/linux/man-pages/man2/adjtimex.2.html>
+    ///
+    /// This function constructs a given kernel value from a `Skew` value.
     pub fn to_timex_freq(self) -> i64 {
         (FREQUENCY_TO_TIMEX_SCALE * self.0 / Self::PPM) as i64
     }
@@ -553,6 +573,28 @@ mod tests {
         assert_eq!(skew.to_timex_freq(), i64::MAX);
         let skew = Skew::from_ppm(f64::MIN);
         assert_eq!(skew.to_timex_freq(), i64::MIN);
+    }
+
+    #[test]
+    fn skew_from_timex_freq() {
+        let skew = Skew::from_timex_freq(65536);
+        assert_abs_diff_eq!(skew.get(), 1.0 * 1.0e-6);
+        let skew = Skew::from_timex_freq(-65536);
+        assert_abs_diff_eq!(skew.get(), -1.0 * 1.0e-6);
+        let skew = Skew::from_timex_freq(0);
+        assert_abs_diff_eq!(skew.get(), 0.0);
+        let skew = Skew::from_timex_freq(i64::MAX);
+        assert_abs_diff_eq!(
+            skew.get(),
+            i64::MAX as f64 / (65536.0 * 1e6),
+            epsilon = 0.11
+        );
+        let skew = Skew::from_timex_freq(i64::MIN);
+        assert_abs_diff_eq!(
+            skew.get(),
+            -i64::MAX as f64 / (65536.0 * 1e6),
+            epsilon = 0.11
+        );
     }
 
     #[test]
