@@ -5,13 +5,13 @@ use tokio::{
     io,
     net::UdpSocket,
     sync::{mpsc, watch},
-    time::{self, Duration, Instant, Interval, MissedTickBehavior, interval, timeout},
+    time::{self, Instant, Interval, MissedTickBehavior, interval, timeout},
 };
 use tracing::{debug, info};
 
 use super::ntp::{
-    LINK_LOCAL_ADDRESS, LINK_LOCAL_BURST_DURATION, LINK_LOCAL_INTERVAL_DURATION,
-    LINK_LOCAL_TIMEOUT, packet,
+    LINK_LOCAL_ADDRESS, LINK_LOCAL_BURST_DURATION, LINK_LOCAL_BURST_INTERVAL_DURATION,
+    LINK_LOCAL_INTERVAL_DURATION, LINK_LOCAL_TIMEOUT, packet,
 };
 use super::tsc::read_timestamp_counter;
 use super::{ClockDisruptionEvent, ControlRequest};
@@ -22,9 +22,6 @@ use crate::daemon::{
 };
 
 use packet::Packet;
-
-/// The amount of time between source polls when in burst mode.
-const BURST_INTERVAL_DURATION: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Error)]
 pub enum LinkLocalError {
@@ -54,13 +51,17 @@ pub struct LinkLocal {
 
 impl LinkLocal {
     /// Constructs a new `LinkLocal` with using given parameters.
+    ///
+    /// NOTE:
+    /// The `LinkLocal` object will start in burst mode. The timer for burst mode begins when the object is constructed,
+    /// NOT when the run loop begins.
     pub fn construct(
         socket: UdpSocket,
         event_sender: async_ring_buffer::Sender<event::Ntp>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     ) -> Self {
-        let mut link_local_interval = interval(LINK_LOCAL_INTERVAL_DURATION);
+        let mut link_local_interval = interval(LINK_LOCAL_BURST_INTERVAL_DURATION);
         link_local_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         LinkLocal {
             socket,
@@ -69,7 +70,7 @@ impl LinkLocal {
             clock_disruption_receiver,
             ntp_buffer: [0u8; Packet::SIZE],
             interval: link_local_interval,
-            mode: Mode::Normal,
+            mode: Mode::burst(),
         }
     }
 
@@ -202,7 +203,7 @@ impl LinkLocal {
         } = self;
 
         *mode = Mode::burst();
-        *ll_interval = interval(BURST_INTERVAL_DURATION);
+        *ll_interval = interval(LINK_LOCAL_BURST_INTERVAL_DURATION);
         ll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ll_interval.reset_immediately();
     }
@@ -281,7 +282,10 @@ mod tests {
         link_local.transition_to_burst_mode();
 
         assert!(matches!(link_local.mode, Mode::Burst(_)));
-        assert_eq!(link_local.interval.period(), BURST_INTERVAL_DURATION);
+        assert_eq!(
+            link_local.interval.period(),
+            LINK_LOCAL_BURST_INTERVAL_DURATION
+        );
     }
 
     #[tokio::test]
