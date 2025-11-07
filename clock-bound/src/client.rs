@@ -645,6 +645,7 @@ mod lib_tests {
     /// We avoid writing to the shared memory for the default shared memory segment path
     /// because it is possible actual clients are relying on the ClockBound data at this location.
     #[test]
+    #[ignore = "can fail if daemon has run previously with root privs"]
     fn test_new_sanity_check() {
         let result = ClockBoundClient::new();
         if Path::new(CLOCKBOUND_SHM_DEFAULT_PATH).exists() {
