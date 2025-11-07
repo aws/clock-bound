@@ -56,12 +56,12 @@ impl ClockSyncAlgorithm {
         {
             use crate::daemon::event::TscRtt;
             let Some(system_clock) = routable_event.system_clock() else {
-                return self.feed_inner(routable_event);
+                return self.feed_repro(routable_event);
             };
             let system = system_clock.system_time;
             let system_tsc = system_clock.tsc;
             let tsc_rtt = routable_event.rtt();
-            let retval = self.feed_inner(routable_event);
+            let retval = self.feed_repro(routable_event);
             if let Some(new_params) = &retval {
                 let system_clock_tsc_age = system_tsc - new_params.tsc_count;
                 let system_clock_age = system_clock_tsc_age * new_params.period;
@@ -81,7 +81,7 @@ impl ClockSyncAlgorithm {
         }
         #[cfg(any(not(feature = "test-side-by-side"), test))]
         {
-            self.feed_inner(routable_event)
+            self.feed_repro(routable_event)
         }
     }
 
@@ -112,26 +112,31 @@ impl ClockSyncAlgorithm {
         output
     }
 
+    // wrapper around feed_inner that emits reproducibility
+    fn feed_repro(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
+        let serialized = serde_json::to_string(&routable_event).unwrap();
+        let output = self.feed_inner(routable_event);
+        tracing::info!(
+            target: PRIMER_TARGET,
+            event = serialized,
+            output = serde_json::to_string(&output).unwrap(),
+            "feed"
+        );
+
+        output
+    }
+
     /// Feed event into the link local
     fn feed_link_local(
         link_local: &mut source::LinkLocal,
         event: event::Ntp,
     ) -> Option<(&ClockParameters, SourceInfo)> {
         // associated method to help borrow checker
-        let serialized = serde_json::to_string(&event).unwrap();
-
         let stratum = event.data().stratum;
 
-        let output = link_local.feed(event);
-
-        tracing::info!(
-            target: PRIMER_TARGET,
-            event = serialized,
-            output = serde_json::to_string(&output).unwrap(),
-            "feed link local"
-        );
-
-        output.map(|params| (params, SourceInfo::LinkLocal(stratum)))
+        link_local
+            .feed(event)
+            .map(|params| (params, SourceInfo::LinkLocal(stratum)))
     }
 
     /// Feed event into ntp source
@@ -205,7 +210,7 @@ mod tests {
 
     #[test]
     #[tracing_test::traced_test]
-    fn feed_link_local_event() {
+    fn feed_serializes_events() {
         // Most logs are permeable to change. Make sure that we log a json event.
 
         let event = event::Ntp::builder()
@@ -221,6 +226,8 @@ mod tests {
             .build()
             .unwrap();
 
+        let event = RoutableEvent::LinkLocal(event);
+
         let mut csa = ClockSyncAlgorithm::builder()
             .link_local(source::LinkLocal::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
@@ -228,12 +235,11 @@ mod tests {
             .selector(Selector::new(Skew::from_ppm(15.0)))
             .build();
 
-        let clock_parameters =
-            ClockSyncAlgorithm::feed_link_local(&mut csa.link_local, event.clone());
+        let clock_parameters = csa.feed(event.clone());
         assert!(clock_parameters.is_none());
 
         let serialized_event = serde_json::to_string(&event).unwrap();
-        let serialized_output = serde_json::to_string(&clock_parameters.map(|out| out.0)).unwrap();
+        let serialized_output = serde_json::to_string(&clock_parameters).unwrap();
 
         // tracing escapes quotes
         let serialized_event = serialized_event.replace("\"", r#"\""#);

@@ -112,7 +112,7 @@ impl ReceiverStream {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RoutableEvent {
     LinkLocal(event::Ntp),
     NtpSource(SocketAddr, event::Ntp),

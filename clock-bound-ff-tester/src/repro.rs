@@ -7,9 +7,11 @@ use std::{
     path::Path,
 };
 
-use clock_bound::daemon::{clock_parameters::ClockParameters, event};
-
 use crate::events::{Scenario, v1};
+use crate::time::CbBridge;
+use clock_bound::daemon::{
+    clock_parameters::ClockParameters, event, receiver_stream::RoutableEvent,
+};
 
 /// Read a logfile and return all inputs and outputs from the `ClockSyncAlgorithm`
 ///
@@ -86,7 +88,7 @@ pub fn scenario_from_reader(
 
     let events: Vec<_> = events
         .into_iter()
-        .map(|event| tester_event_from_clock_bound(&event, "link_local".to_string()))
+        .map(|event| tester_event_from_routable(&event))
         .collect();
 
     let scenario = Scenario::V1(v1::Scenario {
@@ -98,8 +100,7 @@ pub fn scenario_from_reader(
     Ok((scenario, clock_parameters))
 }
 
-pub fn tester_event_from_clock_bound(event: &event::Ntp, source_id: String) -> v1::Event {
-    use crate::time::CbBridge;
+fn tester_event_from_cb_ntp(event: &event::Ntp, source_id: String) -> v1::Event {
     v1::Event {
         variants: v1::EventKind::Ntp(v1::Ntp {
             server_system_recv_time: event.data().server_recv_time.into_estimate(),
@@ -111,6 +112,29 @@ pub fn tester_event_from_clock_bound(event: &event::Ntp, source_id: String) -> v
         }),
         client_tsc_pre_time: event.tsc_pre(),
         client_tsc_post_time: event.tsc_post(),
+    }
+}
+
+fn tester_event_from_cb_phc(event: &event::Phc, source_id: String) -> v1::Event {
+    v1::Event {
+        variants: v1::EventKind::Phc(v1::Phc {
+            phc_time: event.data().time.into_estimate(),
+            clock_error_bound: Some(event.data().clock_error_bound.into_estimate()),
+            source_id,
+            client_system_times: None,
+        }),
+        client_tsc_pre_time: event.tsc_pre(),
+        client_tsc_post_time: event.tsc_post(),
+    }
+}
+
+fn tester_event_from_routable(event: &RoutableEvent) -> v1::Event {
+    match event {
+        RoutableEvent::LinkLocal(event) => {
+            tester_event_from_cb_ntp(event, String::from("link_local"))
+        }
+        RoutableEvent::NtpSource(addr, event) => tester_event_from_cb_ntp(event, addr.to_string()),
+        RoutableEvent::Phc(event) => tester_event_from_cb_phc(event, String::from("ptp_ena")),
     }
 }
 
@@ -142,9 +166,9 @@ impl Fields {
         Ok(retval)
     }
 
-    fn parse_event(&self) -> anyhow::Result<event::Ntp> {
+    fn parse_event(&self) -> anyhow::Result<RoutableEvent> {
         let unescaped = self.event.replace("\\\"", "\"");
-        let retval: event::Ntp = serde_json::from_str(&unescaped)?;
+        let retval: RoutableEvent = serde_json::from_str(&unescaped)?;
         Ok(retval)
     }
 }
@@ -158,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn convert_clock_bound_event_to_tester() {
+    fn convert_ntp_clock_bound_event_to_tester() {
         let event = event::Ntp::builder()
             .ntp_data(clock_bound::daemon::event::NtpData {
                 server_recv_time: 1.into(),
@@ -173,7 +197,7 @@ mod tests {
             .unwrap();
 
         let source_id = "source_id".to_string();
-        let tester_event = tester_event_from_clock_bound(&event, source_id.clone());
+        let tester_event = tester_event_from_cb_ntp(&event, source_id.clone());
         assert_eq!(tester_event.client_tsc_pre_time, TscCount::new(500));
         assert_eq!(tester_event.client_tsc_post_time, TscCount::new(600));
         assert_eq!(
@@ -190,14 +214,47 @@ mod tests {
     }
 
     #[test]
+    fn phc_conversion() {
+        let event = event::Phc::builder()
+            .data(event::PhcData {
+                time: 1.into(),
+                clock_error_bound: 2.into(),
+            })
+            .tsc_pre(TscCount::new(500))
+            .tsc_post(TscCount::new(600))
+            .build()
+            .unwrap();
+
+        let source_id = "source_id".to_string();
+        let tester_event = tester_event_from_cb_phc(&event, source_id.clone());
+        assert_eq!(tester_event.client_tsc_pre_time, TscCount::new(500));
+        assert_eq!(tester_event.client_tsc_post_time, TscCount::new(600));
+        assert_eq!(
+            tester_event.variants,
+            v1::EventKind::Phc(v1::Phc {
+                phc_time: EstimateInstant::new(1),
+                clock_error_bound: Some(EstimateDuration::new(2)),
+                source_id,
+                client_system_times: None,
+            })
+        );
+    }
+
+    #[test]
     fn scenario_from_logs() {
-        let example_log = include_str!("repro/test_10_29_2025.log");
+        let example_log = include_str!("repro/test_11_06_2025.log");
 
         let (scenario, clock_parameters) = scenario_from_reader(example_log.as_bytes()).unwrap();
 
-        assert_eq!(clock_parameters.len(), 5);
+        assert_eq!(clock_parameters.len(), 13);
         let Scenario::V1(scenario) = scenario;
-        assert_eq!(scenario.events.len(), 5);
+        assert_eq!(scenario.events.len(), 13);
         assert!(scenario.oscillator.is_none());
+
+        let param_count = clock_parameters
+            .iter()
+            .filter_map(|params| params.as_ref())
+            .count();
+        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
     }
 }
