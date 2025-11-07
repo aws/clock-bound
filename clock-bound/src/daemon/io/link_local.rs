@@ -13,7 +13,7 @@ use super::ntp::{
     LINK_LOCAL_ADDRESS, LINK_LOCAL_BURST_DURATION, LINK_LOCAL_BURST_INTERVAL_DURATION,
     LINK_LOCAL_INTERVAL_DURATION, LINK_LOCAL_TIMEOUT, packet,
 };
-use super::tsc::read_timestamp_counter;
+use super::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
     async_ring_buffer,
@@ -85,9 +85,7 @@ impl LinkLocal {
         let packet = Packet::new_request(0);
         packet.emit_bytes(&mut self.ntp_buffer);
 
-        // TODO: tsc reads and ntp samples need to be fenced.
-        // We are currently investigating how to implement this appropriately.
-        let sent_timestamp = read_timestamp_counter();
+        let sent_timestamp = read_timestamp_counter_begin();
 
         // Request and Receive NTP sample.
         let recv_packet_result = timeout(LINK_LOCAL_TIMEOUT, {
@@ -98,7 +96,7 @@ impl LinkLocal {
         })
         .await?;
 
-        let received_timestamp = read_timestamp_counter();
+        let received_timestamp = read_timestamp_counter_end();
 
         #[cfg(all(not(test), feature = "test-side-by-side"))]
         let system_clock_reading = crate::daemon::event::SystemClockMeasurement::now();

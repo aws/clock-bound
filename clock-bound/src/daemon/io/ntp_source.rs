@@ -11,7 +11,7 @@ use tokio::{
 };
 use tracing::{debug, info};
 
-use super::tsc::read_timestamp_counter;
+use super::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 use crate::daemon::{
     async_ring_buffer,
     event::{self, NtpData},
@@ -86,9 +86,7 @@ impl NTPSource {
         let packet = Packet::new_request(0);
         packet.emit_bytes(&mut self.ntp_buffer);
 
-        // TODO: tsc reads and ntp samples need to be fenced.
-        // We are currently investigating how to implement this appropriately.
-        let sent_timestamp = read_timestamp_counter();
+        let sent_timestamp = read_timestamp_counter_begin();
 
         // Request and Receive NTP sample.
         let recv_packet_result = timeout(NTP_SOURCE_TIMEOUT, {
@@ -97,7 +95,7 @@ impl NTPSource {
         })
         .await?;
 
-        let received_timestamp = read_timestamp_counter();
+        let received_timestamp = read_timestamp_counter_end();
 
         let (_, ntp_packet) = Packet::parse_from_bytes(&self.ntp_buffer)
             .map_err(|e| NTPSourceError::PacketParsing(e.to_string()))?;

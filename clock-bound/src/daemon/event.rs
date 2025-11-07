@@ -52,11 +52,11 @@ impl SystemClockMeasurement {
     #[expect(clippy::missing_panics_doc, reason = "unwrap won't panic")]
     #[expect(clippy::cast_possible_wrap)]
     pub fn now() -> Self {
-        use crate::daemon::io::tsc::read_timestamp_counter;
+        use crate::daemon::io::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
         use crate::daemon::time::Instant;
-        let pre = read_timestamp_counter();
+        let pre = read_timestamp_counter_begin();
         let now = std::time::SystemTime::now();
-        let post = read_timestamp_counter();
+        let post = read_timestamp_counter_end();
 
         let now = now.duration_since(std::time::UNIX_EPOCH).unwrap();
         let tsc = pre.midpoint(post);
