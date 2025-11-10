@@ -256,8 +256,10 @@ impl Ntp {
         //
         // A complex strategy we could take on would be to calculate error values on slopes and directly compare
         // these values in search. That kind of approach is TBD.
-        let p_estimate = (newest.data().server_send_time - oldest.data().server_send_time)
-            / (newest.tsc_post() - oldest.tsc_post());
+        let ref_clock_diff = newest.data().server_send_time - oldest.data().server_send_time;
+        let tsc_diff = newest.tsc_post() - oldest.tsc_post();
+        tracing::trace!(?ref_clock_diff, ?tsc_diff, "estimate period inputs");
+        let p_estimate = ref_clock_diff / tsc_diff;
 
         let k = p_estimate * TscDiff::new(newest.tsc_post().get());
         let k = newest.data().server_send_time - k;
@@ -406,6 +408,7 @@ impl Ntp {
                 * uncorrected_clock.p_estimate.get()
                 * ((now_post - event.tsc_post()).get() as f64);
             let skew_correction_nsec = skew_correction_seconds * 1e9;
+            tracing::trace!(?event, %weight, ?offset, skew_correction = ?Duration::from_seconds_f64(skew_correction_seconds), "theta iteration");
             numerator += weight * (offset_nsec + skew_correction_nsec);
             denominator += weight;
         }

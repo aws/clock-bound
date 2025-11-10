@@ -328,7 +328,7 @@ mod tests {
             );
         }
 
-        // last event triggers the 1000 second SKM window expiring.
+        // last event triggers the 1024 second SKM window expiring.
         local.feed(events[100].clone()).unwrap();
         local.expunge_old_events(period);
         let result = estimate.feed(&local, period);
