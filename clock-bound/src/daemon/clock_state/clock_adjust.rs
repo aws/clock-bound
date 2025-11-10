@@ -11,6 +11,8 @@ mod ntp_adjtime;
 pub use ntp_adjtime::{
     KAPIClockAdjuster, NoopClockAdjuster, NtpAdjTime, NtpAdjTimeError, NtpAdjTimeExt,
 };
+#[expect(unused)]
+mod state_machine;
 
 pub struct ClockAdjuster<T> {
     ntp_adjtime: T,

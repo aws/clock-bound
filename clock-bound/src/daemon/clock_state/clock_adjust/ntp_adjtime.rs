@@ -51,6 +51,36 @@ pub trait NtpAdjTime {
 #[cfg(test)]
 impl NtpAdjTimeExt for MockNtpAdjTime {}
 
+#[cfg(test)]
+mod mock_ntp_adj_time_ext {
+    use super::*;
+    mockall::mock! {
+        pub NtpAdjTimeExt {}
+        impl NtpAdjTimeExt for NtpAdjTimeExt {
+            fn adjust_clock(
+                &self,
+                phase_correction: Duration,
+                skew: Skew,
+            ) -> Result<Timex, NtpAdjTimeError>;
+            fn apply_phase_correction(&self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError>;
+            fn apply_frequency_correction(
+                &self,
+                frequency_correction: Skew,
+            ) -> Result<Timex, NtpAdjTimeError>;
+            fn step_clock(&self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError>;
+            fn read_adjtime(&self) -> Result<Timex, NtpAdjTimeError>;
+        }
+    }
+    impl NtpAdjTime for MockNtpAdjTimeExt {
+        fn ntp_adjtime(&self, _tx: &mut Timex) -> i32 {
+            unimplemented!("mocks shouldn't call this")
+        }
+    }
+}
+
+#[cfg(test)]
+pub use mock_ntp_adj_time_ext::MockNtpAdjTimeExt;
+
 pub trait NtpAdjTimeExt: NtpAdjTime {
     /// Performs an adjustment of the clock, to apply the given phase correction
     /// and skew values, in a single system call.

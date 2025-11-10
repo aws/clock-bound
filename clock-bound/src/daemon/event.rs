@@ -7,7 +7,8 @@ pub use ntp::{Ntp, NtpData, Stratum, TryFromU8Error, ValidStratumLevel};
 mod phc;
 pub use phc::{Phc, PhcData};
 
-use crate::daemon::time::{TscCount, TscDiff};
+use crate::daemon::io::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
+use crate::daemon::time::{Clock, TscCount, TscDiff, clocks::RealTime};
 
 /// A time synchronization event handled by ClockBound
 pub enum Event {
@@ -37,7 +38,6 @@ pub trait TscRtt {
 }
 
 /// Struct containing a system clock read and a TSC read
-#[cfg(feature = "test-side-by-side")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SystemClockMeasurement {
     /// The system clock read
@@ -46,21 +46,13 @@ pub struct SystemClockMeasurement {
     pub tsc: TscCount,
 }
 
-#[cfg(feature = "test-side-by-side")]
 impl SystemClockMeasurement {
     /// Create a new [`SystemClockMeasurement`]
-    #[expect(clippy::missing_panics_doc, reason = "unwrap won't panic")]
-    #[expect(clippy::cast_possible_wrap)]
     pub fn now() -> Self {
-        use crate::daemon::io::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
-        use crate::daemon::time::Instant;
         let pre = read_timestamp_counter_begin();
-        let now = std::time::SystemTime::now();
+        let system_time = RealTime.get_time();
         let post = read_timestamp_counter_end();
-
-        let now = now.duration_since(std::time::UNIX_EPOCH).unwrap();
         let tsc = pre.midpoint(post);
-        let system_time = Instant::from_nanos(now.as_nanos() as i128);
         Self {
             system_time,
             tsc: TscCount::new(tsc.into()),
