@@ -5,12 +5,14 @@
 // Align with C naming conventions
 #![allow(non_camel_case_types)]
 
-use clock_bound::shm::{ClockStatus, ShmError, ShmReader};
-use clock_bound::vmclock::VMClock;
+use clock_bound::client::{
+    ClockBoundClient, ClockBoundError, ClockBoundErrorKind, ClockBoundNowResult,
+};
+use clock_bound::shm::ClockStatus;
 use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use core::ptr;
-use nix::sys::time::TimeSpec;
-use std::ffi::{CStr, c_char};
+use errno::Errno;
+use std::ffi::{CStr, CString, c_char};
 
 /// Error kind exposed over the FFI.
 ///
@@ -45,27 +47,31 @@ impl Default for clockbound_err {
     }
 }
 
-impl From<ShmError> for clockbound_err {
-    fn from(value: ShmError) -> Self {
-        let kind = match value {
-            ShmError::SyscallError(_, _) => clockbound_err_kind::CLOCKBOUND_ERR_SYSCALL,
-            ShmError::SegmentNotInitialized => {
+impl From<ClockBoundError> for clockbound_err {
+    fn from(value: ClockBoundError) -> Self {
+        let kind = match value.kind {
+            ClockBoundErrorKind::Syscall(_) => clockbound_err_kind::CLOCKBOUND_ERR_SYSCALL,
+            ClockBoundErrorKind::SegmentNotInitialized => {
                 clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_NOT_INITIALIZED
             }
-            ShmError::SegmentMalformed => clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_MALFORMED,
-            ShmError::CausalityBreach => clockbound_err_kind::CLOCKBOUND_ERR_CAUSALITY_BREACH,
-            ShmError::SegmentVersionNotSupported => {
+            ClockBoundErrorKind::SegmentMalformed => {
+                clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_MALFORMED
+            }
+            ClockBoundErrorKind::CausalityBreach => {
+                clockbound_err_kind::CLOCKBOUND_ERR_CAUSALITY_BREACH
+            }
+            ClockBoundErrorKind::SegmentVersionNotSupported => {
                 clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED
             }
         };
 
-        let errno = match value {
-            ShmError::SyscallError(errno, _) => errno.0,
+        let errno = match value.kind {
+            ClockBoundErrorKind::Syscall(_) => value.errno.0,
             _ => 0,
         };
 
-        let detail = match value {
-            ShmError::SyscallError(_, detail) => detail.as_ptr(),
+        let detail = match value.kind {
+            ClockBoundErrorKind::Syscall(detail) => detail.as_ptr(),
             _ => ptr::null(),
         };
 
@@ -84,33 +90,18 @@ impl From<ShmError> for clockbound_err {
 /// This allow to extend the context with extra information if needed.
 pub struct clockbound_ctx {
     err: clockbound_err,
-    clockbound_shm_reader: Option<ShmReader>,
-    vmclock: Option<VMClock>,
+    clockbound_client: ClockBoundClient,
 }
 
 impl clockbound_ctx {
     /// Obtain error-bounded timestamps and the `ClockStatus`.
-    ///
-    /// The result on success is a tuple of:
-    /// - `TimeSpec`: earliest timestamp.
-    /// - `TimeSpec`: latest timestamp.
-    /// - `ClockStatus`: Status of the clock.
-    fn now(&mut self) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
-        if let Some(ref mut clockbound_shm_reader) = self.clockbound_shm_reader {
-            match clockbound_shm_reader.snapshot() {
-                Ok(clockerrorbound_snapshot) => clockerrorbound_snapshot.now(),
-                Err(e) => Err(e),
-            }
-        } else if let Some(ref mut vmclock) = self.vmclock {
-            vmclock.now()
-        } else {
-            Err(ShmError::SegmentNotInitialized)
-        }
+    fn now(&mut self) -> Result<ClockBoundNowResult, ClockBoundError> {
+        self.clockbound_client.now()
     }
 }
 
 /// Clock status exposed over the FFI.
-///.
+///
 #[repr(C)]
 #[derive(Debug, PartialEq)]
 pub enum clockbound_clock_status {
@@ -141,6 +132,22 @@ pub struct clockbound_now_result {
     clock_status: clockbound_clock_status,
 }
 
+impl From<ClockBoundNowResult> for clockbound_now_result {
+    fn from(value: ClockBoundNowResult) -> Self {
+        let ClockBoundNowResult {
+            earliest,
+            latest,
+            clock_status,
+        } = value;
+
+        Self {
+            earliest: *earliest.as_ref(),
+            latest: *latest.as_ref(),
+            clock_status: clock_status.into(),
+        }
+    }
+}
+
 /// Open and create a reader to the Clockbound shared memory segment.
 ///
 /// Create a `ShmReader` pointing at the path passed to this call, and package it (and any other side
@@ -149,41 +156,18 @@ pub struct clockbound_now_result {
 ///
 /// # Safety
 /// Rely on the caller to pass valid pointers.
-#[expect(clippy::missing_panics_doc, reason = "todo")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_open(
     clockbound_shm_path: *const c_char,
     err: *mut clockbound_err,
 ) -> *mut clockbound_ctx {
-    // Safety: Rely on caller to pass valid pointers
-    let clockbound_shm_path_cstr = unsafe { CStr::from_ptr(clockbound_shm_path) };
-    let clockbound_shm_path = clockbound_shm_path_cstr
-        .to_str()
-        .expect("Failed to convert ClockBound shared memory path to str");
-    let vmclock_shm_path = VMCLOCK_SHM_DEFAULT_PATH;
-
-    let vmclock: VMClock = match VMClock::new(clockbound_shm_path, vmclock_shm_path) {
-        Ok(vmclock) => vmclock,
-        Err(e) => {
-            if !err.is_null() {
-                // Safety: rely on caller to pass valid pointers
-                unsafe { err.write(e.into()) }
-            }
-            return ptr::null_mut();
-        }
-    };
-
-    let ctx = clockbound_ctx {
-        err: clockbound_err::default(),
-        clockbound_shm_reader: None,
-        vmclock: Some(vmclock),
-    };
-
-    // Return the clockbound_ctx.
-    //
-    // The caller is responsible for calling clockbound_close() with this context which will
-    // perform memory clean-up.
-    Box::leak(Box::new(ctx))
+    // Safety: Convert the default path to a CString, and then an array of bytes. The conversion of
+    // the default path into a CString is unit tested and safe.
+    unsafe {
+        #[expect(clippy::missing_panics_doc, reason = "infallible")]
+        let vmclock_shm_path = CString::new(VMCLOCK_SHM_DEFAULT_PATH).unwrap();
+        clockbound_vmclock_open(clockbound_shm_path, vmclock_shm_path.as_ptr(), err)
+    }
 }
 
 /// Open and create a reader to the Clockbound shared memory segment and the VMClock shared memory segment.
@@ -194,7 +178,12 @@ pub unsafe extern "C" fn clockbound_open(
 ///
 /// # Safety
 /// Rely on the caller to pass valid pointers.
-#[expect(clippy::missing_panics_doc, reason = "todo")]
+///
+// # TODO
+// Currently handles errors when converting paths provided by the caller, but it is a bit of a
+// stretch to map a UTF conversion error to a `SegmentNotInitialized` kind. A better option would
+// be to have a more meaningful variant added to `ClockBoundErrorKind` but don't want to change the
+// C API just yet.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clockbound_vmclock_open(
     clockbound_shm_path: *const c_char,
@@ -203,36 +192,58 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
 ) -> *mut clockbound_ctx {
     // Safety: Rely on caller to pass valid pointers
     let clockbound_shm_path_cstr = unsafe { CStr::from_ptr(clockbound_shm_path) };
-    let clockbound_shm_path = clockbound_shm_path_cstr
-        .to_str()
-        .expect("Failed to convert ClockBound shared memory path to str");
-    // Safety: Rely on caller to pass valid pointers
-    let vmclock_shm_path_cstr = unsafe { CStr::from_ptr(vmclock_shm_path) };
-    let vmclock_shm_path = vmclock_shm_path_cstr
-        .to_str()
-        .expect("Failed to convert VMClock shared memory path to str");
-
-    let vmclock: VMClock = match VMClock::new(clockbound_shm_path, vmclock_shm_path) {
-        Ok(vmclock) => vmclock,
+    let clockbound_shm_path = match clockbound_shm_path_cstr.to_str() {
+        Ok(path) => path,
         Err(e) => {
             if !err.is_null() {
-                // Safety: Rely on caller to pass valid pointers
-                unsafe { err.write(e.into()) }
+                let cb_err = ClockBoundError {
+                    kind: ClockBoundErrorKind::SegmentNotInitialized,
+                    errno: Errno(22_i32), // EINVAL, Invalid argument.
+                    detail: format!("Failed to convert ClockBound shared memory path to str: {e}"),
+                };
+                // Safety: rely on caller to pass valid pointers
+                unsafe { err.write(cb_err.into()) }
             }
             return ptr::null_mut();
         }
     };
 
-    let ctx = clockbound_ctx {
-        err: clockbound_err::default(),
-        clockbound_shm_reader: None,
-        vmclock: Some(vmclock),
+    // Safety: Rely on caller to pass valid pointers
+    let vmclock_shm_path_cstr = unsafe { CStr::from_ptr(vmclock_shm_path) };
+    let vmclock_shm_path = match vmclock_shm_path_cstr.to_str() {
+        Ok(path) => path,
+        Err(e) => {
+            if !err.is_null() {
+                let cb_err = ClockBoundError {
+                    kind: ClockBoundErrorKind::SegmentNotInitialized,
+                    errno: Errno(22_i32), // EINVAL, Invalid argument.
+                    detail: format!("Failed to convert VMClock shared memory path to str: {e}"),
+                };
+                // Safety: rely on caller to pass valid pointers
+                unsafe { err.write(cb_err.into()) }
+            }
+            return ptr::null_mut();
+        }
     };
 
-    // Return the clockbound_ctx.
-    //
-    // The caller is responsible for calling clockbound_close() with this context which will
-    // perform memory clean-up.
+    let clockbound_client =
+        match ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path) {
+            Ok(client) => client,
+            Err(e) => {
+                if !err.is_null() {
+                    // Safety: rely on caller to pass valid pointers
+                    unsafe { err.write(e.into()) }
+                }
+                return ptr::null_mut();
+            }
+        };
+
+    // Return the clockbound_ctx. The caller is responsible for calling clockbound_close() with
+    // this context which will perform memory clean-up.
+    let ctx = clockbound_ctx {
+        err: clockbound_err::default(),
+        clockbound_client,
+    };
     Box::leak(Box::new(ctx))
 }
 
@@ -267,20 +278,18 @@ pub unsafe extern "C" fn clockbound_now(
     // Safety: Rely on caller to pass valid pointers
     let ctx = unsafe { &mut *ctx };
 
-    let (earliest, latest, clock_status) = match ctx.now() {
+    // Get earliest and latest timestamps, as well as the clock status
+    let cb_now = match ctx.now() {
         Ok(now) => now,
         Err(e) => {
             ctx.err = e.into();
             return &raw const ctx.err;
         }
     };
+
     // Safety: Rely on caller to pass valid pointers
     unsafe {
-        output.write(clockbound_now_result {
-            earliest: *earliest.as_ref(),
-            latest: *latest.as_ref(),
-            clock_status: clock_status.into(),
-        });
+        output.write(clockbound_now_result::from(cb_now));
     }
     ptr::null()
 }
@@ -427,7 +436,7 @@ mod t_ffi {
             assert!(errptr.is_null());
             assert_eq!(
                 now_result.clock_status,
-                clockbound_clock_status::CLOCKBOUND_STA_UNKNOWN
+                clockbound_clock_status::CLOCKBOUND_STA_DISRUPTED
             );
 
             let errptr = clockbound_close(ctx);

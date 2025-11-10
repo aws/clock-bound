@@ -8,7 +8,7 @@ pub use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use crate::vmclock::shm_reader::VMClockShmReader;
 use errno::Errno;
 use nix::sys::time::TimeSpec;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::path::Path;
 
 /// The `ClockBoundClient`
@@ -240,7 +240,7 @@ pub struct ClockBoundError {
 impl From<ShmError> for ClockBoundError {
     fn from(value: ShmError) -> Self {
         let kind = match value {
-            ShmError::SyscallError(_, _) => ClockBoundErrorKind::Syscall,
+            ShmError::SyscallError(_, detail) => ClockBoundErrorKind::Syscall(detail),
             ShmError::SegmentNotInitialized => ClockBoundErrorKind::SegmentNotInitialized,
             ShmError::SegmentMalformed => ClockBoundErrorKind::SegmentMalformed,
             ShmError::CausalityBreach => ClockBoundErrorKind::CausalityBreach,
@@ -270,7 +270,9 @@ impl From<ShmError> for ClockBoundError {
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub enum ClockBoundErrorKind {
-    Syscall,
+    // FIXME: the `detail` static CString is referenced on the Syscall variant. This is a temporary
+    // implementation until the FFI to C is changed to have the caller allocate memory for it.
+    Syscall(&'static CStr),
     SegmentNotInitialized,
     SegmentMalformed,
     CausalityBreach,
@@ -756,7 +758,7 @@ mod lib_tests {
         let shm_error = ShmError::SyscallError(errno, detail);
         // Perform the conversion.
         let clockbounderror = ClockBoundError::from(shm_error);
-        assert_eq!(ClockBoundErrorKind::Syscall, clockbounderror.kind);
+        assert_eq!(ClockBoundErrorKind::Syscall(detail), clockbounderror.kind);
         assert_eq!(errno, clockbounderror.errno);
         assert_eq!(detail_string, clockbounderror.detail);
     }
