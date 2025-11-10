@@ -87,7 +87,11 @@ impl fmt::Display for ShmError {
 impl Error for ShmError {}
 
 /// Definition of mutually exclusive clock status exposed to the reader.
-#[repr(C)]
+///
+/// Note the data layout is explicitly set to i32. This enum is a field of the ClockBound shared
+/// memory segment, and its representation *may* be different for C code compiled with specific
+/// flags. Making it explicit removes this risk and ambiguity.
+#[repr(i32)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ClockStatus {
     /// The status of the clock is unknown.
