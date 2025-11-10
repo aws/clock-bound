@@ -19,7 +19,7 @@ use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
     async_ring_buffer,
     event::{self, NtpData},
-    io::ntp::packet::Timestamp,
+    io::ntp::{packet::Timestamp, socket_ext::SocketExt},
     selected_clock::SelectedClockSource,
     time::tsc::TscCount,
 };
@@ -38,6 +38,8 @@ pub enum LinkLocalError {
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
     TscOrder { pre: u64, post: u64 },
+    #[error("IO failure on socket clear")]
+    SocketClear(#[source] io::Error),
 }
 
 /// Contains the data needed to run the link local runner.
@@ -88,6 +90,7 @@ impl LinkLocal {
     /// collected the NTP sample we construct the `Event` and push that event through
     /// to the ring buffer.
     async fn sample(&mut self) -> Result<event::Ntp, LinkLocalError> {
+        self.socket.clear().map_err(LinkLocalError::SocketClear)?;
         let (refid, stratum) = self.selected_clock.get();
         let packet = Packet::builder()
             .transmit_timestamp(Timestamp::new(0))

@@ -16,7 +16,10 @@ use crate::daemon::{
     event::{self, NtpData},
     io::{
         ClockDisruptionEvent, ControlRequest, DaemonInfo,
-        ntp::packet::{ExtensionField, Timestamp},
+        ntp::{
+            packet::{ExtensionField, Timestamp},
+            socket_ext::SocketExt,
+        },
     },
     selected_clock::SelectedClockSource,
     time::tsc::TscCount,
@@ -37,6 +40,8 @@ pub enum NTPSourceError {
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
     TscOrder { pre: u64, post: u64 },
+    #[error("IO failure on socket clear")]
+    SocketClear(#[source] io::Error),
 }
 
 /// Contains data used to run `NTPSource` runner.
@@ -89,6 +94,7 @@ impl NTPSource {
     /// collected the NTP sample we construct the `Event` and push that event through
     /// to the ring buffer.
     async fn sample(&mut self) -> Result<event::Ntp, NTPSourceError> {
+        self.socket.clear().map_err(NTPSourceError::SocketClear)?;
         let (refid, stratum) = self.selected_clock.get();
         let packet = Packet::builder()
             .transmit_timestamp(Timestamp::new(0))

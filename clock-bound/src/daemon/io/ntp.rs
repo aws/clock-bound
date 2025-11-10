@@ -6,6 +6,8 @@ use tokio::time::Duration;
 pub mod packet;
 pub use packet::{Fec2V1Value as DaemonInfo, Packet};
 
+pub mod socket_ext;
+
 use crate::daemon::{async_ring_buffer, event};
 
 pub const LINK_LOCAL_BURST_DURATION: Duration = Duration::from_secs(1);
