@@ -205,6 +205,24 @@ impl Stratum {
             _ => None,
         }
     }
+
+    /// Get the incremented stratum for this NTP client
+    ///
+    /// Returns this stratum + 1, capped at `Unsynchronized` (16).
+    ///
+    /// # Panics
+    /// Never panics - all incremented values are guaranteed to be valid.
+    #[must_use]
+    pub fn incremented(&self) -> Stratum {
+        let current_value = u8::from(*self);
+        match current_value {
+            0..=14 => Stratum::Level(
+                ValidStratumLevel::new(current_value + 1)
+                    .expect("value 1-15 should be valid stratum level"),
+            ),
+            _ => Stratum::Unsynchronized,
+        }
+    }
 }
 
 impl From<Stratum> for u8 {
@@ -262,6 +280,17 @@ impl ValidStratumLevel {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case(Stratum::Unspecified, Stratum::Level(ValidStratumLevel::new(1).unwrap()))]
+    #[case(Stratum::ONE, Stratum::TWO)]
+    #[case(Stratum::TWO, Stratum::Level(ValidStratumLevel::new(3).unwrap()))]
+    #[case(Stratum::Level(ValidStratumLevel::new(14).unwrap()), Stratum::Level(ValidStratumLevel::new(15).unwrap()))]
+    #[case(Stratum::Level(ValidStratumLevel::new(15).unwrap()), Stratum::Unsynchronized)]
+    #[case(Stratum::Unsynchronized, Stratum::Unsynchronized)]
+    fn stratum_incremented(#[case] input: Stratum, #[case] expected: Stratum) {
+        assert_eq!(input.incremented(), expected);
+    }
 
     #[test]
     fn valid_ntp_event() {

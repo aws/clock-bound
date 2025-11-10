@@ -1,5 +1,6 @@
 //! Link Local IO Source
 
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::{
     io,
@@ -18,6 +19,8 @@ use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
     async_ring_buffer,
     event::{self, NtpData},
+    io::ntp::packet::Timestamp,
+    selected_clock::SelectedClockSource,
     time::tsc::TscCount,
 };
 
@@ -44,9 +47,10 @@ pub struct LinkLocal {
     event_sender: async_ring_buffer::Sender<event::Ntp>,
     ctrl_receiver: mpsc::Receiver<ControlRequest>,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
-    ntp_buffer: [u8; Packet::SIZE],
+    ntp_buffer: [u8; Packet::MIN_SIZE],
     interval: Interval,
     mode: Mode,
+    selected_clock: Arc<SelectedClockSource>,
 }
 
 impl LinkLocal {
@@ -60,6 +64,7 @@ impl LinkLocal {
         event_sender: async_ring_buffer::Sender<event::Ntp>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
+        selected_clock: Arc<SelectedClockSource>,
     ) -> Self {
         let mut link_local_interval = interval(LINK_LOCAL_BURST_INTERVAL_DURATION);
         link_local_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -68,9 +73,10 @@ impl LinkLocal {
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
-            ntp_buffer: [0u8; Packet::SIZE],
+            ntp_buffer: [0u8; Packet::MIN_SIZE],
             interval: link_local_interval,
             mode: Mode::burst(),
+            selected_clock,
         }
     }
 
@@ -82,7 +88,12 @@ impl LinkLocal {
     /// collected the NTP sample we construct the `Event` and push that event through
     /// to the ring buffer.
     async fn sample(&mut self) -> Result<event::Ntp, LinkLocalError> {
-        let packet = Packet::new_request(0);
+        let (refid, stratum) = self.selected_clock.get();
+        let packet = Packet::builder()
+            .transmit_timestamp(Timestamp::new(0))
+            .stratum(stratum.incremented().into())
+            .reference_id(refid.into())
+            .build();
         packet.emit_bytes(&mut self.ntp_buffer);
 
         let sent_timestamp = read_timestamp_counter_begin();
@@ -198,6 +209,7 @@ impl LinkLocal {
             ntp_buffer: _ntp_buffer,
             interval: ll_interval,
             mode,
+            selected_clock: _selected_clock,
         } = self;
 
         *mode = Mode::burst();
@@ -217,6 +229,7 @@ impl LinkLocal {
             ntp_buffer: _ntp_buffer,
             interval: ll_interval,
             mode,
+            selected_clock: _selected_clock,
         } = self;
 
         *mode = Mode::Normal;
@@ -252,7 +265,11 @@ mod tests {
     use super::*;
     use crate::daemon::io::ntp;
 
-    async fn create_link_local() -> (LinkLocal, watch::Sender<ClockDisruptionEvent>) {
+    async fn create_link_local() -> (
+        LinkLocal,
+        watch::Sender<ClockDisruptionEvent>,
+        Arc<SelectedClockSource>,
+    ) {
         let (event_sender, _) = async_ring_buffer::create::<event::Ntp>(1);
         let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
             .await
@@ -263,20 +280,23 @@ mod tests {
                 disruption_marker: None,
             });
 
+        let selected_clock = Arc::new(SelectedClockSource::default());
         (
             LinkLocal::construct(
                 socket,
                 event_sender,
                 ctrl_receiver,
                 clock_disruption_receiver,
+                selected_clock.clone(),
             ),
             clock_disruption_sender,
+            selected_clock,
         )
     }
 
     #[tokio::test]
     async fn validate_to_burst_mode() {
-        let (mut link_local, _) = create_link_local().await;
+        let (mut link_local, _, _) = create_link_local().await;
         link_local.transition_to_burst_mode();
 
         assert!(matches!(link_local.mode, Mode::Burst(_)));
@@ -288,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_to_normal_mode() {
-        let (mut link_local, _) = create_link_local().await;
+        let (mut link_local, _, _) = create_link_local().await;
         link_local.transition_to_burst_mode();
         link_local.transition_to_normal_mode();
 

@@ -135,6 +135,12 @@ impl From<ClockSource> for u32 {
     }
 }
 
+impl From<ClockSource> for [u8; 4] {
+    fn from(source: ClockSource) -> [u8; 4] {
+        u32::from(source).to_be_bytes()
+    }
+}
+
 impl Display for ClockSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -237,9 +243,20 @@ mod tests {
     #[case(ClockSource::None, 0)]
     #[case(ClockSource::Phc, 0x5850_4843)] // "XPHC"
     #[case(ClockSource::VMClock, 0x5856_4D43)] // "XVMC"
-    #[case(ClockSource::Server(0xC0A8_0101), 0xC0A8_0101)]
+    #[case(ClockSource::Server(u32::from_be_bytes([192, 168, 1, 1])), 0xC0A8_0101)]
     fn clock_source_to_u32(#[case] source: ClockSource, #[case] expected: u32) {
         assert_eq!(u32::from(source), expected);
+    }
+
+    #[rstest]
+    #[case(ClockSource::Init, [73, 78, 73, 84])] // "INIT"
+    #[case(ClockSource::None, [0, 0, 0, 0])]
+    #[case(ClockSource::Phc, [88, 80, 72, 67])] // "XPHC"
+    #[case(ClockSource::VMClock, [88, 86, 77, 67])] // "XVMC"
+    #[case(ClockSource::Server(u32::from_be_bytes([192, 168, 1, 1])), [192, 168, 1, 1])]
+    #[case(ClockSource::Server(u32::from_be_bytes([169, 254, 169, 123])), [169, 254, 169, 123])]
+    fn clock_source_to_bytes(#[case] source: ClockSource, #[case] expected: [u8; 4]) {
+        assert_eq!(<[u8; 4]>::from(source), expected);
     }
 
     #[test]

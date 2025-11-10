@@ -912,6 +912,7 @@ name = "ntp-source"
 version = "2.0.3"
 dependencies = [
  "clock-bound",
+ "md5",
  "rand 0.9.2",
  "tokio",
  "tracing-subscriber",

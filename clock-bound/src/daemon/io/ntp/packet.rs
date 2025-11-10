@@ -122,7 +122,7 @@ impl Display for Packet {
 
 impl Packet {
     /// NTP packet size in bytes, without extensions
-    pub const SIZE: usize = 48;
+    pub const MIN_SIZE: usize = 48;
 
     /// Construct an NTP request packet using an arbitrary u32 as the transmit timestamp
     ///
@@ -162,9 +162,18 @@ impl Packet {
     /// Emit packet into bytes
     ///
     /// ## Panics
-    /// Panics if buffer is smaller than [`Packet::SIZE`]
+    /// Panics if buffer is smaller than total packet size
     pub fn emit_bytes(&self, mut buffer: &mut [u8]) {
         use bytes::BufMut;
+
+        let total_size = self.total_size();
+        assert!(
+            buffer.len() >= total_size,
+            "Buffer too small: {} < {}",
+            buffer.len(),
+            total_size
+        );
+
         let header: u8 =
             self.mode.to_bits() | self.version.get() << 3 | self.leap_indicator.to_bits() << 6;
         buffer.put_u8(header);
@@ -178,6 +187,20 @@ impl Packet {
         buffer.put_u64_ne(self.origin_timestamp.into_network_endian());
         buffer.put_u64_ne(self.receive_timestamp.into_network_endian());
         buffer.put_u64_ne(self.transmit_timestamp.into_network_endian());
+
+        for extension in &self.extensions {
+            extension.emit_bytes(buffer);
+        }
+    }
+
+    /// Calculate total packet size including extensions
+    pub fn total_size(&self) -> usize {
+        Self::MIN_SIZE
+            + self
+                .extensions
+                .iter()
+                .map(|ext| ext.length() as usize)
+                .sum::<usize>()
     }
 
     /// Parse from packet payload
@@ -356,12 +379,44 @@ mod test {
             .assert_within_error_bound(DateTime::from_timestamp(1738189694, 689379474).unwrap());
     }
 
-    #[test]
-    fn emit() {
+    #[rstest]
+    #[case::no_extensions(Packet::builder().build(), 48)]
+    #[case::with_fec2v1(
+        Packet::builder()
+            .extensions(vec![ExtensionField::Fec2V1(Fec2V1Value {
+                major_version: 2,
+                minor_version: 100,
+                startup_id: 0xdeadbeef,
+            })])
+            .build(),
+        64
+    )]
+    fn packet_total_size(#[case] packet: Packet, #[case] expected_size: usize) {
+        assert_eq!(packet.total_size(), expected_size);
+    }
+
+    #[rstest]
+    #[case::no_extensions({
         let (_, packet) = Packet::parse_from_bytes(NTP_PACKET).unwrap();
-        let mut output = vec![0u8; Packet::SIZE];
+        (packet, NTP_PACKET.to_vec())
+    })]
+    #[case::with_extension({
+        let (_, mut packet) = Packet::parse_from_bytes(NTP_PACKET).unwrap();
+        packet.extensions.push(ExtensionField::Fec2V1(Fec2V1Value {
+            major_version: 2,
+            minor_version: 100,
+            startup_id: 0xdeadbeef,
+        }));
+        let mut expected = NTP_PACKET.to_vec();
+        expected.extend_from_slice(&[0xFE, 0xC2, 0x00, 0x10]); // Extension header
+        expected.extend_from_slice(&[1, 2, 100, 0]); // FEC2V1 data
+        expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF]);
+        (packet, expected)
+    })]
+    fn emit(#[case] (packet, expected): (Packet, Vec<u8>)) {
+        let mut output = vec![0u8; packet.total_size()];
         packet.emit_bytes(&mut output);
-        assert_eq!(output, NTP_PACKET);
+        assert_eq!(output, expected);
     }
 
     #[test]

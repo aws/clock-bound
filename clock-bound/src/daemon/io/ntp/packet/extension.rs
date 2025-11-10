@@ -52,6 +52,9 @@ pub struct Fec2V1Value {
 }
 
 impl ExtensionField {
+    /// Minimum NTP extension field size in bytes
+    pub const MIN_SIZE: usize = 16;
+
     /// Returns the NTP extension Field Type as defined in RFC 5905
     ///
     /// A 16-bit value that uniquely identifies the specific extension field and its function

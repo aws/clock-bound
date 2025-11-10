@@ -86,6 +86,7 @@ impl SourceIO {
                     event_sender,
                     ctrl_receiver,
                     clock_disruption_receiver,
+                    self.selected_clock.clone(),
                 );
                 Some(Source {
                     state: SourceState::Initialized(link_local),
@@ -123,6 +124,7 @@ impl SourceIO {
                 event_sender,
                 ctrl_receiver,
                 clock_disruption_receiver,
+                self.selected_clock.clone(),
                 self.daemon_info.clone(),
             );
 
@@ -297,6 +299,7 @@ mod tests {
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
+            Arc::new(SelectedClockSource::default()),
         );
         let current_state = SourceState::Initialized(link_local);
         assert!(current_state.is_initialized())

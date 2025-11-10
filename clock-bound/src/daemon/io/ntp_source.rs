@@ -1,7 +1,6 @@
 //! NTP Server IO Source
 
-use std::net::SocketAddr;
-
+use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::{
     io,
@@ -15,7 +14,11 @@ use super::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 use crate::daemon::{
     async_ring_buffer,
     event::{self, NtpData},
-    io::{ClockDisruptionEvent, ControlRequest, DaemonInfo},
+    io::{
+        ClockDisruptionEvent, ControlRequest, DaemonInfo,
+        ntp::packet::{ExtensionField, Timestamp},
+    },
+    selected_clock::SelectedClockSource,
     time::tsc::TscCount,
 };
 
@@ -46,8 +49,9 @@ pub struct NTPSource {
     event_sender: async_ring_buffer::Sender<event::Ntp>,
     ctrl_receiver: mpsc::Receiver<ControlRequest>,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
-    ntp_buffer: [u8; Packet::SIZE],
+    ntp_buffer: [u8; Packet::MIN_SIZE + ExtensionField::MIN_SIZE],
     interval: Interval,
+    selected_clock: Arc<SelectedClockSource>,
     daemon_info: DaemonInfo,
 }
 
@@ -59,6 +63,7 @@ impl NTPSource {
         event_sender: async_ring_buffer::Sender<event::Ntp>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
+        selected_clock: Arc<SelectedClockSource>,
         daemon_info: DaemonInfo,
     ) -> Self {
         let mut ntp_source_interval = interval(NTP_SOURCE_INTERVAL_DURATION);
@@ -69,8 +74,9 @@ impl NTPSource {
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
-            ntp_buffer: [0u8; Packet::SIZE],
+            ntp_buffer: [0u8; Packet::MIN_SIZE + ExtensionField::MIN_SIZE],
             interval: ntp_source_interval,
+            selected_clock,
             daemon_info,
         }
     }
@@ -83,14 +89,23 @@ impl NTPSource {
     /// collected the NTP sample we construct the `Event` and push that event through
     /// to the ring buffer.
     async fn sample(&mut self) -> Result<event::Ntp, NTPSourceError> {
-        let packet = Packet::new_request(0);
+        let (refid, stratum) = self.selected_clock.get();
+        let packet = Packet::builder()
+            .transmit_timestamp(Timestamp::new(0))
+            .stratum(stratum.incremented().into())
+            .reference_id(refid.into())
+            .extensions(vec![ExtensionField::Fec2V1(self.daemon_info.clone())])
+            .build();
         packet.emit_bytes(&mut self.ntp_buffer);
 
         let sent_timestamp = read_timestamp_counter_begin();
 
         // Request and Receive NTP sample.
         let recv_packet_result = timeout(NTP_SOURCE_TIMEOUT, {
-            self.socket.send_to(&self.ntp_buffer, self.address).await?;
+            let packet_size = packet.total_size();
+            self.socket
+                .send_to(&self.ntp_buffer[..packet_size], self.address)
+                .await?;
             self.socket.recv_from(&mut self.ntp_buffer)
         })
         .await?;
