@@ -6,6 +6,7 @@ use clock_bound::daemon::{
     clock_parameters::ClockParameters,
     clock_sync_algorithm::ClockSyncAlgorithm,
     event,
+    receiver_stream::RoutableEvent,
     time::{Duration, Instant, tsc::Frequency},
 };
 
@@ -40,14 +41,14 @@ impl TestLinkLocal {
         scenario
             .events
             .iter()
-            .map(tester_event_to_ntp)
-            .map(|e| self.algorithm.feed_link_local(e.clone()).cloned())
+            .map(tester_event_to_link_local)
+            .map(|e| self.algorithm.feed(e.clone()).cloned())
             .collect()
     }
 
     pub fn feed_ntp(&mut self, event: &Event) -> Option<&ClockParameters> {
-        let ntp = tester_event_to_ntp(event);
-        self.algorithm.feed_link_local(ntp)
+        let ntp = tester_event_to_link_local(event);
+        self.algorithm.feed(ntp)
     }
 }
 
@@ -82,13 +83,13 @@ pub fn perfect_symmetric(scenario_duration: TrueDuration) -> Scenario {
     generator.create_scenario(full_model)
 }
 
-fn tester_event_to_ntp(e: &Event) -> event::Ntp {
+fn tester_event_to_link_local(e: &Event) -> RoutableEvent {
     use crate::time::CbBridge;
     let EventKind::Ntp(n) = &e.variants else {
         panic!("Expected NTP event, found {e:?}");
     };
 
-    event::Ntp::builder()
+    let event = event::Ntp::builder()
         .tsc_pre(e.client_tsc_pre_time)
         .tsc_post(e.client_tsc_post_time)
         .ntp_data(event::NtpData {
@@ -99,7 +100,9 @@ fn tester_event_to_ntp(e: &Event) -> event::Ntp {
             stratum: event::Stratum::ONE,
         })
         .build()
-        .unwrap()
+        .unwrap();
+
+    RoutableEvent::LinkLocal(event)
 }
 
 // now-ish. Oct 27 2025
@@ -110,7 +113,8 @@ mod tests {
     use std::sync::Arc;
 
     use clock_bound::daemon::{
-        clock_sync_algorithm::source::LinkLocal, selected_clock::SelectedClockSource,
+        clock_sync_algorithm::{Selector, source::LinkLocal},
+        selected_clock::SelectedClockSource,
         time::tsc::Skew,
     };
 
@@ -125,6 +129,7 @@ mod tests {
                 .link_local(LinkLocal::new(Skew::from_ppm(15.0)))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
+                .selector(Selector::new(Skew::from_ppm(15.0)))
                 .build(),
         );
         // running a week long scenario in -O0 is asking for trouble
@@ -139,6 +144,7 @@ mod tests {
                 .link_local(LinkLocal::new(Skew::from_ppm(15.0)))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
+                .selector(Selector::new(Skew::from_ppm(15.0)))
                 .build(),
         );
         let scenario = perfect_symmetric(TrueDuration::from_secs(1024 * 5));

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use clock_bound::daemon::{
-    clock_sync_algorithm::{ClockSyncAlgorithm, source},
+    clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
     selected_clock::SelectedClockSource,
     subscriber::PRIMER_TARGET,
 };
@@ -31,6 +31,7 @@ fn main() {
             .link_local(source::LinkLocal::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
+            .selector(Selector::new(Skew::from_ppm(15.0)))
             .build(),
     );
 
