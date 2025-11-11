@@ -39,7 +39,6 @@ unsafe impl Send for SafeShmWriter {}
 unsafe impl Sync for SafeShmWriter {}
 
 pub struct ClockStateWriter<T> {
-    clock_status: ClockStatus,
     clock_disruption_support_enabled: bool,
     shm_writer: T,
     max_drift_ppb: u32,
@@ -47,30 +46,27 @@ pub struct ClockStateWriter<T> {
 }
 
 #[cfg_attr(test, mockall::automock)]
-pub trait ClockStateWrite {
+pub trait ClockStateWrite: Send + Sync {
     fn handle_clock_parameters(
         &mut self,
         clock_parameters: &ClockParameters,
+        clock_status: ClockStatus,
         clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
     );
     fn handle_disruption(&mut self, new_disruption_marker: u64);
 }
 
-impl<T: ShmWrite> ClockStateWrite for ClockStateWriter<T> {
+impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
     /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector.
     ///
     /// # Panics
     /// Panics if error bound calculated exceeds `i64::MAX`
     fn handle_clock_parameters(
         &mut self,
-        // This is needed to tell ClockAdjust what frequency to use.
         clock_parameters: &ClockParameters,
-        // This is needed to tell ClockAdjust what phase offset to use.
+        clock_status: ClockStatus,
         clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
     ) {
-        // If we've received `ClockParameters`, it means we were able to construct a valid `ClockBound` clock.
-        // Thus, mark ourselves as synchronized.
-        self.clock_status = ClockStatus::Synchronized;
         let bound = get_bound(clock_parameters, clock_realtime_offset_and_rtt);
         // Unwrap safety: sane error bound should be less than `i64::MAX`
         let bound_nsec = i64::try_from(bound.as_nanos()).unwrap();
@@ -82,7 +78,7 @@ impl<T: ShmWrite> ClockStateWrite for ClockStateWriter<T> {
         // For the sake of backwards compatibility, we will have our initial/alpha release continue to work
         // using `CLOCK_MONOTONIC_COARSE`.
         let as_of = MonotonicCoarse.get_time();
-        self.write_shm(as_of, bound_nsec);
+        self.write_shm(as_of, bound_nsec, clock_status);
     }
 
     /// Handle a clock disruption event
@@ -95,17 +91,18 @@ impl<T: ShmWrite> ClockStateWrite for ClockStateWriter<T> {
         //
         // This makes it a compilation error if we add a new field to Self without handling it here
         let Self {
-            clock_status,
             clock_disruption_support_enabled: _,
             shm_writer: _,
             max_drift_ppb: _,
             disruption_marker,
         } = self;
-        *clock_status = ClockStatus::Disrupted;
         *disruption_marker = new_disruption_marker;
         let as_of = MonotonicCoarse.get_time();
-        info!("Writing `ClockStatus::Disrupted` to SHM with 0 `bound_nsec`");
-        self.write_shm(as_of, 0); // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
+        info!(
+            "Writing `ClockStatus::Disrupted` to SHM with 0 `bound_nsec` and `ClockStatus::Disrupted`"
+        );
+        // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
+        self.write_shm(as_of, 0, ClockStatus::Disrupted);
         tracing::info!("Handled clock disruption event");
     }
 }
@@ -120,7 +117,6 @@ impl<T: ShmWrite> ClockStateWriter<T> {
         disruption_marker: u64,
     ) -> Self {
         Self {
-            clock_status: ClockStatus::Unknown,
             clock_disruption_support_enabled,
             shm_writer,
             max_drift_ppb,
@@ -128,7 +124,7 @@ impl<T: ShmWrite> ClockStateWriter<T> {
         }
     }
 
-    fn write_shm(&mut self, as_of: Instant, bound_nsec: i64) {
+    fn write_shm(&mut self, as_of: Instant, bound_nsec: i64, clock_status: ClockStatus) {
         let void_after = as_of + Duration::from_secs(1000);
         // TODO: It may be worthwhile to add to this max drift ppb base the following components:
         // - any slew rate for phase correction, since kernel clocks are used on client side
@@ -144,7 +140,7 @@ impl<T: ShmWrite> ClockStateWriter<T> {
             bound_nsec,
             self.disruption_marker,
             max_drift_ppb,
-            self.clock_status,
+            clock_status,
             self.clock_disruption_support_enabled,
         );
         self.shm_writer.write(&ceb);
@@ -165,7 +161,7 @@ fn get_bound(
     let realtime_to_clockbound_measured_offset = clock_realtime_offset_and_rtt.offset();
     let measurement_rtt = clock_realtime_offset_and_rtt.rtt();
     let bound_between_realtime_and_clockbound =
-        realtime_to_clockbound_measured_offset + measurement_rtt / 2;
+        realtime_to_clockbound_measured_offset.abs() + measurement_rtt / 2;
     clock_parameters.clock_error_bound + bound_between_realtime_and_clockbound
 }
 
@@ -245,8 +241,7 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer.clock_status = clock_status;
-        clock_state_writer.write_shm(as_of, bound_nsec);
+        clock_state_writer.write_shm(as_of, bound_nsec, clock_status);
     }
 
     #[test]
@@ -263,6 +258,7 @@ mod tests {
         let clock_disruption_support_enabled = false;
         let max_drift_ppb = 0;
         let disruption_marker = 0;
+        let clock_status = ClockStatus::Synchronized;
         let mut shm_writer = MockShmWriter::new();
         shm_writer
             .expect_write()
@@ -272,7 +268,7 @@ mod tests {
                     && ceb.bound_nsec() == 2250
                     && ceb.disruption_marker() == disruption_marker
                     && ceb.max_drift_ppb() == max_drift_ppb
-                    && ceb.clock_status() == ClockStatus::Synchronized // If we're getting clock parameters, we're "Synchronized"
+                    && ceb.clock_status() == clock_status
                     && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
             })
             .times(1)
@@ -283,8 +279,11 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer
-            .handle_clock_parameters(&clock_parameters, clock_realtime_offset_and_rtt);
+        clock_state_writer.handle_clock_parameters(
+            &clock_parameters,
+            clock_status,
+            clock_realtime_offset_and_rtt,
+        );
     }
 
     #[test]
@@ -310,8 +309,11 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer
-            .handle_clock_parameters(&clock_parameters, clock_realtime_offset_and_rtt);
+        clock_state_writer.handle_clock_parameters(
+            &clock_parameters,
+            ClockStatus::Synchronized,
+            clock_realtime_offset_and_rtt,
+        );
     }
 
     #[rstest]
@@ -374,7 +376,6 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(initial_disruption_marker)
             .build();
-        assert_eq!(clock_state_writer.clock_status, ClockStatus::Unknown);
         assert_eq!(
             clock_state_writer.disruption_marker,
             initial_disruption_marker

@@ -31,10 +31,8 @@ use crate::daemon::{
 };
 
 #[cfg(not(feature = "test-side-by-side"))]
-use crate::daemon::clock_state::{
-    ClockState,
-    clock_adjust::{ClockAdjuster, KAPIClockAdjuster},
-    clock_state_writer::{ClockStateWriter, SafeShmWriter},
+use crate::daemon::{
+    async_ring_buffer::Sender, clock_parameters::ClockParameters, clock_state::ClockState,
 };
 use rand::{RngCore, rng};
 
@@ -47,16 +45,16 @@ use rand::{RngCore, rng};
 /// updated measurement the clock error bound will increase by 15 microseconds.
 ///
 /// This number is based on CPU spec sheet error tolerances
-const MAX_DISPERSION_GROWTH_PBB: u32 = 15_000;
+pub(crate) const MAX_DISPERSION_GROWTH_PPB: u32 = 15_000;
 
-const MAX_DISPERSION_GROWTH: Skew = Skew::from_ppb(MAX_DISPERSION_GROWTH_PBB as f64);
+const MAX_DISPERSION_GROWTH: Skew = Skew::from_ppb(MAX_DISPERSION_GROWTH_PPB as f64);
 
 pub struct Daemon {
     _io_front_end: io::SourceIO,
     clock_sync_algorithm: ClockSyncAlgorithm,
     receiver_stream: ReceiverStream,
     #[cfg(not(feature = "test-side-by-side"))]
-    clock_state: ClockState<ClockAdjuster<KAPIClockAdjuster>, ClockStateWriter<SafeShmWriter>>,
+    clock_state_tx: Sender<ClockParameters>,
 }
 
 impl Daemon {
@@ -69,7 +67,11 @@ impl Daemon {
             startup_id: rng().next_u64(),
         };
         #[cfg(not(feature = "test-side-by-side"))]
-        let clock_state = ClockState::construct();
+        let (clock_state_tx, mut clock_state) = {
+            let (tx, rx) = async_ring_buffer::create(1);
+            let clock_state = ClockState::construct(rx);
+            (tx, clock_state)
+        };
 
         let selected_clock = Arc::new(SelectedClockSource::default());
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
@@ -115,13 +117,16 @@ impl Daemon {
 
         // Start IO polling
         io_front_end.spawn_all();
-
+        #[cfg(not(feature = "test-side-by-side"))]
+        tokio::spawn(async move {
+            clock_state.run().await;
+        });
         Self {
             _io_front_end: io_front_end,
             clock_sync_algorithm,
             receiver_stream,
             #[cfg(not(feature = "test-side-by-side"))]
-            clock_state,
+            clock_state_tx,
         }
     }
 
@@ -140,7 +145,7 @@ impl Daemon {
     fn handle_event(&mut self, routable_event: RoutableEvent) {
         #[cfg(not(feature = "test-side-by-side"))]
         if let Some(params) = self.clock_sync_algorithm.feed(routable_event) {
-            self.clock_state.handle_clock_parameters(params);
+            self.clock_state_tx.send(params.clone()).unwrap();
         }
         #[cfg(feature = "test-side-by-side")]
         let _ = self.clock_sync_algorithm.feed(routable_event);

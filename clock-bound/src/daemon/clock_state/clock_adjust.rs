@@ -19,9 +19,12 @@
 //! leaving the system in a bad state if in the middle of a slew and the daemon is terminated.
 use tracing::{debug, error, info};
 
-use crate::daemon::{
-    clock_parameters::ClockParameters,
-    time::{Duration, tsc::Skew},
+use crate::{
+    daemon::{
+        clock_parameters::ClockParameters,
+        time::{Duration, tsc::Skew},
+    },
+    shm::ClockStatus,
 };
 
 mod ntp_adjtime;
@@ -36,6 +39,10 @@ pub(crate) trait ClockAdjust: Send + Sync {
         clock_parameters: &ClockParameters,
     );
     fn handle_disruption(&mut self, new_disruption_marker: u64);
+    /// Helper to find out if `CLOCK_REALTIME` is now reliable...
+    /// Any initial states can be considered unreliable, since we have not
+    /// corrected or been able to measure the clock at all.
+    fn get_clock_realtime_status(&self) -> ClockStatus;
 }
 
 pub struct ClockAdjuster<T> {
@@ -80,6 +87,21 @@ impl<T: NtpAdjTimeExt + Send + Sync> ClockAdjust for ClockAdjuster<T> {
         // TODO: We may want to reset `should_step` if we think it is acceptable to step the clock on next adjustment
         // for faster recovery..
         info!("Handled clock disruption event");
+    }
+
+    /// Helper to find out if `CLOCK_REALTIME` is now reliable...
+    /// Any initial states can be considered unreliable, since we have not
+    /// corrected or been able to measure the clock at all.
+    fn get_clock_realtime_status(&self) -> ClockStatus {
+        match &self.state {
+            State::Disrupted(_) => ClockStatus::Disrupted,
+            State::Initialized(_)
+            | State::InitialPhaseCorrectHalted { .. }
+            | State::InitialSnapshotRetrieved { .. } => ClockStatus::Unknown,
+            State::ClockAdjusted { .. }
+            | State::PhaseCorrectHalted { .. }
+            | State::SnapshotRetrieved { .. } => ClockStatus::Synchronized,
+        }
     }
 }
 
