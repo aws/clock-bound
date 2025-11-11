@@ -366,22 +366,22 @@ mod tests {
         Duration::from_secs(0) // Expected zero offset
     )]
     fn calculate_offset(
-        #[case] ntp_event: Phc,
+        #[case] phc_event: Phc,
         #[case] uncorrected_clock: UncorrectedClock,
         #[case] expected_offset: Duration,
     ) {
-        let client_midpoint = ntp_event.tsc_pre.midpoint(ntp_event.tsc_post);
+        let client_midpoint = phc_event.tsc_pre.midpoint(phc_event.tsc_post);
         println!(
             "tsc_pre: {:?}",
-            uncorrected_clock.time_at(ntp_event.tsc_pre)
+            uncorrected_clock.time_at(phc_event.tsc_pre)
         );
         println!(
             "tsc_post: {:?}",
-            uncorrected_clock.time_at(ntp_event.tsc_post)
+            uncorrected_clock.time_at(phc_event.tsc_post)
         );
         let client_midpoint = uncorrected_clock.time_at(client_midpoint);
         println!("client_midpoint: {client_midpoint:?}");
-        let offset = ntp_event.calculate_offset(uncorrected_clock);
+        let offset = phc_event.calculate_offset(uncorrected_clock);
 
         approx::assert_abs_diff_eq!(
             offset.as_seconds_f64(),

@@ -449,6 +449,9 @@ impl<T: Type> Neg for Diff<T> {
 }
 
 impl<T: FemtoType + Copy> Diff<T> {
+    /// zero-valued diff
+    pub const ZERO: Self = Self::new(0);
+
     /// Create a new [`Diff`] from the number of seconds
     pub const fn from_secs(secs: i128) -> Self {
         Self::new(secs * FEMTOS_PER_SEC)

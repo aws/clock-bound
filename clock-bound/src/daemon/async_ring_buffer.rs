@@ -147,7 +147,7 @@ impl<T> Receiver<T> {
     ///
     /// # Errors
     /// This method returns [`BufferClosedError`] if the paired [`Sender`] has dropped (destructed).
-    /// This can be used as a signal to clean up paired resources on this side of hte channel.
+    /// This can be used as a signal to clean up paired resources on this side of the channel.
     ///
     /// # Cancel safety
     /// This method is cancel safe.

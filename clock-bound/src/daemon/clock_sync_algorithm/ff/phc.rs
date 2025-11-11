@@ -39,7 +39,21 @@ impl Phc {
     /// `local_capacity` should be the number of data-points to span an SKM window.
     /// For example, if the source is expected to sample once every second, the `local_capacity`
     /// should have a max value of 1024.
-    pub fn new(local_capacity: NonZeroUsize, max_dispersion: Skew) -> Self {
+    ///
+    /// # Panics
+    /// Panics if poll duration is zero or greater than or equal to 512 seconds
+    pub fn new(poll_period: Duration, max_dispersion: Skew) -> Self {
+        assert!(poll_period > Duration::ZERO, "poll period must be positive");
+        assert!(
+            poll_period < event_buffer::Local::<event::Phc>::SKM_WINDOW / 2,
+            "Must be able to get at least 2 samples in local buffer"
+        );
+        let local_capacity =
+            event_buffer::Local::<event::Phc>::SKM_WINDOW.get() / poll_period.get();
+
+        // unwrap: input is bound and numerator is never 0
+        let local_capacity = NonZeroUsize::new(local_capacity.try_into().unwrap()).unwrap();
+
         Self {
             local: event_buffer::Local::new(local_capacity),
             estimate: event_buffer::Estimate::new(),
@@ -728,7 +742,7 @@ mod tests {
 
     #[test]
     fn feed_two_events() {
-        let mut ff = Phc::new(NonZeroUsize::new(5).unwrap(), Skew::from_ppm(15.0));
+        let mut ff = Phc::new(Duration::from_secs(50), Skew::from_ppm(15.0));
 
         let event1 = event::Phc::builder()
             .tsc_pre(TscCount::new(1_000_000_000))

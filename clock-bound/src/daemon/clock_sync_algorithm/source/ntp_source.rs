@@ -1,10 +1,9 @@
 //! NTP Source source
 
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
 
 use crate::daemon::clock_parameters::ClockParameters;
-use crate::daemon::clock_sync_algorithm::ff::{self, event_buffer};
+use crate::daemon::clock_sync_algorithm::ff;
 use crate::daemon::event;
 use crate::daemon::io::ntp::AWS_TEMP_PUBLIC_TIME_ADDRESSES;
 use crate::daemon::time::Duration;
@@ -22,21 +21,11 @@ pub struct NTPSource {
 impl NTPSource {
     const POLL_INTERVAL: Duration = Duration::from_secs(16);
 
-    // Poll every 16 seconds. Capacity is 1024 / 16 = 64
-    const CAPACITY: NonZeroUsize = {
-        let capacity =
-            event_buffer::Local::<()>::SKM_WINDOW.as_seconds() / Self::POLL_INTERVAL.as_seconds();
-        // Check on this >>>
-        assert!(capacity > 0);
-        #[expect(clippy::cast_sign_loss)]
-        NonZeroUsize::new(capacity as usize).unwrap()
-    };
-
     /// Create a new NTP Source reference clock source
     pub fn new(source_address: SocketAddr, max_dispersion: Skew) -> Self {
         Self {
             source_address,
-            inner: ff::Ntp::new(Self::CAPACITY, max_dispersion),
+            inner: ff::Ntp::new(Self::POLL_INTERVAL, max_dispersion),
         }
     }
 
@@ -46,7 +35,7 @@ impl NTPSource {
         for address in AWS_TEMP_PUBLIC_TIME_ADDRESSES {
             sources.push(Self {
                 source_address: address,
-                inner: ff::Ntp::new(Self::CAPACITY, max_dispersion),
+                inner: ff::Ntp::new(Self::POLL_INTERVAL, max_dispersion),
             });
         }
         sources

@@ -38,8 +38,9 @@ use rand::{RngCore, rng};
 
 /// The maximum dispersion growth every second
 ///
-/// Whenever a clock error bound measurement is made, that value increases by this value
-/// for every second that the measurement becomes stale.
+/// In between updates, the clock error bound continuously grows to take into account the worse
+/// case drift of the underlying oscillator. The maximum dispersion is the rate of growth applied
+/// to the last clock error bound update.
 ///
 /// If the value is 15,000 parts per billion, for example, then every second we go without an
 /// updated measurement the clock error bound will increase by 15 microseconds.
