@@ -302,11 +302,11 @@ impl Skew {
     /// This function constructs a `Skew` value from a given kernel value.
     pub fn from_timex_freq(timex_freq: i64) -> Self {
         if timex_freq >= 0 {
-            Self::from_ppm((timex_freq >> 16) as f64)
+            Self::from_ppm(timex_freq as f64 * 2.0_f64.powi(-16))
         } else {
             // i64::MAX = -i64::MIN - 1, prefer to `saturating_neg` rather
             // than overflow and wrap
-            -Self::from_ppm((timex_freq.saturating_neg() >> 16) as f64)
+            -Self::from_ppm(timex_freq.saturating_neg() as f64 * 2.0_f64.powi(-16))
         }
     }
 
@@ -567,6 +567,8 @@ mod tests {
         assert_eq!(skew.to_timex_freq(), 131072);
         let skew = Skew::from_ppm(-1.0);
         assert_eq!(skew.to_timex_freq(), -65536);
+        let skew = Skew::from_ppm(-1.5);
+        assert_eq!(skew.to_timex_freq(), -98304);
         let skew = Skew::from_ppm(0.0);
         assert_eq!(skew.to_timex_freq(), 0);
         let skew = Skew::from_ppm(f64::MAX);
@@ -581,6 +583,10 @@ mod tests {
         assert_abs_diff_eq!(skew.get(), 1.0 * 1.0e-6);
         let skew = Skew::from_timex_freq(-65536);
         assert_abs_diff_eq!(skew.get(), -1.0 * 1.0e-6);
+        let skew = Skew::from_timex_freq(98304);
+        assert_abs_diff_eq!(skew.get(), 1.5 * 1.0e-6);
+        let skew = Skew::from_timex_freq(-98304);
+        assert_abs_diff_eq!(skew.get(), -1.5 * 1.0e-6);
         let skew = Skew::from_timex_freq(0);
         assert_abs_diff_eq!(skew.get(), 0.0);
         let skew = Skew::from_timex_freq(i64::MAX);
