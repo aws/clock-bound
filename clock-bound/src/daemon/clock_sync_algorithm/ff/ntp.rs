@@ -3,10 +3,11 @@
 use std::num::NonZeroUsize;
 
 use super::event_buffer;
+use super::{CalculateThetaOutput, LocalPeriodAndError, UncorrectedClock};
 use crate::daemon::{
     clock_parameters::ClockParameters,
     clock_sync_algorithm::ff::event_buffer::FeedError,
-    clock_sync_algorithm::{ff::UncorrectedClock, ring_buffer::Quarter},
+    clock_sync_algorithm::ring_buffer::Quarter,
     event::{self, TscRtt},
     time::{
         Duration, TscDiff,
@@ -251,11 +252,10 @@ impl Ntp {
         // The midpoint creates an "averaging" effect. Since the goal is to minimize round trip, it ends
         // up creating a "worst of both worlds" scenario.
         //
-        // Anecdotally, we have seen some EC2 instances have more consistent link local RTT on the return
-        // path as opposed to the forward path.
-        //
         // A complex strategy we could take on would be to calculate error values on slopes and directly compare
         // these values in search. That kind of approach is TBD.
+        //
+        // TODO explore this a bit more.
         let ref_clock_diff = newest.data().server_send_time - oldest.data().server_send_time;
         let tsc_diff = newest.tsc_post() - oldest.tsc_post();
         tracing::trace!(?ref_clock_diff, ?tsc_diff, "estimate period inputs");
@@ -421,22 +421,6 @@ impl Ntp {
             clock_error_bound: max_ceb,
         }
     }
-}
-
-/// Used as the output for [`Ntp::calculate_local_period_and_error`]
-struct LocalPeriodAndError {
-    /// period calculation
-    period_local: Period,
-    /// period error
-    error: Period,
-}
-
-/// Output from [`Ntp::calculate_theta`]
-struct CalculateThetaOutput {
-    /// The time correction to be applied
-    theta: Duration,
-    /// The worst clock error bound used in calculation
-    clock_error_bound: Duration,
 }
 
 #[cfg(test)]
