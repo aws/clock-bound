@@ -2,7 +2,7 @@
 //! the timekeeping utilities internal to ClockBound.
 use clap::Parser;
 use clock_bound::daemon::{
-    clock_state::clock_adjust::{ClockAdjuster, KAPIClockAdjuster},
+    clock_state::clock_adjust::{KAPIClockAdjuster, NtpAdjTimeExt},
     time::{Duration, tsc::Skew},
 };
 
@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     let phase_correction = Duration::from_seconds_f64(args.phase_correction_seconds);
     let skew = Skew::from_ppm(args.skew_ppb as f64 * 1e-3);
 
-    let clock_adjuster = ClockAdjuster::new(KAPIClockAdjuster);
+    let clock_adjuster = KAPIClockAdjuster;
     clock_adjuster
         .adjust_clock(phase_correction, skew)
         .map_err(|e| anyhow::anyhow!(e))?;

@@ -32,6 +32,7 @@ impl NtpAdjTimeExt for KAPIClockAdjuster {}
 
 /// Noop Clock Adjuster, which doesn't actually adjust the clock parameters but just
 /// returns `TIME_OK`.
+#[expect(unused)]
 pub struct NoopClockAdjuster;
 impl NtpAdjTime for NoopClockAdjuster {
     fn ntp_adjtime(&self, _tx: &mut Timex) -> i32 {

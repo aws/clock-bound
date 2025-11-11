@@ -55,6 +55,16 @@ mockall = "0.13.1"
 mockall_double = "0.3.1"
 rstest = "0.26"
 tempfile = "3.13"
+tokio = { version = "1.47.1", features = [
+  "fs",
+  "net",
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "time",
+  "test-util",
+] }
 tracing-test = "0.2.5"
 
 [features]

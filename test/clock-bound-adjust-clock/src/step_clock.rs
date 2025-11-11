@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use clock_bound::daemon::{
-    clock_state::clock_adjust::{ClockAdjuster, KAPIClockAdjuster},
+    clock_state::clock_adjust::{KAPIClockAdjuster, NtpAdjTimeExt},
     time::Duration,
 };
 
@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
 
     let initial_time: DateTime<Utc> = Utc::now();
     println!("Initial time is {initial_time:?}");
-    let mut clock_adjuster = ClockAdjuster::new(KAPIClockAdjuster);
+    let clock_adjuster = KAPIClockAdjuster;
     clock_adjuster
         .step_clock(phase_correction)
         .map_err(|e| anyhow::anyhow!(e))?;

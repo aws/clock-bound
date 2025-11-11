@@ -82,7 +82,7 @@
 //! the `CLOCK_REALTIME` adjustment is steered precisely to where we would expect it to be.
 #![allow(clippy::doc_comment_double_space_linebreaks, reason = "hooray ascii")]
 use clock_bound::daemon::{
-    clock_state::clock_adjust::{ClockAdjuster, KAPIClockAdjuster, NtpAdjTimeError},
+    clock_state::clock_adjust::{KAPIClockAdjuster, NtpAdjTimeError, NtpAdjTimeExt},
     time::{Duration, Instant, tsc::Skew},
 };
 use tracing::info;
@@ -244,7 +244,7 @@ impl ClockAdjustTestParameters {
 #[allow(dead_code)]
 async fn reset_clock() -> Result<(), NtpAdjTimeError> {
     info!("Resetting clock parameters..");
-    let clock_adjuster = ClockAdjuster::new(KAPIClockAdjuster);
+    let clock_adjuster = KAPIClockAdjuster;
     // Reset the kernel NTP parameters.
     let phase_correction = Duration::from_millis(0);
     let skew = Skew::from_ppm(0.0);
