@@ -12,12 +12,17 @@ use clock_bound::shm::ClockStatus;
 use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use core::ptr;
 use errno::Errno;
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{CStr, CString, c_char, c_int};
+
+/// The size of the `c_char` array passed by the C caller to populate with error information.
+/// FIXME: for now this is hard-coded to match the C header definition.
+const CLOCKBOUND_ERROR_DETAIL_SIZE: usize = 128;
 
 /// Error kind exposed over the FFI.
 ///
 /// These have to match the C header definition.
 #[repr(C)]
+#[derive(Debug, PartialEq)]
 pub enum clockbound_err_kind {
     CLOCKBOUND_ERR_NONE,
     CLOCKBOUND_ERR_SYSCALL,
@@ -27,30 +32,10 @@ pub enum clockbound_err_kind {
     CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED,
 }
 
-/// Error struct exposed over the FFI.
-///
-/// The definition has to match the C header definition.
-#[repr(C)]
-pub struct clockbound_err {
-    pub kind: clockbound_err_kind,
-    pub errno: i32,
-    pub detail: *const c_char,
-}
-
-impl Default for clockbound_err {
-    fn default() -> Self {
-        clockbound_err {
-            kind: clockbound_err_kind::CLOCKBOUND_ERR_NONE,
-            errno: 0,
-            detail: ptr::null(),
-        }
-    }
-}
-
-impl From<ClockBoundError> for clockbound_err {
-    fn from(value: ClockBoundError) -> Self {
-        let kind = match value.kind {
-            ClockBoundErrorKind::Syscall(_) => clockbound_err_kind::CLOCKBOUND_ERR_SYSCALL,
+impl From<ClockBoundErrorKind> for clockbound_err_kind {
+    fn from(value: ClockBoundErrorKind) -> Self {
+        match value {
+            ClockBoundErrorKind::Syscall => clockbound_err_kind::CLOCKBOUND_ERR_SYSCALL,
             ClockBoundErrorKind::SegmentNotInitialized => {
                 clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_NOT_INITIALIZED
             }
@@ -63,22 +48,56 @@ impl From<ClockBoundError> for clockbound_err {
             ClockBoundErrorKind::SegmentVersionNotSupported => {
                 clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED
             }
+        }
+    }
+}
+
+/// Error struct exposed over the FFI.
+///
+/// The definition has to match the C header definition.
+#[repr(C)]
+pub struct clockbound_err {
+    pub kind: clockbound_err_kind,
+    pub errno: c_int,
+    pub detail: [c_char; CLOCKBOUND_ERROR_DETAIL_SIZE],
+}
+
+impl clockbound_err {
+    /// Write over the `clockbound_err` memory.
+    ///
+    /// This function is the interface between Rust `ClockBoundError` and its C version. The C
+    /// caller allocates memory and pass a pointer to the `clockbound_err`, which is updated here.
+    fn write_error(&mut self, error: ClockBoundError) {
+        // Kind and errno values are set
+        self.kind = clockbound_err_kind::from(error.kind);
+        self.errno = error.errno.0;
+
+        // The detail String has to be converted to a CString, ensuring it is null terminated.
+        let c_string = match CString::new(error.detail) {
+            Ok(c_string) => c_string,
+            Err(_) => {
+                // Hopefully, we never insert null terminators in the middle of an error message,
+                // and should never hit that branch.
+                CString::new("No detail available").unwrap()
+            }
         };
 
-        let errno = match value.kind {
-            ClockBoundErrorKind::Syscall(_) => value.errno.0,
-            _ => 0,
-        };
+        // Copy bytes including null terminator if it fits, and truncate if required.
+        // Possible cast from u8 (bytes) into i8 (c_char) but is platform dependent
+        let src_ptr = c_string.as_ptr();
+        let dst_ptr = self.detail.as_mut_ptr();
+        let copy_len = c_string
+            .as_bytes_with_nul()
+            .len()
+            .min(CLOCKBOUND_ERROR_DETAIL_SIZE);
+        // Safety: rely on the user passing a valid pointer
+        unsafe {
+            ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
+        }
 
-        let detail = match value.kind {
-            ClockBoundErrorKind::Syscall(detail) => detail.as_ptr(),
-            _ => ptr::null(),
-        };
-
-        clockbound_err {
-            kind,
-            errno,
-            detail,
+        // Ensure null termination if we had to truncate.
+        if copy_len >= CLOCKBOUND_ERROR_DETAIL_SIZE {
+            self.detail[CLOCKBOUND_ERROR_DETAIL_SIZE - 1] = 0;
         }
     }
 }
@@ -89,7 +108,6 @@ impl From<ClockBoundError> for clockbound_err {
 /// meant to rely on the content of this structure, only pass it back to flex the clockbound API.
 /// This allow to extend the context with extra information if needed.
 pub struct clockbound_ctx {
-    err: clockbound_err,
     clockbound_client: ClockBoundClient,
 }
 
@@ -195,14 +213,16 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
     let clockbound_shm_path = match clockbound_shm_path_cstr.to_str() {
         Ok(path) => path,
         Err(e) => {
-            if !err.is_null() {
-                let cb_err = ClockBoundError {
-                    kind: ClockBoundErrorKind::SegmentNotInitialized,
-                    errno: Errno(22_i32), // EINVAL, Invalid argument.
-                    detail: format!("Failed to convert ClockBound shared memory path to str: {e}"),
-                };
+            let cb_err = ClockBoundError {
+                kind: ClockBoundErrorKind::SegmentNotInitialized,
+                errno: Errno(22_i32), // EINVAL, Invalid argument.
+                detail: format!("Failed to convert ClockBound shared memory path to str: {e}"),
+            };
+            unsafe {
                 // Safety: rely on caller to pass valid pointers
-                unsafe { err.write(cb_err.into()) }
+                if let Some(rust_err) = err.as_mut() {
+                    rust_err.write_error(cb_err);
+                }
             }
             return ptr::null_mut();
         }
@@ -213,14 +233,17 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
     let vmclock_shm_path = match vmclock_shm_path_cstr.to_str() {
         Ok(path) => path,
         Err(e) => {
-            if !err.is_null() {
-                let cb_err = ClockBoundError {
-                    kind: ClockBoundErrorKind::SegmentNotInitialized,
-                    errno: Errno(22_i32), // EINVAL, Invalid argument.
-                    detail: format!("Failed to convert VMClock shared memory path to str: {e}"),
-                };
+            let cb_err = ClockBoundError {
+                kind: ClockBoundErrorKind::SegmentNotInitialized,
+                errno: Errno(22_i32), // EINVAL, Invalid argument.
+                detail: format!("Failed to convert VMClock shared memory path to str: {e}"),
+            };
+
+            unsafe {
                 // Safety: rely on caller to pass valid pointers
-                unsafe { err.write(cb_err.into()) }
+                if let Some(rust_err) = err.as_mut() {
+                    rust_err.write_error(cb_err);
+                }
             }
             return ptr::null_mut();
         }
@@ -229,10 +252,12 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
     let clockbound_client =
         match ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path) {
             Ok(client) => client,
-            Err(e) => {
-                if !err.is_null() {
+            Err(cb_err) => {
+                unsafe {
                     // Safety: rely on caller to pass valid pointers
-                    unsafe { err.write(e.into()) }
+                    if let Some(rust_err) = err.as_mut() {
+                        rust_err.write_error(cb_err);
+                    }
                 }
                 return ptr::null_mut();
             }
@@ -240,10 +265,7 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
 
     // Return the clockbound_ctx. The caller is responsible for calling clockbound_close() with
     // this context which will perform memory clean-up.
-    let ctx = clockbound_ctx {
-        err: clockbound_err::default(),
-        clockbound_client,
-    };
+    let ctx = clockbound_ctx { clockbound_client };
     Box::leak(Box::new(ctx))
 }
 
@@ -255,7 +277,27 @@ pub unsafe extern "C" fn clockbound_vmclock_open(
 ///
 /// Rely on the caller to pass valid pointers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn clockbound_close(ctx: *mut clockbound_ctx) -> *const clockbound_err {
+pub unsafe extern "C" fn clockbound_close(
+    ctx: *mut clockbound_ctx,
+    err: *mut clockbound_err,
+) -> *const clockbound_err {
+    if ctx.is_null() {
+        let cb_err = ClockBoundError {
+            kind: ClockBoundErrorKind::SegmentNotInitialized,
+            errno: Errno(22_i32), // EINVAL, Invalid argument.
+            detail: "Cannot close a NULL context".to_string(),
+        };
+
+        // Safety: rely on caller to pass valid pointers
+        unsafe {
+            if let Some(rust_err) = err.as_mut() {
+                rust_err.write_error(cb_err);
+                return err;
+            }
+        }
+        return ptr::null();
+    }
+
     // Safety: Rely on caller to pass valid pointers
     std::mem::drop(unsafe { Box::from_raw(ctx) });
     ptr::null()
@@ -274,6 +316,7 @@ pub unsafe extern "C" fn clockbound_close(ctx: *mut clockbound_ctx) -> *const cl
 pub unsafe extern "C" fn clockbound_now(
     ctx: *mut clockbound_ctx,
     output: *mut clockbound_now_result,
+    err: *mut clockbound_err,
 ) -> *const clockbound_err {
     // Safety: Rely on caller to pass valid pointers
     let ctx = unsafe { &mut *ctx };
@@ -281,9 +324,14 @@ pub unsafe extern "C" fn clockbound_now(
     // Get earliest and latest timestamps, as well as the clock status
     let cb_now = match ctx.now() {
         Ok(now) => now,
-        Err(e) => {
-            ctx.err = e.into();
-            return &raw const ctx.err;
+        Err(cb_err) => {
+            unsafe {
+                // Safety: rely on caller to pass valid pointers
+                if let Some(rust_err) = err.as_mut() {
+                    rust_err.write_error(cb_err);
+                }
+            }
+            return err;
         }
     };
 
@@ -380,6 +428,78 @@ mod t_ffi {
         };
     }
 
+    /// Assert that the clockbound_err is updated with the correct values.
+    #[test]
+    fn test_clockbound_err_write_from() {
+        let cb_error = ClockBoundError {
+            kind: ClockBoundErrorKind::Syscall,
+            errno: Errno(42),
+            detail: String::from("Something weird happened"),
+        };
+        let mut err: clockbound_err = unsafe { std::mem::zeroed() };
+        let raw_ptr = &mut err;
+
+        // Write the ClockBoundError onto the clockbound_err
+        raw_ptr.write_error(cb_error);
+
+        assert_eq!(err.kind, clockbound_err_kind::CLOCKBOUND_ERR_SYSCALL);
+        assert_eq!(err.errno, 42 as c_int);
+
+        let c_char_ptr: *const c_char = err.detail.as_ptr();
+        let c_str: &CStr = unsafe { CStr::from_ptr(c_char_ptr) };
+        let c_string: CString = CString::from(c_str);
+        assert_eq!(c_string, CString::new("Something weird happened").unwrap());
+    }
+
+    /// Assert that the clockbound_err is updated with the correct values, but truncate message
+    #[test]
+    fn test_clockbound_err_write_from_truncated() {
+        let cb_error = ClockBoundError {
+            kind: ClockBoundErrorKind::SegmentMalformed,
+            errno: Errno(42),
+            detail: "a".repeat(2 * CLOCKBOUND_ERROR_DETAIL_SIZE),
+        };
+        let mut err: clockbound_err = unsafe { std::mem::zeroed() };
+        let raw_ptr = &mut err;
+
+        // Write the ClockBoundError onto the clockbound_err
+        raw_ptr.write_error(cb_error);
+
+        assert_eq!(
+            err.kind,
+            clockbound_err_kind::CLOCKBOUND_ERR_SEGMENT_MALFORMED
+        );
+        assert_eq!(err.errno, 42 as c_int);
+
+        for c in 1..(CLOCKBOUND_ERROR_DETAIL_SIZE - 1) {
+            assert_eq!(err.detail[c], 'a' as c_char);
+        }
+        assert_eq!(err.detail[CLOCKBOUND_ERROR_DETAIL_SIZE - 1], 0);
+    }
+
+    /// Assert that the clock status is converted correctly between representations. This is a bit
+    /// of a "useless" unit test since it mimics the code closely. However, this is a core
+    /// property we give to the callers, so may as well.
+    #[test]
+    fn test_clock_status_conversion() {
+        assert_eq!(
+            clockbound_clock_status::from(ClockStatus::Unknown),
+            clockbound_clock_status::CLOCKBOUND_STA_UNKNOWN
+        );
+        assert_eq!(
+            clockbound_clock_status::from(ClockStatus::Synchronized),
+            clockbound_clock_status::CLOCKBOUND_STA_SYNCHRONIZED
+        );
+        assert_eq!(
+            clockbound_clock_status::from(ClockStatus::FreeRunning),
+            clockbound_clock_status::CLOCKBOUND_STA_FREE_RUNNING
+        );
+        assert_eq!(
+            clockbound_clock_status::from(ClockStatus::Disrupted),
+            clockbound_clock_status::CLOCKBOUND_STA_DISRUPTED
+        );
+    }
+
     /// Assert that the shared memory segment can be open, read and and closed. Only a sanity test.
     #[test]
     fn test_clockbound_vmclock_open_sanity_check() {
@@ -421,8 +541,9 @@ mod t_ffi {
                 .as_bytes(),
         )
         .unwrap();
+
         unsafe {
-            let mut err: clockbound_err = Default::default();
+            let mut err: clockbound_err = std::mem::zeroed();
             let mut now_result: clockbound_now_result = std::mem::zeroed();
 
             let ctx = clockbound_vmclock_open(
@@ -432,38 +553,42 @@ mod t_ffi {
             );
             assert!(!ctx.is_null());
 
-            let errptr = clockbound_now(ctx, &mut now_result);
+            let errptr = clockbound_now(ctx, &mut now_result, &mut err);
             assert!(errptr.is_null());
             assert_eq!(
                 now_result.clock_status,
                 clockbound_clock_status::CLOCKBOUND_STA_DISRUPTED
             );
 
-            let errptr = clockbound_close(ctx);
+            let errptr = clockbound_close(ctx, &mut err);
             assert!(errptr.is_null());
         }
     }
 
-    /// Assert that the clock status is converted correctly between representations. This is a bit
-    /// of a "useless" unit test since it mimics the code closely. However, this is a core
-    /// property we give to the callers, so may as well.
+    /// Assert that closing the context survives being passed a NULL pointer.
     #[test]
-    fn test_clock_status_conversion() {
-        assert_eq!(
-            clockbound_clock_status::from(ClockStatus::Unknown),
-            clockbound_clock_status::CLOCKBOUND_STA_UNKNOWN
-        );
-        assert_eq!(
-            clockbound_clock_status::from(ClockStatus::Synchronized),
-            clockbound_clock_status::CLOCKBOUND_STA_SYNCHRONIZED
-        );
-        assert_eq!(
-            clockbound_clock_status::from(ClockStatus::FreeRunning),
-            clockbound_clock_status::CLOCKBOUND_STA_FREE_RUNNING
-        );
-        assert_eq!(
-            clockbound_clock_status::from(ClockStatus::Disrupted),
-            clockbound_clock_status::CLOCKBOUND_STA_DISRUPTED
-        );
+    fn test_clockbound_close() {
+        // Should not crash on everything being NULL
+        unsafe {
+            assert_eq!(
+                ptr::null(),
+                clockbound_close(ptr::null_mut(), ptr::null_mut())
+            );
+        }
+
+        // ... and should get some info if an error is provided
+        unsafe {
+            let mut err: clockbound_err = std::mem::zeroed();
+            let raw_err_ptr: *const clockbound_err = &err;
+            assert_eq!(raw_err_ptr, clockbound_close(ptr::null_mut(), &mut err));
+
+            let c_char_ptr: *const c_char = err.detail.as_ptr();
+            let c_str: &CStr = CStr::from_ptr(c_char_ptr);
+            let c_string: CString = CString::from(c_str);
+            assert_eq!(
+                c_string,
+                CString::new("Cannot close a NULL context").unwrap()
+            );
+        }
     }
 }

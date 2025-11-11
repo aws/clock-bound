@@ -4,43 +4,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "clockbound.h"
 
 int CALL_COUNT = 100000000;
-
-/*
- * Helper function to print out errors returned by libclockbound.
- */
-void print_clockbound_err(char const* detail, const clockbound_err *err) {
-        fprintf(stderr, "%s: ", detail);
-        switch (err->kind) {
-                case CLOCKBOUND_ERR_NONE:
-                        fprintf(stderr, "Success\n");
-                        break;
-                case CLOCKBOUND_ERR_SYSCALL:
-                        if (err->detail) {
-                                fprintf(stderr, "%s: %s\n", err->detail, strerror(err->sys_errno));
-                        } else {
-                                fprintf(stderr, "%s\n", strerror(err->sys_errno));
-                        }
-                        break;
-                case CLOCKBOUND_ERR_SEGMENT_NOT_INITIALIZED:
-                        fprintf(stderr, "Segment not initialized\n");
-                        break;
-                case CLOCKBOUND_ERR_SEGMENT_MALFORMED:
-                        fprintf(stderr, "Segment malformed\n");
-                        break;
-                case CLOCKBOUND_ERR_CAUSALITY_BREACH:
-                        fprintf(stderr, "Segment and clock reads out of order\n");
-                        break;
-                case CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED:
-                        fprintf(stderr, "Segment version not supported\n");
-                        break;
-                default:
-                        fprintf(stderr, "Unexpected error\n");
-        }
-}
 
 /*
  * Helper function to convert clock status codes into a human readable version.
@@ -60,6 +28,52 @@ char * format_clock_status(clockbound_clock_status status) {
         }
 }
 
+/*
+ * Helper function to convert clockbound error kind codes into a human readable version.
+ */
+char * format_err_kind(clockbound_err_kind kind) {
+        switch (kind) {
+                case CLOCKBOUND_ERR_NONE:
+                        return "No error";
+                case CLOCKBOUND_ERR_SYSCALL:
+                        return "Syscall error";
+                case CLOCKBOUND_ERR_SEGMENT_NOT_INITIALIZED:
+                        return "Segment not initialized error";
+                case CLOCKBOUND_ERR_SEGMENT_MALFORMED:
+                        return "Segment malformed error";
+                case CLOCKBOUND_ERR_CAUSALITY_BREACH:
+                        return "Causality breach error";
+                case CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED:
+                        return "Segment version not supported error";
+                default:
+                        return "BAD ERROR KIND";
+        }
+}
+
+/*
+ * Helper function to print out errors returned by libclockbound.
+ */
+void print_clockbound_err(const clockbound_err *err) {
+        if (err == NULL) {
+                return;
+        }
+        switch (err->kind) {
+                case CLOCKBOUND_ERR_SYSCALL:
+                        fprintf(stderr, "%s(%d): %s: %s\n", format_err_kind(err->kind),
+                                err->errno, strerror(err->errno), err->detail);
+                        break;
+                case CLOCKBOUND_ERR_NONE:
+                case CLOCKBOUND_ERR_SEGMENT_MALFORMED:
+                case CLOCKBOUND_ERR_SEGMENT_NOT_INITIALIZED:
+                case CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED:
+                case CLOCKBOUND_ERR_CAUSALITY_BREACH:
+                        fprintf(stderr, "%s(%d): %s\n", format_err_kind(err->kind),
+                                err->errno, err->detail);
+                        break;
+                default:
+                        fprintf(stderr, "Unexpected error\n");
+        }
+}
 
 /*
  * Helper function to calculate a time interval between two timestamps held in a struct timespec.
@@ -80,25 +94,25 @@ int main(int argc, char *argv[]) {
         char const* clockbound_shm_path = CLOCKBOUND_SHM_DEFAULT_PATH;
         char const* vmclock_shm_path = VMCLOCK_SHM_DEFAULT_PATH;
         clockbound_ctx *ctx;
-        clockbound_err open_err;
-        clockbound_err const* err;
+        clockbound_err cb_err;
+        clockbound_err *err;
         clockbound_now_result first;
         clockbound_now_result last;
         double dur;
         int i;
 
         // Open clockbound and retrieve a context on success.
-        ctx = clockbound_vmclock_open(clockbound_shm_path, vmclock_shm_path, &open_err);
+        ctx = clockbound_vmclock_open(clockbound_shm_path, vmclock_shm_path, &cb_err);
         if (ctx == NULL) {
-                print_clockbound_err("clockbound_open", &open_err);
+                print_clockbound_err(&cb_err);
                 return 1;
         }
 
         // Read the current time reported by the system clock, but as a time interval within which
         // true time exists.
-        err = clockbound_now(ctx, &first);
+        err = clockbound_now(ctx, &first, &cb_err);
         if (err) {
-                print_clockbound_err("clockbound_now", err);
+                print_clockbound_err(err);
                 return 1;
         }
 
@@ -112,23 +126,22 @@ int main(int argc, char *argv[]) {
         // Very naive performance benchmark. This is VERY naive, your mileage may vary.
         i = CALL_COUNT;
         while (i > 0) {
-                err = clockbound_now(ctx, &last);
+                err = clockbound_now(ctx, &last, &cb_err);
                 if (err) {
-                        print_clockbound_err("clockbound_now", err);
+                        print_clockbound_err(err);
                         return 1;
                 }
                 i--;
         }
 
         dur = duration(first.earliest, last.earliest);
-        printf("It took %.9lf seconds to call clock bound %d times (%d tps))",
+        printf("It took %.9lf seconds to call clock bound %d times (%d tps))\n",
                 dur, CALL_COUNT, (int) (CALL_COUNT / dur));
 
-
         // Finally, close clockbound.
-        err = clockbound_close(ctx);
+        err = clockbound_close(ctx, &cb_err);
         if (err) {
-                print_clockbound_err("clockbound_close", err);
+                print_clockbound_err(err);
                 return 1;
         }
 

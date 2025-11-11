@@ -4,6 +4,7 @@
 
 #include <time.h>
 
+#define CLOCKBOUND_ERROR_DETAIL_SIZE 128
 #define CLOCKBOUND_SHM_DEFAULT_PATH "/var/run/clockbound/shm0"
 #define VMCLOCK_SHM_DEFAULT_PATH "/dev/vmclock0"
 
@@ -19,30 +20,34 @@ typedef struct clockbound_ctx clockbound_ctx;
  * Enumeration of error codes.
  */
 typedef enum clockbound_err_kind {
-        /* No error. */
-        CLOCKBOUND_ERR_NONE,
-        /* Error returned by a syscall. */
-        CLOCKBOUND_ERR_SYSCALL,
-        /* A shared memory segment has not been initialized. */
-        CLOCKBOUND_ERR_SEGMENT_NOT_INITIALIZED,
-        /* A shared memory segment is initialized but malformed. */
-        CLOCKBOUND_ERR_SEGMENT_MALFORMED,
-        /* The system clock and shared memory segment reads do match expected order. */
-        CLOCKBOUND_ERR_CAUSALITY_BREACH,
-        /* A shared memory segment has a version format that is not supported. */
-        CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED,
+	/* No error. */
+	CLOCKBOUND_ERR_NONE,
+	/* Error returned by a syscall. */
+	CLOCKBOUND_ERR_SYSCALL,
+	/* A shared memory segment has not been initialized. */
+	CLOCKBOUND_ERR_SEGMENT_NOT_INITIALIZED,
+	/* A shared memory segment is initialized but malformed. */
+	CLOCKBOUND_ERR_SEGMENT_MALFORMED,
+	/* The system clock and shared memory segment reads do match expected order. */
+	CLOCKBOUND_ERR_CAUSALITY_BREACH,
+	/* A shared memory segment has a version format that is not supported. */
+	CLOCKBOUND_ERR_SEGMENT_VERSION_NOT_SUPPORTED,
 } clockbound_err_kind;
 
 /*
  * Error type structure.
  */
 typedef struct clockbound_err {
-        /* The type of error which occurred. */
-        clockbound_err_kind kind;
-        /* For CLOCKBOUND_ERR_SYSCALL, the errno which was returned by the system. */
-        int sys_errno;
-        /* For CLOCKBOUND_ERR_SYSCALL, the name of the syscall which errored. May be NULL. */
-        const char* detail;
+	/* The type of error which occurred. */
+	clockbound_err_kind kind;
+	/*
+	 * For CLOCKBOUND_ERR_SYSCALL, the errno which was returned by the underlying
+	 * system call. See documentation for the interpretation of errno for other
+	 * clockbound_err_kind variants.
+	 */
+	int errno;
+	/* Human readable context about the error, if available. */
+	const char detail[CLOCKBOUND_ERROR_DETAIL_SIZE];
 } clockbound_err;
 
 /*
@@ -72,7 +77,7 @@ typedef struct clockbound_now_result {
  * Open a new context using the ClockBound daemon-client segment at `clockbound_shm_path`
  * and the VMClock segment at the default VMClock segment path.
  *
- * Returns a newly-allocated context on success, and NULL on failure. If err is
+ * Returns a newly-allocated context on success, and NULL on failure. If `err` is
  * non-null, fills `*err` with error details.
  */
 clockbound_ctx* clockbound_open(char const* clockbound_shm_path, clockbound_err *err);
@@ -81,29 +86,35 @@ clockbound_ctx* clockbound_open(char const* clockbound_shm_path, clockbound_err 
  * Open a new context using the ClockBound daemon-client segment at `clockbound_shm_path`
  * and the VMClock segment at `vmclock_shm_path`.
  *
- * Returns a newly-allocated context on success, and NULL on failure. If err is
+ * Returns a newly-allocated context on success, and NULL on failure. If `err` is
  * non-null, fills `*err` with error details.
  */
-clockbound_ctx* clockbound_vmclock_open(char const* clockbound_shm_path, char const* vmclock_shm_path, clockbound_err *err);
+clockbound_ctx* clockbound_vmclock_open(char const* clockbound_shm_path,
+		char const* vmclock_shm_path, clockbound_err *err);
 
 /*
  * Close and deallocates the context.
  *
- * Returns NULL on success, or a pointer to error details on failure.
+ * Returns NULL on success, or a pointer to `err` on failure. If err is non-null, fills
+ * `*err` with error details.
  * */
-clockbound_err const* clockbound_close(clockbound_ctx *ctx);
+clockbound_err* clockbound_close(clockbound_ctx *ctx, clockbound_err *err);
 
 /*
- * Return the Clock Error Bound interval.
+ * Retrieve the Clock Error Bound interval.
  *
  * This function is the equivalent of `clock_gettime(CLOCK_REALTIME)` but in the context of
  * ClockBound. It reads the current time from the system clock (C(t)), and calculate the CEB at this
  * instant. This allows to return a pair of timespec structures that define the interval
  *     [(C(t) - CEB), (C(t) + CEB)]
- * in which true time exists. The call also populate an enum capturing the underlying clock status.
+ * in which true time exists.
  *
+ * The call also populate `res` with the underlying clock status.
  * The clock status MUST be checked to ensure the bound on clock error is trustworthy.
+ *
+ * Returns NULL on success, or a pointer to `err` on failure. If err is non-null, fills
+ * `*err` with error details.
  */
-clockbound_err const* clockbound_now(clockbound_ctx *ctx, clockbound_now_result *res);
+clockbound_err* clockbound_now(clockbound_ctx *ctx, clockbound_now_result *res, clockbound_err *err);
 
 #endif

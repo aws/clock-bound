@@ -42,6 +42,9 @@ macro_rules! syserror {
 }
 
 /// Error condition returned by all low-level ClockBound APIs.
+///
+// FIXME: the `detail` static CString referenced on the Syscall variant can be changed. The C
+// caller now pass memory over the FFI interface.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShmError {
     /// A system call failed.

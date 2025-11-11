@@ -8,7 +8,7 @@ pub use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use crate::vmclock::shm_reader::VMClockShmReader;
 use errno::Errno;
 use nix::sys::time::TimeSpec;
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::path::Path;
 
 /// The `ClockBoundClient`
@@ -240,7 +240,7 @@ pub struct ClockBoundError {
 impl From<ShmError> for ClockBoundError {
     fn from(value: ShmError) -> Self {
         let kind = match value {
-            ShmError::SyscallError(_, detail) => ClockBoundErrorKind::Syscall(detail),
+            ShmError::SyscallError(_, _) => ClockBoundErrorKind::Syscall,
             ShmError::SegmentNotInitialized => ClockBoundErrorKind::SegmentNotInitialized,
             ShmError::SegmentMalformed => ClockBoundErrorKind::SegmentMalformed,
             ShmError::CausalityBreach => ClockBoundErrorKind::CausalityBreach,
@@ -257,7 +257,7 @@ impl From<ShmError> for ClockBoundError {
                 .to_str()
                 .expect("Failed to convert CStr to str")
                 .to_owned(),
-            _ => String::new(),
+            _ => String::from("No detail available"),
         };
 
         ClockBoundError {
@@ -272,7 +272,7 @@ impl From<ShmError> for ClockBoundError {
 pub enum ClockBoundErrorKind {
     // FIXME: the `detail` static CString is referenced on the Syscall variant. This is a temporary
     // implementation until the FFI to C is changed to have the caller allocate memory for it.
-    Syscall(&'static CStr),
+    Syscall,
     SegmentNotInitialized,
     SegmentMalformed,
     CausalityBreach,
@@ -758,7 +758,7 @@ mod lib_tests {
         let shm_error = ShmError::SyscallError(errno, detail);
         // Perform the conversion.
         let clockbounderror = ClockBoundError::from(shm_error);
-        assert_eq!(ClockBoundErrorKind::Syscall(detail), clockbounderror.kind);
+        assert_eq!(ClockBoundErrorKind::Syscall, clockbounderror.kind);
         assert_eq!(errno, clockbounderror.errno);
         assert_eq!(detail_string, clockbounderror.detail);
     }
@@ -773,7 +773,7 @@ mod lib_tests {
             clockbounderror.kind
         );
         assert_eq!(Errno(0), clockbounderror.errno);
-        assert_eq!(String::new(), clockbounderror.detail);
+        assert_eq!(String::from("No detail available"), clockbounderror.detail);
     }
 
     #[test]
@@ -783,7 +783,7 @@ mod lib_tests {
         let clockbounderror = ClockBoundError::from(shm_error);
         assert_eq!(ClockBoundErrorKind::SegmentMalformed, clockbounderror.kind);
         assert_eq!(Errno(0), clockbounderror.errno);
-        assert_eq!(String::new(), clockbounderror.detail);
+        assert_eq!(String::from("No detail available"), clockbounderror.detail);
     }
 
     #[test]
@@ -793,6 +793,6 @@ mod lib_tests {
         let clockbounderror = ClockBoundError::from(shm_error);
         assert_eq!(ClockBoundErrorKind::CausalityBreach, clockbounderror.kind);
         assert_eq!(Errno(0), clockbounderror.errno);
-        assert_eq!(String::new(), clockbounderror.detail);
+        assert_eq!(String::from("No detail available"), clockbounderror.detail);
     }
 }
