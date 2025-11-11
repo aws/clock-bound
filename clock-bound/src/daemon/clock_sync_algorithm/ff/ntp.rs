@@ -52,22 +52,27 @@ impl Ntp {
     /// Feed an event into this algorithm
     ///
     /// Returns [`Some`] if the event has improved this source's [`ClockParameters`].
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "panics documented and only occur from bugs"
-    )]
     pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
         let tsc_midpoint = event.tsc_midpoint();
 
         // First update the internal local (current SKM) and estimate (long term)
         // sample buffers
-        self.feed_internal_buffers(event)
+        let within_threshold = self
+            .feed_internal_buffers(event)
             .inspect_err(|error_msg| match error_msg {
                 FeedError::Old { event, .. } => {
                     tracing::warn!(?event, ?error_msg);
                 }
             })
-            .ok()?; // early exit only if there was an error with the sample
+            .ok()?; // early exit if there was an error with the sample
+
+        if !within_threshold {
+            // At this point, if the input does not meet our expectations on the rtt threshold,
+            // there is no more processing to do. The end calculation will not be more accurate than
+            // the previous value (if we have one)
+            tracing::trace!("Early exit. Event not within threshold");
+            return None;
+        }
 
         // Functionality from this point will fill out the equation
         // `C(t) = TSC(t) × p^ + K − θ^(t)` where:
@@ -91,6 +96,7 @@ impl Ntp {
         // expect because not having an uncorrected clock is a bug at this point
         //
         // If we are able to calculate a local period, then uncorrected clock must be available
+        #[expect(clippy::missing_panics_doc, reason = "comment above")]
         let uncorrected_clock = self
             .uncorrected_clock
             .expect("No uncorrected period but we have local period");
@@ -148,10 +154,15 @@ impl Ntp {
 
     /// Feed the internal buffers with a new event
     ///
+    /// Returns `Ok(true)` if the value is within the local buffer's min rtt threshold
+    ///
+    /// Returns `Ok(false)` if the inserted value exceeds the local buffer's min rtt threshold
+    ///
     /// This updates the local buffer with the event. If a `period` has been calculated already,
     /// then we can use this value to update the `estimate` buffer as well.
     #[expect(clippy::result_large_err, reason = "value moved on err is idiomatic")]
-    fn feed_internal_buffers(&mut self, event: event::Ntp) -> Result<(), FeedError<event::Ntp>> {
+    fn feed_internal_buffers(&mut self, event: event::Ntp) -> Result<bool, FeedError<event::Ntp>> {
+        let event_rtt = event.rtt();
         self.local.feed(event)?;
 
         if let Some(uc) = self.uncorrected_clock {
@@ -160,7 +171,11 @@ impl Ntp {
                 tracing::info!(?new_estimate, "New value added to estimate buffer");
             }
         }
-        Ok(())
+        // unwrap okay. Above line ensures there is at least one value in the buffer
+        let min_rtt_event = self.local.as_ref().min_rtt().unwrap();
+        let within_threshold =
+            event_rtt <= (min_rtt_event.rtt() * self.local.rtt_threshold_multiplier());
+        Ok(within_threshold)
     }
 
     /// Handle a disruption event
