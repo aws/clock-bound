@@ -57,7 +57,7 @@ impl NTPSource {
     }
 
     /// Feed an event into the NTP Source clock-sync algorithm
-    #[tracing::instrument(level = "info", skip_all)]
+    #[tracing::instrument(level = "info", skip_all, fields(source = %self.source_address))]
     pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
         self.inner.feed(event)
     }

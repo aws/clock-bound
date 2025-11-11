@@ -36,7 +36,7 @@ impl LinkLocal {
     }
 
     /// Feed an event into the link local NTP clock-sync algorithm
-    #[tracing::instrument(level = "info", skip_all)]
+    #[tracing::instrument(level = "info", skip_all, fields(source = "link_local"))]
     pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
         self.inner.feed(event)
     }
