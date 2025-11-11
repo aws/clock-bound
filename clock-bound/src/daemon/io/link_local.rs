@@ -1,12 +1,12 @@
 //! Link Local IO Source
 
-use std::sync::Arc;
+use std::{num::Wrapping, sync::Arc};
 use thiserror::Error;
 use tokio::{
     io,
     net::UdpSocket,
     sync::{mpsc, watch},
-    time::{self, Instant, Interval, MissedTickBehavior, interval, timeout},
+    time::{self, Instant, Interval, MissedTickBehavior, interval},
 };
 use tracing::{debug, info};
 
@@ -14,14 +14,12 @@ use super::ntp::{
     LINK_LOCAL_ADDRESS, LINK_LOCAL_BURST_DURATION, LINK_LOCAL_BURST_INTERVAL_DURATION,
     LINK_LOCAL_INTERVAL_DURATION, LINK_LOCAL_TIMEOUT, packet,
 };
-use super::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
     async_ring_buffer,
-    event::{self, NtpData},
-    io::ntp::{packet::Timestamp, socket_ext::SocketExt},
+    event::{self},
+    io::ntp::{self, SamplePacketError, packet::Timestamp},
     selected_clock::SelectedClockSource,
-    time::tsc::TscCount,
 };
 
 use packet::Packet;
@@ -32,14 +30,25 @@ pub enum LinkLocalError {
     Io(#[from] io::Error),
     #[error("Failed to parse NTP packet.")]
     PacketParsing(String),
-    #[error("Send NtpEvent message failed.")]
-    SendEventMessage(#[from] mpsc::error::SendError<event::Ntp>),
+    #[error("Mismatched origin. Expected {expected}, got {received}")]
+    OriginMismatch { expected: u64, received: u64 },
     #[error("Operation timed out.")]
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
     TscOrder { pre: u64, post: u64 },
     #[error("IO failure on socket clear")]
     SocketClear(#[source] io::Error),
+}
+
+impl From<SamplePacketError> for LinkLocalError {
+    fn from(value: SamplePacketError) -> Self {
+        match value {
+            SamplePacketError::Io(e) => LinkLocalError::Io(e),
+            SamplePacketError::Timeout(e) => LinkLocalError::Timeout(e),
+            SamplePacketError::TscOrder { pre, post } => LinkLocalError::TscOrder { pre, post },
+            SamplePacketError::SocketClear(e) => LinkLocalError::SocketClear(e),
+        }
+    }
 }
 
 /// Contains the data needed to run the link local runner.
@@ -53,6 +62,7 @@ pub struct LinkLocal {
     interval: Interval,
     mode: Mode,
     selected_clock: Arc<SelectedClockSource>,
+    transmit_counter: Wrapping<u64>,
 }
 
 impl LinkLocal {
@@ -79,6 +89,7 @@ impl LinkLocal {
             interval: link_local_interval,
             mode: Mode::burst(),
             selected_clock,
+            transmit_counter: Wrapping(0),
         }
     }
 
@@ -90,59 +101,25 @@ impl LinkLocal {
     /// collected the NTP sample we construct the `Event` and push that event through
     /// to the ring buffer.
     async fn sample(&mut self) -> Result<event::Ntp, LinkLocalError> {
-        self.socket.clear().map_err(LinkLocalError::SocketClear)?;
         let (refid, stratum) = self.selected_clock.get();
+        let counter = self.transmit_counter.0;
+        self.transmit_counter += 1;
         let packet = Packet::builder()
-            .transmit_timestamp(Timestamp::new(0))
+            .transmit_timestamp(Timestamp::new(counter))
             .stratum(stratum.incremented().into())
             .reference_id(refid.into())
             .build();
         packet.emit_bytes(&mut self.ntp_buffer);
 
-        let sent_timestamp = read_timestamp_counter_begin();
-
-        // Request and Receive NTP sample.
-        let recv_packet_result = timeout(LINK_LOCAL_TIMEOUT, {
-            self.socket
-                .send_to(&self.ntp_buffer, LINK_LOCAL_ADDRESS)
-                .await?;
-            self.socket.recv_from(&mut self.ntp_buffer)
-        })
+        let ntp_event = ntp::sample_packet(
+            &self.socket,
+            LINK_LOCAL_ADDRESS.into(),
+            &mut self.ntp_buffer,
+            LINK_LOCAL_TIMEOUT,
+            counter,
+        )
         .await?;
-
-        let received_timestamp = read_timestamp_counter_end();
-
-        #[cfg(all(not(test), feature = "test-side-by-side"))]
-        let system_clock_reading = crate::daemon::event::SystemClockMeasurement::now();
-
-        let (_, ntp_packet) = Packet::parse_from_bytes(&self.ntp_buffer)
-            .map_err(|e| LinkLocalError::PacketParsing(e.to_string()))?;
-
-        let ntp_data = NtpData::try_from(ntp_packet)
-            .map_err(|e| LinkLocalError::PacketParsing(e.to_string()))?;
-
-        let builder = event::Ntp::builder()
-            .tsc_pre(TscCount::new(sent_timestamp.into()))
-            .tsc_post(TscCount::new(received_timestamp.into()))
-            .ntp_data(ntp_data);
-
-        let ntp_event = {
-            #[cfg(all(not(test), feature = "test-side-by-side"))]
-            {
-                builder.system_clock(system_clock_reading).build()
-            }
-            #[cfg(any(test, not(feature = "test-side-by-side")))]
-            {
-                builder.build()
-            }
-        };
-
-        let ntp_event = ntp_event.ok_or(LinkLocalError::TscOrder {
-            pre: sent_timestamp,
-            post: received_timestamp,
-        })?;
-
-        debug!(?recv_packet_result, "Received packet.");
+        debug!(?ntp_event, "Received packet.");
         Ok(ntp_event)
     }
 
@@ -213,6 +190,7 @@ impl LinkLocal {
             interval: ll_interval,
             mode,
             selected_clock: _selected_clock,
+            transmit_counter: _,
         } = self;
 
         *mode = Mode::burst();
@@ -233,6 +211,7 @@ impl LinkLocal {
             interval: ll_interval,
             mode,
             selected_clock: _selected_clock,
+            transmit_counter: _,
         } = self;
 
         *mode = Mode::Normal;

@@ -33,6 +33,11 @@ impl Timestamp {
         secs + subsecs
     }
 
+    /// Get the inner value
+    pub const fn get(self) -> u64 {
+        self.inner
+    }
+
     // From https://stackoverflow.com/questions/29112071/how-to-convert-ntp-time-to-unix-epoch-time-in-c-language-linux
     //
     // Unix uses an epoch located at 1/1/1970-00:00h (UTC) and NTP uses 1/1/1900-00:00h.

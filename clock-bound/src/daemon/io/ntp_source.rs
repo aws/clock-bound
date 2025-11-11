@@ -1,28 +1,26 @@
 //! NTP Server IO Source
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, num::Wrapping, sync::Arc};
 use thiserror::Error;
 use tokio::{
     io,
     net::UdpSocket,
     sync::{mpsc, watch},
-    time::{self, Interval, MissedTickBehavior, interval, timeout},
+    time::{self, Interval, MissedTickBehavior, interval},
 };
 use tracing::{debug, info};
 
-use super::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 use crate::daemon::{
     async_ring_buffer,
-    event::{self, NtpData},
+    event::{self},
     io::{
         ClockDisruptionEvent, ControlRequest, DaemonInfo,
         ntp::{
+            self, SamplePacketError,
             packet::{ExtensionField, Timestamp},
-            socket_ext::SocketExt,
         },
     },
     selected_clock::SelectedClockSource,
-    time::tsc::TscCount,
 };
 
 use super::ntp::{NTP_SOURCE_INTERVAL_DURATION, NTP_SOURCE_TIMEOUT, packet};
@@ -34,14 +32,25 @@ pub enum NTPSourceError {
     Io(#[from] io::Error),
     #[error("Failed to parse NTP packet.")]
     PacketParsing(String),
-    #[error("Send NtpEvent message failed.")]
-    SendEventMessage(#[from] mpsc::error::SendError<event::Ntp>),
+    #[error("Mismatched origin. Expected {expected}, got {received}")]
+    OriginMismatch { expected: u64, received: u64 },
     #[error("Operation timed out.")]
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
     TscOrder { pre: u64, post: u64 },
     #[error("IO failure on socket clear")]
     SocketClear(#[source] io::Error),
+}
+
+impl From<SamplePacketError> for NTPSourceError {
+    fn from(value: SamplePacketError) -> Self {
+        match value {
+            SamplePacketError::Io(e) => NTPSourceError::Io(e),
+            SamplePacketError::Timeout(e) => NTPSourceError::Timeout(e),
+            SamplePacketError::TscOrder { pre, post } => NTPSourceError::TscOrder { pre, post },
+            SamplePacketError::SocketClear(e) => NTPSourceError::SocketClear(e),
+        }
+    }
 }
 
 /// Contains data used to run `NTPSource` runner.
@@ -58,6 +67,7 @@ pub struct NTPSource {
     interval: Interval,
     selected_clock: Arc<SelectedClockSource>,
     daemon_info: DaemonInfo,
+    transmit_counter: Wrapping<u64>,
 }
 
 impl NTPSource {
@@ -83,6 +93,7 @@ impl NTPSource {
             interval: ntp_source_interval,
             selected_clock,
             daemon_info,
+            transmit_counter: Wrapping(0),
         }
     }
 
@@ -94,47 +105,25 @@ impl NTPSource {
     /// collected the NTP sample we construct the `Event` and push that event through
     /// to the ring buffer.
     async fn sample(&mut self) -> Result<event::Ntp, NTPSourceError> {
-        self.socket.clear().map_err(NTPSourceError::SocketClear)?;
         let (refid, stratum) = self.selected_clock.get();
+        let counter = self.transmit_counter.0;
+        self.transmit_counter += 1;
         let packet = Packet::builder()
-            .transmit_timestamp(Timestamp::new(0))
+            .transmit_timestamp(Timestamp::new(counter))
             .stratum(stratum.incremented().into())
             .reference_id(refid.into())
             .extensions(vec![ExtensionField::Fec2V1(self.daemon_info.clone())])
             .build();
         packet.emit_bytes(&mut self.ntp_buffer);
-
-        let sent_timestamp = read_timestamp_counter_begin();
-
-        // Request and Receive NTP sample.
-        let recv_packet_result = timeout(NTP_SOURCE_TIMEOUT, {
-            let packet_size = packet.total_size();
-            self.socket
-                .send_to(&self.ntp_buffer[..packet_size], self.address)
-                .await?;
-            self.socket.recv_from(&mut self.ntp_buffer)
-        })
+        let ntp_event = ntp::sample_packet(
+            &self.socket,
+            self.address,
+            &mut self.ntp_buffer,
+            NTP_SOURCE_TIMEOUT,
+            counter,
+        )
         .await?;
-
-        let received_timestamp = read_timestamp_counter_end();
-
-        let (_, ntp_packet) = Packet::parse_from_bytes(&self.ntp_buffer)
-            .map_err(|e| NTPSourceError::PacketParsing(e.to_string()))?;
-
-        let ntp_data = NtpData::try_from(ntp_packet)
-            .map_err(|e| NTPSourceError::PacketParsing(e.to_string()))?;
-
-        let ntp_event = event::Ntp::builder()
-            .tsc_pre(TscCount::new(sent_timestamp.into()))
-            .tsc_post(TscCount::new(received_timestamp.into()))
-            .ntp_data(ntp_data)
-            .build()
-            .ok_or(NTPSourceError::TscOrder {
-                pre: sent_timestamp,
-                post: received_timestamp,
-            })?;
-
-        debug!(?recv_packet_result, "Received packet.");
+        debug!(?ntp_event, "Received packet.");
         Ok(ntp_event)
     }
 
