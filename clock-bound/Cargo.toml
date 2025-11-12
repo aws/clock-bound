@@ -25,6 +25,7 @@ libc = { version = "0.2", default-features = false, features = [
 md5 = "0.8.0"
 nix = { version = "0.26", features = ["feature", "time"] }
 nom = { version = "8", optional = true }
+reqwest = { version = "0.12.24", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = "1.0.145"
 thiserror = { version = "2.0", optional = true }
@@ -80,6 +81,7 @@ daemon = [
   "dep:thiserror",
   "dep:tracing-appender",
   "tracing-subscriber/env-filter",
+  "dep:reqwest",
 ]
 test-side-by-side = [
 ] # run without changing system clock. And compare against system clock

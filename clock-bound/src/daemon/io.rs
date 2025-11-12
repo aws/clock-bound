@@ -18,6 +18,8 @@ use crate::daemon::io::ntp::DaemonInfo;
 use crate::daemon::selected_clock::SelectedClockSource;
 use crate::daemon::{async_ring_buffer, event};
 
+mod imds;
+
 mod link_local;
 use link_local::LinkLocal;
 
