@@ -17,7 +17,7 @@
 //! that as the phase correction to `CLOCK_REALTIME`, using the PLL slewing method in kernel. An alternative approach
 //! to fixing phase corrections could involve temporary slewing of the clock frequency, but can risk overshooting, or
 //! leaving the system in a bad state if in the middle of a slew and the daemon is terminated.
-use tracing::{debug, error, info};
+use tracing::{error, info, trace};
 
 use crate::{
     daemon::{
@@ -105,24 +105,6 @@ impl<T: NtpAdjTimeExt + Send + Sync> ClockAdjust for ClockAdjuster<T> {
     }
 }
 
-/// Duration for which to wait for phase correction halting to complete.
-/// Since PLL adjustment starts at the top of a second, this should take at least one second.
-/// It's possible the clock used for calculation of `Duration` in our async runtime
-/// runs a bit slower than this though, so we use 2 seconds to be safe.
-const PHASE_CORRECTION_HALT_DURATION: tokio::time::Duration = tokio::time::Duration::from_secs(2);
-/// Duration which we should stay in `State::InitialSnapshotA`. We calculate relative frequency adjustment to apply
-/// to have `CLOCK_REALTIME` match `ClockBound` clock rate over this duration, by grabbing two snapshots A and B.
-const INITIAL_SNAPSHOT_RETRIEVED_DURATION: tokio::time::Duration =
-    tokio::time::Duration::from_secs(1);
-/// Duration which we should let the PLL phase correction run for.
-/// The amount of phase offset corrected via PLL slewing can be approximated based on PLL,
-/// to be `(1 - 0.75^n)` where `n` = seconds since PLL start.
-/// With 8 seconds, we slew approximately 90% of the offset we intended to.
-const PHASE_CORRECTING_DURATION: tokio::time::Duration = tokio::time::Duration::from_secs(8);
-/// Duration which we should stay in `State::InitialSnapshotA`. We calculate relative frequency adjustment to apply
-/// to have `CLOCK_REALTIME` match `ClockBound` clock rate over this duration, by grabbing two snapshots A and B.
-const SNAPSHOT_RETRIEVED_DURATION: tokio::time::Duration = tokio::time::Duration::from_secs(10);
-
 use state_machine::{
     ClockAdjusted, Disrupted, InitialPhaseCorrectHalted, InitialSnapshotRetrieved, Initialized,
     PhaseCorrectHalted, SnapshotRetrieved, State,
@@ -145,48 +127,66 @@ impl<T: NtpAdjTimeExt> ClockAdjuster<T> {
     pub fn handle_event(&mut self, now: tokio::time::Instant, clock_params: &ClockParameters) {
         match &self.state {
             State::Disrupted(inner) => {
-                self.state = State::InitialPhaseCorrectHalted(inner.transition(&self.ntp_adjtime));
+                self.state = State::InitialPhaseCorrectHalted(
+                    inner.to_initial_phase_correct_halted(&self.ntp_adjtime),
+                );
             }
             State::Initialized(inner) => {
                 self.state = State::InitialPhaseCorrectHalted(
-                    inner.transition(&self.ntp_adjtime, clock_params),
+                    inner.to_initial_phase_correct_halted(&self.ntp_adjtime, clock_params),
                 );
             }
-            State::InitialPhaseCorrectHalted(inner @ InitialPhaseCorrectHalted { instant })
-                if now.duration_since(*instant) >= PHASE_CORRECTION_HALT_DURATION =>
-            {
-                self.state = State::InitialSnapshotRetrieved(inner.transition(&self.ntp_adjtime));
+            State::InitialPhaseCorrectHalted(inner) => {
+                let InitialPhaseCorrectHalted { instant } = inner;
+                if now.duration_since(*instant) >= InitialPhaseCorrectHalted::DURATION {
+                    self.state = State::InitialSnapshotRetrieved(
+                        inner.to_initial_snapshot_retrieved(&self.ntp_adjtime),
+                    );
+                } else {
+                    trace!("No state transition expected from InitialPhaseCorrectHalted");
+                }
             }
-            State::InitialSnapshotRetrieved(
-                inner @ InitialSnapshotRetrieved { instant, snapshot },
-            ) if now.duration_since(*instant) >= INITIAL_SNAPSHOT_RETRIEVED_DURATION => {
-                self.state = State::ClockAdjusted(inner.transition(
-                    &self.ntp_adjtime,
-                    clock_params,
-                    snapshot,
-                ));
+            State::InitialSnapshotRetrieved(inner) => {
+                let InitialSnapshotRetrieved { instant, snapshot } = inner;
+                if now.duration_since(*instant) >= InitialSnapshotRetrieved::DURATION {
+                    self.state = State::ClockAdjusted(inner.to_clock_adjusted(
+                        &self.ntp_adjtime,
+                        clock_params,
+                        snapshot,
+                    ));
+                } else {
+                    trace!("No state transition expected from InitialSnapshotRetrieved");
+                }
             }
-            State::ClockAdjusted(inner @ ClockAdjusted { instant })
-                if now.duration_since(*instant) >= PHASE_CORRECTING_DURATION =>
-            {
-                self.state = State::PhaseCorrectHalted(inner.transition(&self.ntp_adjtime));
+            State::ClockAdjusted(inner) => {
+                let ClockAdjusted { instant } = inner;
+                if now.duration_since(*instant) >= ClockAdjusted::DURATION {
+                    self.state =
+                        State::PhaseCorrectHalted(inner.to_phase_correct_halted(&self.ntp_adjtime));
+                } else {
+                    trace!("No state transition expected from ClockAdjusted");
+                }
             }
-            State::PhaseCorrectHalted(inner @ PhaseCorrectHalted { instant })
-                if now.duration_since(*instant) >= PHASE_CORRECTION_HALT_DURATION =>
-            {
-                self.state = State::SnapshotRetrieved(inner.transition(&self.ntp_adjtime));
+            State::PhaseCorrectHalted(inner) => {
+                let PhaseCorrectHalted { instant } = inner;
+                if now.duration_since(*instant) >= PhaseCorrectHalted::DURATION {
+                    self.state =
+                        State::SnapshotRetrieved(inner.to_snapshot_retrieved(&self.ntp_adjtime));
+                } else {
+                    trace!("No state transition expected from PhaseCorrectHalted");
+                }
             }
-            State::SnapshotRetrieved(inner @ SnapshotRetrieved { instant, snapshot })
-                if now.duration_since(*instant) >= SNAPSHOT_RETRIEVED_DURATION =>
-            {
-                self.state = State::ClockAdjusted(inner.transition(
-                    &self.ntp_adjtime,
-                    clock_params,
-                    snapshot,
-                ));
-            }
-            _ => {
-                debug!("No state transition expected");
+            State::SnapshotRetrieved(inner) => {
+                let SnapshotRetrieved { instant, snapshot } = inner;
+                if now.duration_since(*instant) >= SnapshotRetrieved::DURATION {
+                    self.state = State::ClockAdjusted(inner.to_clock_adjusted(
+                        &self.ntp_adjtime,
+                        clock_params,
+                        snapshot,
+                    ));
+                } else {
+                    trace!("No state transition expected from SnapshotRetrieved");
+                }
             }
         }
     }
@@ -288,7 +288,7 @@ mod test {
     #[case::initial_phase_correct_halted_to_initial_snapshot_retrieved(
         State::InitialPhaseCorrectHalted(InitialPhaseCorrectHalted { instant: tokio::time::Instant::now() }),
         State::InitialSnapshotRetrieved(InitialSnapshotRetrieved { instant: tokio::time::Instant::now(), snapshot: test_clock_snapshot() }),
-        tokio::time::Instant::now() + PHASE_CORRECTION_HALT_DURATION,
+        tokio::time::Instant::now() + InitialPhaseCorrectHalted::DURATION,
         1,
     )]
     #[case::initial_snapshot_retrieved_no_change_if_too_early(
@@ -300,7 +300,7 @@ mod test {
     #[case::initial_snapshot_retrieved_to_clock_adjusted(
         State::InitialSnapshotRetrieved(InitialSnapshotRetrieved { instant: tokio::time::Instant::now(), snapshot: test_clock_snapshot() }),
         State::ClockAdjusted(ClockAdjusted { instant: tokio::time::Instant::now() }),
-        tokio::time::Instant::now() + INITIAL_SNAPSHOT_RETRIEVED_DURATION,
+        tokio::time::Instant::now() + InitialSnapshotRetrieved::DURATION,
         2,
     )]
     #[case::clock_adjusted_no_change_if_too_early(
@@ -312,7 +312,7 @@ mod test {
     #[case::clock_adjusted_to_phase_correct_halted(
         State::ClockAdjusted(ClockAdjusted { instant: tokio::time::Instant::now() }),
         State::PhaseCorrectHalted(PhaseCorrectHalted { instant: tokio::time::Instant::now() }),
-        tokio::time::Instant::now() + PHASE_CORRECTING_DURATION,
+        tokio::time::Instant::now() + ClockAdjusted::DURATION,
         1,
     )]
     #[case::phase_correct_halted_no_change_if_too_early(
@@ -324,7 +324,7 @@ mod test {
     #[case::initial_phase_correct_halted_to_snapshot_retrieved(
         State::PhaseCorrectHalted(PhaseCorrectHalted { instant: tokio::time::Instant::now() }),
         State::SnapshotRetrieved(SnapshotRetrieved { instant: tokio::time::Instant::now(), snapshot: test_clock_snapshot() }),
-        tokio::time::Instant::now() + PHASE_CORRECTION_HALT_DURATION,
+        tokio::time::Instant::now() + PhaseCorrectHalted::DURATION,
         1,
     )]
     #[case::snapshot_retrieved_no_change_if_too_early(
@@ -336,7 +336,7 @@ mod test {
     #[case::snapshot_retrieved_to_clock_adjusted(
         State::SnapshotRetrieved(SnapshotRetrieved { instant: tokio::time::Instant::now(), snapshot: test_clock_snapshot() }),
         State::ClockAdjusted(ClockAdjusted { instant: tokio::time::Instant::now() }),
-        tokio::time::Instant::now() + SNAPSHOT_RETRIEVED_DURATION,
+        tokio::time::Instant::now() + SnapshotRetrieved::DURATION,
         2,
     )]
     #[tokio::test(start_paused = true)]

@@ -28,58 +28,47 @@
 //!```text
 //!               Clock Adjustment State Machine
 //!                    ┌─────────────────┐     ┌─────────────────┐
-//!                    │   Initialized   │     |    Disrupted    | (any other state can immediately transition to Disrupted)
-//!                    │                 │     |                 |
-//!                    │ step clock +    │     |   reset clock   |
-//!                    │ halt PLL        │     |   adjustments   |
-//!                    │ (unreliable)    │     |  (unreliable)   |
+//!                    │   Initialized   │     |    Disrupted    | (any other state can immediately transition to Disrupted
+//!                    │ (unreliable)    │     |  (unreliable)   | and clock adjustments are reset in its handler)
 //!                    └─────────────────┘     └─────────────────┘
 //!                             |                        |
-//!                             |                        |
-//!                             |                        |
+//!                             |  halt PLL              | halt PLL
+//!                             |  step clock            |
 //!                             v                        |
 //!                ┌──────────────────────────┐          |
-//!                │ InitialPhaseCorrectHalted│          |
-//!                │                          │ <────────┘
-//!                │      halt PLL            │
-//!                │    (unreliable)          │
+//!                │ InitialPhaseCorrectHalted│ <────────┘
+//!                │       (unreliable)       │
 //!                └──────────────────────────┘
-//!                             |
+//!                             | wait PHASE_CORRECTION_HALT_DURATION, then take snapshot A
 //!                             |
 //!                             v
 //!                ┌──────────────────────────┐
 //!                │ InitialSnapshotRetrieved │
-//!                │                          │
-//!                │ take snapshot B +        │
-//!                │ calc frequency +         │
-//!                │ apply corrections        │
 //!                │ (unreliable)             │
 //!                └──────────────────────────┘
-//!                             |
-//!                             |
-//!                             v
+//!                             | wait INITIAL_SNAPSHOT_RETRIEVED_DURATION then
+//!                             | take snapshot B +
+//!                             | calc frequency +
+//!                             v apply corrections
 //!                    ┌─────────────────┐
 //!                    │  ClockAdjusted  │
-//!                    │                 │
-//!        ┌───────────│ apply freq +    │<────────┐
-//!        │           │ phase correct   │         │
-//!        │           │ (reliable)      │         │
-//!        │           └─────────────────┘         │
-//!        │                                       |
-//!        │                                       |
+//!                    │ halt the PLL    │
+//!        ┌───────────│                 │<────────┐
+//!        │           │ (reliable)      │         |
+//!        │           │                 │         | wait SNAPSHOT_RETRIEVED_DURATION, then
+//!        │           └─────────────────┘         │ take snapshot B +
+//!        │ wait PHASE_CORRECTING_DURATION        | calc frequency +
+//!        │ then halt PLL                         | apply corrections
 //!        │                                       |
 //!        v                                       |
 //! ┌──────────────────┐                  ┌──────────────────┐
 //! │PhaseCorrectHalted│                  │ SnapshotRetrieved│
-//! │                  │                  │                  │
-//! │   halt PLL       │                  │ take snapshot B +│
-//! │   (reliable)     │                  │ calc frequency + │
-//! |                  │                  | apply corrections│
-//! |                  |                  │ (reliable)       │
+//! |   (reliable).    |                  │ (reliable)       │
 //! └──────────────────┘                  └──────────────────┘
 //!        │                                        ^
 //!        │                                        │
 //!        └────────────────────────────────────────┘
+//!    wait PHASE_CORRECTION_HALT_DURATION, then take snapshot A
 //! ```
 use tracing::debug;
 
@@ -157,12 +146,16 @@ pub(super) struct Disrupted;
 impl Disrupted {
     #[must_use]
     #[allow(clippy::unused_self)]
-    pub(super) fn transition(&self, ntp_adjtime: &impl NtpAdjTimeExt) -> InitialPhaseCorrectHalted {
+    pub(super) fn to_initial_phase_correct_halted(
+        &self,
+        ntp_adjtime: &impl NtpAdjTimeExt,
+    ) -> InitialPhaseCorrectHalted {
         // Unwrap safety: If we can't adjust the clock, better to panic,
         // else we are outside the expectations of our state machine
         ntp_adjtime
             .apply_phase_correction(Duration::from_secs(0))
-            .unwrap();
+            .expect("failed to halt phase correction");
+        debug!("Disrupted now transitioning to InitialPhaseCorrectHalted");
         InitialPhaseCorrectHalted {
             instant: tokio::time::Instant::now(),
         }
@@ -173,7 +166,7 @@ pub(super) struct Initialized;
 impl Initialized {
     #[must_use]
     #[allow(clippy::unused_self)]
-    pub(super) fn transition(
+    pub(super) fn to_initial_phase_correct_halted(
         &self,
         ntp_adjtime: &impl NtpAdjTimeExt,
         clock_params: &ClockParameters,
@@ -182,13 +175,16 @@ impl Initialized {
         // else we are outside the expectations of our state machine
         ntp_adjtime
             .apply_phase_correction(Duration::from_secs(0))
-            .unwrap();
+            .expect("failed to halt phase correction");
         let clockbound_clock = ClockBound::new(clock_params.clone(), ReadTscImpl);
         // TODO: implement multiple attempts in case of latency increase
         let offset_and_rtt = clockbound_clock.get_offset_and_rtt(&RealTime);
         // Unwrap safety: If we can't adjust the clock, better to panic,
         // else we are outside the expectations of our state machine
-        ntp_adjtime.step_clock(offset_and_rtt.offset()).unwrap();
+        ntp_adjtime
+            .step_clock(offset_and_rtt.offset())
+            .expect("failed to step clock");
+        debug!("Initialized now transitioning to InitialPhaseCorrectHalted");
         InitialPhaseCorrectHalted {
             instant: tokio::time::Instant::now(),
         }
@@ -199,12 +195,19 @@ pub(super) struct InitialPhaseCorrectHalted {
     pub(super) instant: tokio::time::Instant,
 }
 impl InitialPhaseCorrectHalted {
+    /// Duration which we should stay in `InitialPhaseCorrectHalted`.
+    /// Since PLL adjustment starts at the top of a second, this should take at least one second.
+    /// It's possible the clock used for calculation of `Duration` in our async runtime
+    /// runs a bit slower than this though, so we use 2 seconds to be safe.
+    pub(super) const DURATION: tokio::time::Duration = tokio::time::Duration::from_secs(2);
+
     #[must_use]
     #[allow(clippy::unused_self)]
-    pub(super) fn transition(&self, ntp_adjtime: &impl NtpAdjTimeExt) -> InitialSnapshotRetrieved {
-        debug!(
-            "ClockAdjustmentState: InitialPhaseCorrectHalted now transitioning to InitialSnapshotRetrieved"
-        );
+    pub(super) fn to_initial_snapshot_retrieved(
+        &self,
+        ntp_adjtime: &impl NtpAdjTimeExt,
+    ) -> InitialSnapshotRetrieved {
+        debug!("InitialPhaseCorrectHalted now transitioning to InitialSnapshotRetrieved");
         InitialSnapshotRetrieved {
             instant: tokio::time::Instant::now(),
             snapshot: ClockSnapshot::retrieve(ntp_adjtime),
@@ -217,9 +220,14 @@ pub(super) struct InitialSnapshotRetrieved {
     pub(super) snapshot: ClockSnapshot,
 }
 impl InitialSnapshotRetrieved {
+    /// Duration which we should stay in `InitialSnapshotRetrieved`. We calculate relative frequency adjustment to apply
+    /// to have `CLOCK_REALTIME` match `ClockBound` clock rate over this duration, by grabbing two snapshots A and B
+    /// and calculating the relative difference between the two.
+    pub(super) const DURATION: tokio::time::Duration = tokio::time::Duration::from_secs(1);
+
     #[must_use]
     #[allow(clippy::unused_self)]
-    pub(super) fn transition(
+    pub(super) fn to_clock_adjusted(
         &self,
         ntp_adjtime: &impl NtpAdjTimeExt,
         clock_params: &ClockParameters,
@@ -234,8 +242,8 @@ impl InitialSnapshotRetrieved {
         // else we are outside the expectations of our state machine
         ntp_adjtime
             .adjust_clock(offset_and_rtt.offset(), freq)
-            .unwrap();
-        debug!("ClockAdjustmentState: InitialSnapshotA now transitioning to PhaseCorrecting");
+            .expect("failed to adjust clock frequency and phase correction");
+        debug!("InitialSnapshotRetrieved now transitioning to ClockAdjusted");
         ClockAdjusted {
             instant: tokio::time::Instant::now(),
         }
@@ -246,15 +254,24 @@ pub(super) struct ClockAdjusted {
     pub(super) instant: tokio::time::Instant,
 }
 impl ClockAdjusted {
+    /// Duration which we should stay in `ClockAdjusted` (letting the PLL phase correction run).
+    /// The amount of phase offset corrected via PLL slewing can be approximated based on PLL,
+    /// to be `(1 - 0.75^n)` where `n` = seconds since PLL start.
+    /// With 8 seconds, we slew approximately 90% of the offset we intended to.
+    pub(super) const DURATION: tokio::time::Duration = tokio::time::Duration::from_secs(8);
+
     #[must_use]
     #[allow(clippy::unused_self)]
-    pub(super) fn transition(&self, ntp_adjtime: &impl NtpAdjTimeExt) -> PhaseCorrectHalted {
+    pub(super) fn to_phase_correct_halted(
+        &self,
+        ntp_adjtime: &impl NtpAdjTimeExt,
+    ) -> PhaseCorrectHalted {
         // Unwrap safety: If we can't adjust the clock, better to panic,
         // else we are outside the expectations of our state machine
         ntp_adjtime
             .apply_phase_correction(Duration::from_secs(0))
-            .unwrap();
-        debug!("ClockAdjustmentPhaseCorrecting now transitioning to PhaseCorrectHalt");
+            .expect("failed to halt phase correction");
+        debug!("ClockAdjusted now transitioning to PhaseCorrectHalted");
         PhaseCorrectHalted {
             instant: tokio::time::Instant::now(),
         }
@@ -265,10 +282,19 @@ pub(super) struct PhaseCorrectHalted {
     pub(super) instant: tokio::time::Instant,
 }
 impl PhaseCorrectHalted {
+    /// Duration which we should stay in `PhaseCorrectHalted`.
+    /// Since PLL adjustment starts at the top of a second, this should take at least one second.
+    /// It's possible the clock used for calculation of `Duration` in our async runtime
+    /// runs a bit slower than this though, so we use 2 seconds to be safe.
+    pub(super) const DURATION: tokio::time::Duration = tokio::time::Duration::from_secs(2);
+
     #[must_use]
     #[allow(clippy::unused_self)]
-    pub(super) fn transition(&self, ntp_adjtime: &impl NtpAdjTimeExt) -> SnapshotRetrieved {
-        debug!("ClockAdjustmentPhaseCorrectHalted now transitioning to SnapshotRetrieved");
+    pub(super) fn to_snapshot_retrieved(
+        &self,
+        ntp_adjtime: &impl NtpAdjTimeExt,
+    ) -> SnapshotRetrieved {
+        debug!("PhaseCorrectHalted now transitioning to SnapshotRetrieved");
         SnapshotRetrieved {
             instant: tokio::time::Instant::now(),
             snapshot: ClockSnapshot::retrieve(ntp_adjtime),
@@ -281,9 +307,13 @@ pub(super) struct SnapshotRetrieved {
     pub(super) snapshot: ClockSnapshot,
 }
 impl SnapshotRetrieved {
+    /// Duration which we should stay in `SnapshotRetrieved`. We calculate relative frequency adjustment to apply
+    /// to have `CLOCK_REALTIME` match `ClockBound` clock rate over this duration, by grabbing two snapshots A and B.
+    pub(super) const DURATION: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+
     #[must_use]
     #[allow(clippy::unused_self)]
-    pub(super) fn transition(
+    pub(super) fn to_clock_adjusted(
         &self,
         ntp_adjtime: &impl NtpAdjTimeExt,
         clock_params: &ClockParameters,
@@ -298,8 +328,8 @@ impl SnapshotRetrieved {
         // else we are outside the expectations of our state machine
         ntp_adjtime
             .adjust_clock(offset_and_rtt.offset(), freq)
-            .unwrap();
-        debug!("ClockAdjustmentState: SnapshotA now transitioning to PhaseCorrecting");
+            .expect("failed to adjust clock frequency and phase correction");
+        debug!("SnapshotRetrieved now transitioning to ClockAdjusted");
         ClockAdjusted {
             instant: tokio::time::Instant::now(),
         }
@@ -373,11 +403,9 @@ fn calculate_frequency_correction(
 
     let old_freq = old_snapshot.kernel_state.freq();
     let diff_clock_realtime = new_realtime_ts - old_realtime_ts;
-    let diff_clockbound = Duration::from_seconds_f64(
-        (new_tsc_value.get() - old_tsc_value.get()) as f64 * clock_params.period.get(),
-    );
-    let clockbound_rate_wrt_clock_realtime =
-        diff_clockbound.get() as f64 / diff_clock_realtime.get() as f64;
+    let diff_clockbound =
+        (new_tsc_value.get() - old_tsc_value.get()) as f64 * clock_params.period.get();
+    let clockbound_rate_wrt_clock_realtime = diff_clockbound / diff_clock_realtime.get() as f64;
 
     let old_frequency_clock_realtime = old_freq.get() + 1.0;
     let fractional_correction =
@@ -401,7 +429,9 @@ impl ClockSnapshot {
         // Unwrap safety: retrieving adjtime parameters should succeed regardless of
         // timex status. If we received an actual error from the system call, we have
         // nothing better we can do here
-        let kernel_state = ntp_adjtime.read_adjtime().unwrap();
+        let kernel_state = ntp_adjtime
+            .read_adjtime()
+            .expect("failed to retrieve ntp_adjtime parameters from kernel");
         let system_clock = SystemClockMeasurement::now();
         Self {
             system_clock,
@@ -450,11 +480,11 @@ mod test {
             .once()
             .return_once(move |_: Duration| Ok(Timex::retrieve()));
         let disrupted = Disrupted;
-        let _ = disrupted.transition(&mock_ntp_adjtime);
+        let _ = disrupted.to_initial_phase_correct_halted(&mock_ntp_adjtime);
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to halt phase correction: BadState(1)")]
     fn disrupted_to_initial_phase_correct_halted_panic_on_failed_adjtime() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -462,7 +492,7 @@ mod test {
             .once()
             .return_once(move |_: Duration| Err(NtpAdjTimeError::BadState(1)));
         let disrupted = Disrupted;
-        let _ = disrupted.transition(&mock_ntp_adjtime);
+        let _ = disrupted.to_initial_phase_correct_halted(&mock_ntp_adjtime);
     }
 
     #[test]
@@ -477,11 +507,12 @@ mod test {
             .once()
             .return_once(move |_: Duration| Ok(Timex::retrieve()));
         let initialized = Initialized;
-        let _ = initialized.transition(&mock_ntp_adjtime, &test_clock_parameters());
+        let _ = initialized
+            .to_initial_phase_correct_halted(&mock_ntp_adjtime, &test_clock_parameters());
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to halt phase correction: BadState(1)")]
     fn initialized_to_initial_phase_correct_halted_panic_on_phase_correct_halt_failure() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -493,11 +524,12 @@ mod test {
             .never()
             .return_once(move |_: Duration| Ok(Timex::retrieve()));
         let initialized = Initialized;
-        let _ = initialized.transition(&mock_ntp_adjtime, &test_clock_parameters());
+        let _ = initialized
+            .to_initial_phase_correct_halted(&mock_ntp_adjtime, &test_clock_parameters());
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to step clock: BadState(1)")]
     fn initialized_to_initial_phase_correct_halted_panic_on_step_clock_failure() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -509,7 +541,8 @@ mod test {
             .once()
             .return_once(move |_: Duration| Err(NtpAdjTimeError::BadState(1)));
         let initialized = Initialized;
-        let _ = initialized.transition(&mock_ntp_adjtime, &test_clock_parameters());
+        let _ = initialized
+            .to_initial_phase_correct_halted(&mock_ntp_adjtime, &test_clock_parameters());
     }
 
     #[test]
@@ -522,11 +555,11 @@ mod test {
         let initial_phase_correct_halted = InitialPhaseCorrectHalted {
             instant: tokio::time::Instant::now(),
         };
-        let _ = initial_phase_correct_halted.transition(&mock_ntp_adjtime);
+        let _ = initial_phase_correct_halted.to_initial_snapshot_retrieved(&mock_ntp_adjtime);
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to retrieve ntp_adjtime parameters from kernel: BadState(1)")]
     fn initial_phase_correct_halted_to_initial_snapshot_retrieved_panic_on_fail_adjtime() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -536,7 +569,7 @@ mod test {
         let initial_phase_correct_halted = InitialPhaseCorrectHalted {
             instant: tokio::time::Instant::now(),
         };
-        let _ = initial_phase_correct_halted.transition(&mock_ntp_adjtime);
+        let _ = initial_phase_correct_halted.to_initial_snapshot_retrieved(&mock_ntp_adjtime);
     }
 
     #[test]
@@ -554,7 +587,7 @@ mod test {
             instant: tokio::time::Instant::now(),
             snapshot: test_clock_snapshot(),
         };
-        let _ = initial_snapshot_retrieved.transition(
+        let _ = initial_snapshot_retrieved.to_clock_adjusted(
             &mock_ntp_adjtime,
             &test_clock_parameters(),
             &test_clock_snapshot(),
@@ -562,7 +595,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to retrieve ntp_adjtime parameters from kernel: BadState(1)")]
     fn initial_snapshot_retrieved_to_clock_adjusted_panic_on_failed_retrieve() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -577,7 +610,7 @@ mod test {
             instant: tokio::time::Instant::now(),
             snapshot: test_clock_snapshot(),
         };
-        let _ = initial_snapshot_retrieved.transition(
+        let _ = initial_snapshot_retrieved.to_clock_adjusted(
             &mock_ntp_adjtime,
             &test_clock_parameters(),
             &test_clock_snapshot(),
@@ -585,7 +618,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to adjust clock frequency and phase correction: BadState(1)")]
     fn initial_snapshot_retrieved_to_clock_adjusted_panic_on_failed_adjustment() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -600,7 +633,7 @@ mod test {
             instant: tokio::time::Instant::now(),
             snapshot: test_clock_snapshot(),
         };
-        let _ = initial_snapshot_retrieved.transition(
+        let _ = initial_snapshot_retrieved.to_clock_adjusted(
             &mock_ntp_adjtime,
             &test_clock_parameters(),
             &test_clock_snapshot(),
@@ -617,11 +650,11 @@ mod test {
         let clock_adjusted = ClockAdjusted {
             instant: tokio::time::Instant::now(),
         };
-        let _ = clock_adjusted.transition(&mock_ntp_adjtime);
+        let _ = clock_adjusted.to_phase_correct_halted(&mock_ntp_adjtime);
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to halt phase correction: BadState(1)")]
     fn clock_adjusted_to_phase_correct_halted_panic_on_failed_phase_correct_halt() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -631,7 +664,7 @@ mod test {
         let clock_adjusted = ClockAdjusted {
             instant: tokio::time::Instant::now(),
         };
-        let _ = clock_adjusted.transition(&mock_ntp_adjtime);
+        let _ = clock_adjusted.to_phase_correct_halted(&mock_ntp_adjtime);
     }
 
     #[test]
@@ -644,11 +677,11 @@ mod test {
         let phase_correct_halted = PhaseCorrectHalted {
             instant: tokio::time::Instant::now(),
         };
-        let _ = phase_correct_halted.transition(&mock_ntp_adjtime);
+        let _ = phase_correct_halted.to_snapshot_retrieved(&mock_ntp_adjtime);
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to retrieve ntp_adjtime parameters from kernel: BadState(1)")]
     fn phase_correct_halted_to_snapshot_retrieved_panic_on_failed_retrieve() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -658,7 +691,7 @@ mod test {
         let phase_correct_halted = PhaseCorrectHalted {
             instant: tokio::time::Instant::now(),
         };
-        let _ = phase_correct_halted.transition(&mock_ntp_adjtime);
+        let _ = phase_correct_halted.to_snapshot_retrieved(&mock_ntp_adjtime);
     }
 
     #[test]
@@ -676,7 +709,7 @@ mod test {
             instant: tokio::time::Instant::now(),
             snapshot: test_clock_snapshot(),
         };
-        let _ = snapshot_retrieved.transition(
+        let _ = snapshot_retrieved.to_clock_adjusted(
             &mock_ntp_adjtime,
             &test_clock_parameters(),
             &test_clock_snapshot(),
@@ -684,7 +717,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to retrieve ntp_adjtime parameters from kernel: BadState(1)")]
     fn snapshot_retrieved_to_clock_adjusted_panic_on_failed_retrieve() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -699,7 +732,7 @@ mod test {
             instant: tokio::time::Instant::now(),
             snapshot: test_clock_snapshot(),
         };
-        let _ = snapshot_retrieved.transition(
+        let _ = snapshot_retrieved.to_clock_adjusted(
             &mock_ntp_adjtime,
             &test_clock_parameters(),
             &test_clock_snapshot(),
@@ -707,7 +740,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: BadState(1)")]
+    #[should_panic(expected = "failed to adjust clock frequency and phase correction: BadState(1)")]
     fn snapshot_retrieved_to_clock_adjusted_panic_on_failed_adjustment() {
         let mut mock_ntp_adjtime = MockNtpAdjTimeExt::new();
         mock_ntp_adjtime
@@ -722,7 +755,7 @@ mod test {
             instant: tokio::time::Instant::now(),
             snapshot: test_clock_snapshot(),
         };
-        let _ = snapshot_retrieved.transition(
+        let _ = snapshot_retrieved.to_clock_adjusted(
             &mock_ntp_adjtime,
             &test_clock_parameters(),
             &test_clock_snapshot(),
