@@ -16,7 +16,7 @@ use super::ntp::{
 };
 use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
-    async_ring_buffer,
+    async_ring_buffer::{self, SendError},
     event::{self},
     io::ntp::{self, SamplePacketError, packet::Timestamp},
     selected_clock::SelectedClockSource,
@@ -148,44 +148,66 @@ impl LinkLocal {
         info!("Starting link local sampling loop.");
         loop {
             tokio::select! {
-                _ = self.interval.tick() => {
-                    match self.sample().await {
-                        Err(e) => {debug!(?e, "Failed to sample link local source.");}
-                        Ok(ntp_event) => {
-                            self.event_sender.send(ntp_event.clone()).expect("Buffer Closing is not expected in alpha.");
-                            debug!(?ntp_event, "Successfully sent Link Local IO event.");
-                        }
-                    }
-                    if let Mode::Burst(start_time) =  self.mode
-                        && start_time.elapsed() >= LINK_LOCAL_BURST_DURATION {
-                        self.transition_to_normal_mode();
-                        info!("Transitioning from `Burst` mode to `Normal` mode.");
-                    }
+                biased; // priority order is disruption, commands, and ticks
+                _ = self.clock_disruption_receiver.changed() => {
+                    // Clock Disruption logic here
+                    self.handle_disruption();
+                    info!("Received clock disruption signal. Entering Burst mode.");
                 }
                 _ = self.ctrl_receiver.recv() => {
                     // Ctrl logic here.
                     // Currently we breakout of the loop if we receive a control event.
                     break;
                 }
-                _ = self.clock_disruption_receiver.changed() => {
-                    // Clock Disruption logic here
-                    self.transition_to_burst_mode();
-                    info!("Received clock disruption signal. Entering Burst mode.");
+                _ = self.interval.tick() => {
+                    self.handle_interval_tick().await;
                 }
+
+
             }
         }
         info!("Link local runner exiting.");
         Ok(())
     }
 
+    async fn handle_interval_tick(&mut self) {
+        let ntp_event = match self.sample().await {
+            Ok(ntp_event) => ntp_event,
+            Err(e) => {
+                debug!(?e, "Failed to sample link local source.");
+                return;
+            }
+        };
+
+        match self.event_sender.send(ntp_event.clone()) {
+            Ok(()) => debug!(?ntp_event, "Successfully sent Link Local IO event."),
+            Err(SendError::Disrupted(_)) => {
+                tracing::info!("Trying to send when there was a disruption event.");
+            }
+            Err(SendError::BufferClosed(e)) => {
+                tracing::error!(?e, "link local Channel closed not supported in alpha");
+                panic!("Link local unable to communicate with daemon. {e:?}");
+            }
+        }
+
+        if let Mode::Burst(start_time) = self.mode
+            && start_time.elapsed() >= LINK_LOCAL_BURST_DURATION
+        {
+            self.transition_to_normal_mode();
+            info!("Transitioning from `Burst` mode to `Normal` mode.");
+        }
+    }
+
+    /// Handles a clock disruption event
+    ///
     /// Changes the source's mode to [`Mode::Burst`] and the polling frequency to
     /// [`BURST_INTERVAL_DURATION`].
-    fn transition_to_burst_mode(&mut self) {
+    fn handle_disruption(&mut self) {
         let LinkLocal {
             socket: _socket,
-            event_sender: _event_sender,
+            event_sender,
             ctrl_receiver: _ctrl_receiver,
-            clock_disruption_receiver: _clock_disruption_receiver,
+            clock_disruption_receiver,
             ntp_buffer: _ntp_buffer,
             interval: ll_interval,
             mode,
@@ -193,10 +215,14 @@ impl LinkLocal {
             transmit_counter: _,
         } = self;
 
-        *mode = Mode::burst();
-        *ll_interval = interval(LINK_LOCAL_BURST_INTERVAL_DURATION);
-        ll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        ll_interval.reset_immediately();
+        let val = clock_disruption_receiver.borrow_and_update().clone();
+        if val.disruption_marker.is_some() {
+            event_sender.handle_disruption();
+            *mode = Mode::burst();
+            *ll_interval = interval(LINK_LOCAL_BURST_INTERVAL_DURATION);
+            ll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            ll_interval.reset_immediately();
+        }
     }
 
     /// Changes the source's mode to [`Mode::Normal`] and changes polling frequency to
@@ -279,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn validate_to_burst_mode() {
         let (mut link_local, _, _) = create_link_local().await;
-        link_local.transition_to_burst_mode();
+        link_local.handle_disruption();
 
         assert!(matches!(link_local.mode, Mode::Burst(_)));
         assert_eq!(
@@ -291,7 +317,7 @@ mod tests {
     #[tokio::test]
     async fn validate_to_normal_mode() {
         let (mut link_local, _, _) = create_link_local().await;
-        link_local.transition_to_burst_mode();
+        link_local.handle_disruption();
         link_local.transition_to_normal_mode();
 
         assert!(matches!(link_local.mode, Mode::Normal));

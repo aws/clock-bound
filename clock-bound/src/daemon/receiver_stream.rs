@@ -110,6 +110,26 @@ impl ReceiverStream {
         let routable_event = event_result.expect("todo: Implement logic for buffers closing. We do not expect this to happen as a part of the alpha release implementation");
         Some(routable_event)
     }
+
+    /// Handle a clock disruption event
+    ///
+    /// This struct should loop through all receivers and clear the buffers when possible
+    pub fn handle_disruption(&mut self) {
+        let Self {
+            link_local,
+            ntp_sources,
+            phc,
+        } = self;
+
+        link_local.handle_disruption();
+        for source in ntp_sources.values_mut() {
+            source.handle_disruption();
+        }
+
+        if let Some(phc) = phc {
+            phc.handle_disruption();
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]

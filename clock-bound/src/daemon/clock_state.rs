@@ -113,7 +113,6 @@ impl ClockState {
     /// Call this function after the system detects a VMClock disruption event.
     ///
     /// It will go through and clear the state (like startup).
-    #[cfg_attr(not(test), expect(unused))]
     pub fn handle_disruption(&mut self, new_disruption_marker: u64) {
         // Use the destructure pattern to get a mutable reference to each item.
         //

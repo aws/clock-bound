@@ -174,7 +174,7 @@ impl SourceIO {
     }
 
     // Creates a new [`watch::Receiver`] connected to the clock distribution watch [`watch::Sender`].
-    pub fn get_clock_disruption_receiver(&self) -> watch::Receiver<ClockDisruptionEvent> {
+    pub fn clock_disruption_receiver(&self) -> watch::Receiver<ClockDisruptionEvent> {
         self.clock_disruption_channels.sender.subscribe()
     }
 
@@ -245,7 +245,7 @@ struct ClockDisruptionChannels {
 
 #[derive(Clone, Debug, Default)]
 pub struct ClockDisruptionEvent {
-    disruption_marker: Option<u64>,
+    pub disruption_marker: Option<u64>,
 }
 
 // TODO: This is a stub for future control events.

@@ -14,6 +14,7 @@ struct Args {
 async fn main() {
     let args = Args::parse();
     subscriber::init(&args.log_dir);
-    let mut d = Daemon::construct().await;
+    let d = Daemon::construct().await;
+    let d = Box::new(d);
     tokio::spawn(async move { d.run().await }).await.unwrap();
 }

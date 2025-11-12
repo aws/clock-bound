@@ -11,7 +11,7 @@ use tokio::{
 use tracing::{debug, info};
 
 use crate::daemon::{
-    async_ring_buffer,
+    async_ring_buffer::{self, SendError},
     event::{self},
     io::{
         ClockDisruptionEvent, ControlRequest, DaemonInfo,
@@ -141,28 +141,64 @@ impl NTPSource {
         info!("Starting NTP Source IO sampling loop.");
         loop {
             tokio::select! {
-                _ = self.interval.tick() => {
-                    match self.sample().await {
-                        Err(e) => {debug!(?e, "Failed to sample NTP source source.");},
-                        Ok(ntp_event) => {
-                            self.event_sender
-                                .send(ntp_event.clone()).expect("Buffer Closing is not expected in alpha.");
-                            debug!(?ntp_event, "Successfully sent NTP Source IO event.");
-                        }
-                    }
+                biased; // priority order is disruption, commands, and ticks
+                _ = self.clock_disruption_receiver.changed() => {
+                    self.handle_disruption();
                 }
                 _ = self.ctrl_receiver.recv() => {
                     // Ctrl logic here.
                     // Currently we breakout of the loop if we receive a control event.
                     break;
                 }
-                _ = self.clock_disruption_receiver.changed() => {
-                    // Clock Disruption logic here
-                    todo!("Clock disruption logic has yet to be implemented.");
+                _ = self.interval.tick() => {
+                    self.handle_interval_tick().await;
                 }
             }
         }
         info!("NTP Source IO runner exiting.");
         Ok(())
+    }
+
+    async fn handle_interval_tick(&mut self) {
+        let ntp_event = match self.sample().await {
+            Err(e) => {
+                debug!(?e, "Failed to sample NTP source source.");
+                return;
+            }
+            Ok(ntp_event) => ntp_event,
+        };
+
+        match self.event_sender.send(ntp_event.clone()) {
+            Ok(()) => debug!(?ntp_event, "Successfully sent Link Local IO event."),
+            Err(SendError::Disrupted(_)) => {
+                tracing::info!("Trying to send when there was a disruption event.");
+            }
+            Err(SendError::BufferClosed(e)) => {
+                tracing::error!(?e, "link local Channel closed not supported in alpha");
+                panic!("Link local unable to communicate with daemon. {e:?}");
+            }
+        }
+    }
+
+    /// Handles a clock disruption event
+    ///
+    /// Currently not bursting, but will clear the sender
+    fn handle_disruption(&mut self) {
+        let Self {
+            event_sender,
+            socket: _,
+            address: _,
+            ctrl_receiver: _,
+            clock_disruption_receiver,
+            ntp_buffer: _,
+            interval: _,
+            selected_clock: _,
+            daemon_info: _,
+            transmit_counter: _,
+        } = self;
+        let val = clock_disruption_receiver.borrow_and_update().clone();
+        if val.disruption_marker.is_some() {
+            event_sender.handle_disruption();
+        }
     }
 }
