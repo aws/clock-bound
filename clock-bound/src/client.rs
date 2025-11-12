@@ -111,14 +111,16 @@ impl ClockBoundClient {
         // VMClock shared memory is successfully read, this compares the value of the disruption
         // marker between the clockbound daemon and the VMClock. If these disagree, a disruption
         // has occured, and the clockbound daemon has not recovered from it yet.
-        let is_not_disrupted =
-            self.vmclock_shm.disruption_marker()? == Some(cb_snap.disruption_marker);
+        let is_disrupted = match self.vmclock_shm.disruption_marker()? {
+            Some(marker) => marker != cb_snap.disruption_marker,
+            None => false,
+        };
 
         // If the clock is disrupted, overwrite the status
-        let result_status = if is_not_disrupted {
-            clock_status
-        } else {
+        let result_status = if is_disrupted {
             ClockStatus::Disrupted
+        } else {
+            clock_status
         };
 
         Ok(ClockBoundNowResult {

@@ -557,7 +557,7 @@ mod t_ffi {
             assert!(errptr.is_null());
             assert_eq!(
                 now_result.clock_status,
-                clockbound_clock_status::CLOCKBOUND_STA_DISRUPTED
+                clockbound_clock_status::CLOCKBOUND_STA_UNKNOWN
             );
 
             let errptr = clockbound_close(ctx, &mut err);
