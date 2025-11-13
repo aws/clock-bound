@@ -403,9 +403,10 @@ fn calculate_frequency_correction(
 
     let old_freq = old_snapshot.kernel_state.freq();
     let diff_clock_realtime = new_realtime_ts - old_realtime_ts;
-    let diff_clockbound =
+    let diff_clockbound_seconds =
         (new_tsc_value.get() - old_tsc_value.get()) as f64 * clock_params.period.get();
-    let clockbound_rate_wrt_clock_realtime = diff_clockbound / diff_clock_realtime.get() as f64;
+    let clockbound_rate_wrt_clock_realtime =
+        diff_clockbound_seconds / diff_clock_realtime.as_seconds_f64();
 
     let old_frequency_clock_realtime = old_freq.get() + 1.0;
     let fractional_correction =
@@ -442,6 +443,8 @@ impl ClockSnapshot {
 
 #[cfg(test)]
 mod test {
+    use rstest::rstest;
+
     use crate::daemon::{
         clock_state::clock_adjust::{NtpAdjTimeError, ntp_adjtime::MockNtpAdjTimeExt},
         time::{
@@ -759,6 +762,195 @@ mod test {
             &mock_ntp_adjtime,
             &test_clock_parameters(),
             &test_clock_snapshot(),
+        );
+    }
+
+    #[rstest]
+    #[case::clocks_aligned(
+        ClockParameters {
+            tsc_count: TscCount::new(0),
+            period: Period::from_frequency(Frequency::from_hz(1.0)),
+            time: Instant::new(0),
+            clock_error_bound: Duration::new(0),
+            period_max_error: Period::from_seconds(0.0),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(0),
+                system_time: Instant::from_secs(0),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(0.0)),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(1),
+                system_time: Instant::from_secs(1),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(0.0)), // not used
+        },
+        Skew::from_ppm(0.0),
+    )]
+    #[case::clockbound_1_ppm_slow_of_clock_realtime_with_initial_freq_100_ppm(
+        // 1.000_100 * 0.999_999 = 1.000_098_999_900
+        ClockParameters {
+            tsc_count: TscCount::new(0),
+            period: Frequency::from_hz(1_000_000.0).period(),
+            time: Instant::new(0),
+            clock_error_bound: Duration::new(0),
+            period_max_error: Period::from_seconds(0.0),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(0),
+                system_time: Instant::from_secs(0),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(100.0)),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(999_999),
+                system_time: Instant::from_secs(1),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(0.0)), // not used
+        },
+        Skew::from_ppm(98.999_900),
+    )]
+    #[case::clockbound_1_ppm_fast_of_clock_realtime_with_initial_freq_100_ppm(
+        // 1.000_100 * 1.000_001 = 1.000_101_000_100
+        ClockParameters {
+            tsc_count: TscCount::new(0),
+            period: Frequency::from_hz(1_000_000.0).period(),
+            time: Instant::new(0),
+            clock_error_bound: Duration::new(0),
+            period_max_error: Period::from_seconds(0.0),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(0),
+                system_time: Instant::from_secs(0),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(100.0)),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(1_000_001),
+                system_time: Instant::from_secs(1),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(0.0)), // not used
+        },
+        Skew::from_ppm(101.000_100),
+    )]
+    #[case::clockbound_2_point_5_ppm_fast_of_clock_realtime_with_initial_freq_100_ppm(
+        // 1.000_100 * 1.000_002_500 = 1.000_102_500_250
+        ClockParameters {
+            tsc_count: TscCount::new(0),
+            period: Frequency::from_hz(1_000_000.0).period(),
+            time: Instant::new(0),
+            clock_error_bound: Duration::new(0),
+            period_max_error: Period::from_seconds(0.0),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(0),
+                system_time: Instant::from_secs(0),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(100.0)),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(2_000_005),
+                system_time: Instant::from_secs(2),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(0.0)), // not used
+        },
+        Skew::from_ppm(102.50025),
+    )]
+    #[case::clockbound_2_point_5_ppm_slow_of_clock_realtime_with_initial_freq_100_ppm(
+        // 1.000_100 * 0.999_997_500 = 1.000_097_499_750
+        ClockParameters {
+            tsc_count: TscCount::new(0),
+            period: Frequency::from_hz(1_000_000.0).period(),
+            time: Instant::new(0),
+            clock_error_bound: Duration::new(0),
+            period_max_error: Period::from_seconds(0.0),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(0),
+                system_time: Instant::from_secs(0),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(100.0)),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(1_999_995),
+                system_time: Instant::from_secs(2),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(0.0)), // not used
+        },
+        Skew::from_ppm(97.499_750),
+    )]
+    #[case::clockbound_2_point_5_ppm_fast_of_clock_realtime_with_initial_freq_negative_100_ppm(
+        // 0.999_900 * 1.000_002_500 = 0.999_902_499
+        // -(1 - 0.999_902_499) = -0.000_097_500_250
+        ClockParameters {
+            tsc_count: TscCount::new(0),
+            period: Frequency::from_hz(1_000_000.0).period(),
+            time: Instant::new(0),
+            clock_error_bound: Duration::new(0),
+            period_max_error: Period::from_seconds(0.0),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(0),
+                system_time: Instant::from_secs(0),
+            },
+            kernel_state: Timex::frequency_correction(-Skew::from_ppm(100.0)),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(2_000_005),
+                system_time: Instant::from_secs(2),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(0.0)), // not used
+        },
+        -Skew::from_ppm(97.500_250),
+    )]
+    #[case::clockbound_2_point_5_ppm_slow_of_clock_realtime_with_initial_freq_negative_100_ppm(
+        // 0.999_900 * 0.999_997_500 = 0.999_897_500_250
+        // -(1 - 0.999_897_500_250) = -0.000_102_499_749
+        ClockParameters {
+            tsc_count: TscCount::new(0),
+            period: Frequency::from_hz(1_000_000.0).period(),
+            time: Instant::new(0),
+            clock_error_bound: Duration::new(0),
+            period_max_error: Period::from_seconds(0.0),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(0),
+                system_time: Instant::from_secs(0),
+            },
+            kernel_state: Timex::frequency_correction(-Skew::from_ppm(100.0)),
+        },
+        ClockSnapshot {
+            system_clock: SystemClockMeasurement {
+                tsc: TscCount::new(1_999_995),
+                system_time: Instant::from_secs(2),
+            },
+            kernel_state: Timex::frequency_correction(Skew::from_ppm(0.0)), // not used
+        },
+        -Skew::from_ppm(102.499_749_999_984_680),
+    )]
+    fn test_calculate_new_frequency_correction(
+        #[case] clock_params: ClockParameters,
+        #[case] old_snapshot: ClockSnapshot,
+        #[case] new_snapshot: ClockSnapshot,
+        #[case] expected: Skew,
+    ) {
+        approx::assert_abs_diff_eq!(
+            calculate_frequency_correction(&clock_params, &old_snapshot, &new_snapshot).get(),
+            expected.get()
         );
     }
 }
