@@ -17,6 +17,7 @@ mod writer;
 pub use reader::ShmReader;
 pub use writer::{ShmWrite, ShmWriter};
 
+use bon::Builder;
 use errno::Errno;
 use nix::sys::time::{TimeSpec, TimeValLike};
 use std::error::Error;
@@ -39,6 +40,140 @@ macro_rules! syserror {
             ::std::ffi::CStr::from_bytes_with_nul(concat!($origin, "\0").as_bytes()).unwrap(),
         ))
     };
+}
+
+pub trait ClockBoundSnapshot {
+    /// The `ClockErrorBound` equivalent of `clock_gettime()`, but with bound on accuracy.
+    ///
+    /// Returns a `ClockBoundNowResult` with contains the (earliest, latest) timespec between which
+    /// current time exists. The interval width is twice the clock error bound (ceb) such that:
+    ///   (earliest, latest) = ((now - ceb), (now + ceb))
+    ///
+    /// The function also returns a clock status to assert that the clock is being synchronized, or
+    /// free-running, or ...
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    fn now(&self) -> Result<ClockBoundNowResult, ShmError>;
+}
+
+/// Enum that holds supported layout of the `ClockErrorBound` stored in the ClockBound daemon
+/// shared memory segment.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ClockErrorBound {
+    V2(ClockErrorBoundV2),
+}
+
+impl ClockErrorBound {
+    pub fn as_of(&self) -> TimeSpec {
+        match self {
+            ClockErrorBound::V2(ceb) => ceb.as_of,
+        }
+    }
+
+    pub fn void_after(&self) -> TimeSpec {
+        match self {
+            ClockErrorBound::V2(ceb) => ceb.void_after,
+        }
+    }
+
+    pub fn bound_nsec(&self) -> i64 {
+        match self {
+            ClockErrorBound::V2(ceb) => ceb.bound_nsec,
+        }
+    }
+
+    pub fn max_drift_ppb(&self) -> u32 {
+        match self {
+            ClockErrorBound::V2(ceb) => ceb.max_drift_ppb,
+        }
+    }
+
+    pub fn clock_status(&self) -> ClockStatus {
+        match self {
+            ClockErrorBound::V2(ceb) => ceb.clock_status,
+        }
+    }
+
+    pub fn disruption_marker(&self) -> u64 {
+        match self {
+            ClockErrorBound::V2(ceb) => ceb.disruption_marker,
+        }
+    }
+
+    pub fn clock_disruption_support_enabled(&self) -> bool {
+        match self {
+            ClockErrorBound::V2(ceb) => ceb.clock_disruption_support_enabled,
+        }
+    }
+}
+
+impl ClockBoundSnapshot for ClockErrorBound {
+    fn now(&self) -> Result<ClockBoundNowResult, ShmError> {
+        match self {
+            ClockErrorBound::V2(ceb) => ceb.now(),
+        }
+    }
+}
+
+/// Generic `ClockErrorBound` builder.
+#[derive(Builder)]
+// Rename auto-generated build() function into build_internal so we have a custom finishing
+// function to create the enum variants
+#[builder(finish_fn(vis = "", name = build_internal))]
+pub struct ClockErrorBoundGeneric {
+    #[builder(default = TimeSpec::new(0, 0))]
+    as_of: TimeSpec,
+
+    #[builder(default = TimeSpec::new(0, 0))]
+    void_after: TimeSpec,
+
+    #[builder(default)]
+    bound_nsec: i64,
+
+    #[builder(default)]
+    disruption_marker: u64,
+
+    #[builder(default)]
+    max_drift_ppb: u32,
+
+    #[builder(default = ClockStatus::Unknown)]
+    clock_status: ClockStatus,
+
+    #[builder(default)]
+    clock_disruption_support_enabled: bool,
+}
+
+impl<S: clock_error_bound_generic_builder::IsComplete> ClockErrorBoundGenericBuilder<S> {
+    /// Custom `build` finishing function on the generated `ClockErrorBoundLayoutBuilder`.
+    ///
+    /// Take the layout version number as a parameter, it is a u16 to ease casting of the earlier
+    /// version of the `SHMHeader`.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    pub fn build(self, layout_version: u16) -> Result<ClockErrorBound, ShmError> {
+        // Build the ClockErrorBoundGeneric object
+        let ceb = self.build_internal();
+
+        // Build the specific version of the ClockErrorBound
+        match layout_version {
+            2 => Ok(ClockErrorBound::V2(ClockErrorBoundV2::new(
+                ceb.as_of,
+                ceb.void_after,
+                ceb.bound_nsec,
+                ceb.disruption_marker,
+                ceb.max_drift_ppb,
+                ceb.clock_status,
+                ceb.clock_disruption_support_enabled,
+            ))),
+            _ => Err(ShmError::SegmentVersionNotSupported),
+        }
+    }
+}
+
+/// Result of the `ClockBoundClient::now()` function.
+#[derive(PartialEq, Clone, Debug)]
+pub struct ClockBoundNowResult {
+    pub earliest: TimeSpec,
+    pub latest: TimeSpec,
+    pub clock_status: ClockStatus,
 }
 
 /// Error condition returned by all low-level ClockBound APIs.
@@ -129,7 +264,7 @@ pub enum ClockStatus {
 /// this specific layout.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub struct ClockErrorBound {
+pub struct ClockErrorBoundV2 {
     /// The `CLOCK_MONOTONIC_COARSE` timestamp recorded when the bound on clock error was
     /// calculated. The current implementation relies on Chrony tracking data, which accounts for
     /// the dispersion between the last clock processing event, and the reading of tracking data.
@@ -170,24 +305,7 @@ pub struct ClockErrorBound {
     _padding: [u8; 7],
 }
 
-impl Default for ClockErrorBound {
-    /// Get a default `ClockErrorBound` struct
-    /// Equivalent to zero'ing this bit of memory
-    fn default() -> Self {
-        ClockErrorBound {
-            as_of: TimeSpec::new(0, 0),
-            void_after: TimeSpec::new(0, 0),
-            bound_nsec: 0,
-            disruption_marker: 0,
-            max_drift_ppb: 0,
-            clock_status: ClockStatus::Unknown,
-            clock_disruption_support_enabled: false,
-            _padding: [0u8; 7],
-        }
-    }
-}
-
-impl ClockErrorBound {
+impl ClockErrorBoundV2 {
     /// Create a new `ClockErrorBound` struct.
     pub fn new(
         as_of: TimeSpec,
@@ -197,8 +315,8 @@ impl ClockErrorBound {
         max_drift_ppb: u32,
         clock_status: ClockStatus,
         clock_disruption_support_enabled: bool,
-    ) -> ClockErrorBound {
-        ClockErrorBound {
+    ) -> ClockErrorBoundV2 {
+        ClockErrorBoundV2 {
             as_of,
             void_after,
             bound_nsec,
@@ -210,7 +328,8 @@ impl ClockErrorBound {
         }
     }
 
-    /// The `ClockErrorBound` equivalent of `clock_gettime()`, but with bound on accuracy.
+    /// The `ClockErrorBoundV2` implementation of `now()`, a `clock_gettime()` equivalent but with
+    /// bound on clock accuracy.
     ///
     /// Returns a pair of (earliest, latest) timespec between which current time exists. The
     /// interval width is twice the clock error bound (ceb) such that:
@@ -218,7 +337,7 @@ impl ClockErrorBound {
     /// The function also returns a clock status to assert that the clock is being synchronized, or
     /// free-running, or ...
     #[expect(clippy::missing_errors_doc, reason = "todo")]
-    pub fn now(&self) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
+    pub fn now(&self) -> Result<ClockBoundNowResult, ShmError> {
         // Read the clock, start with the REALTIME one to be as close as possible to the event the
         // caller is interested in. The monotonic clock should be read after. It is correct for the
         // process be preempted between the two calls: a delayed read of the monotonic clock will
@@ -245,7 +364,7 @@ impl ClockErrorBound {
         &self,
         real: TimeSpec,
         mono: TimeSpec,
-    ) -> Result<(TimeSpec, TimeSpec, ClockStatus), ShmError> {
+    ) -> Result<ClockBoundNowResult, ShmError> {
         // Sanity checks:
         // - `now()` should operate on a consistent snapshot of the shared memory segment, and
         //   causality between mono and as_of should be enforced.
@@ -343,39 +462,28 @@ impl ClockErrorBound {
         let earliest = real - updated_bound;
         let latest = real + updated_bound;
 
-        Ok((earliest, latest, clock_status))
+        Ok(ClockBoundNowResult {
+            earliest,
+            latest,
+            clock_status,
+        })
     }
 }
 
-/// Getters exposed for the sake of unit tests across other modules in crate
-#[cfg(test)]
-impl ClockErrorBound {
-    pub fn as_of(&self) -> TimeSpec {
-        self.as_of
-    }
+impl ClockBoundSnapshot for ClockErrorBoundV2 {
+    /// The `ClockErrorBoundV2` implementation of `now()`.
+    ///
+    /// This version relies on the system clock to retrieve the current time as well as grow the
+    /// bound on the clock error at a constant rate.
+    fn now(&self) -> Result<ClockBoundNowResult, ShmError> {
+        // Read the clock, start with the REALTIME one to be as close as possible to the event the
+        // caller is interested in. The monotonic clock should be read after. It is correct for the
+        // process be preempted between the two calls: a delayed read of the monotonic clock will
+        // make the bound on clock error more pessimistic, but remains correct.
+        let real = clock_gettime_safe(CLOCK_REALTIME)?;
+        let mono = clock_gettime_safe(CLOCK_MONOTONIC)?;
 
-    pub fn void_after(&self) -> TimeSpec {
-        self.void_after
-    }
-
-    pub fn bound_nsec(&self) -> i64 {
-        self.bound_nsec
-    }
-
-    pub fn disruption_marker(&self) -> u64 {
-        self.disruption_marker
-    }
-
-    pub fn max_drift_ppb(&self) -> u32 {
-        self.max_drift_ppb
-    }
-
-    pub fn clock_status(&self) -> ClockStatus {
-        self.clock_status
-    }
-
-    pub fn clock_disruption_support_enabled(&self) -> bool {
-        self.clock_disruption_support_enabled
+        self.compute_bound_at(real, mono)
     }
 }
 
@@ -384,9 +492,9 @@ mod t_lib {
     use super::*;
 
     // Convenience macro to build ClockBoundError for unit tests
-    macro_rules! clockbound {
+    macro_rules! clockbound_v2 {
         (($asof_tv_sec:literal, $asof_tv_nsec:literal), ($after_tv_sec:literal, $after_tv_nsec:literal)) => {
-            ClockErrorBound::new(
+            ClockErrorBoundV2::new(
                 TimeSpec::new($asof_tv_sec, $asof_tv_nsec), // as_of
                 TimeSpec::new($after_tv_sec, $after_tv_nsec), // void_after
                 10000,                                      // bound_nsec
@@ -401,11 +509,15 @@ mod t_lib {
     /// Assert the bound on clock error is computed correctly
     #[test]
     fn compute_bound_ok() {
-        let ceb = clockbound!((0, 0), (10, 0));
+        let ceb = clockbound_v2!((0, 0), (10, 0));
         let real = TimeSpec::new(2, 0);
         let mono = TimeSpec::new(2, 0);
 
-        let (earliest, latest, status) = ceb
+        let ClockBoundNowResult {
+            earliest,
+            latest,
+            clock_status,
+        } = ceb
             .compute_bound_at(real, mono)
             .expect("Failed to compute bound");
 
@@ -415,18 +527,22 @@ mod t_lib {
         assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 12_000);
         assert_eq!(latest.tv_sec(), 2);
         assert_eq!(latest.tv_nsec(), 12_000);
-        assert_eq!(status, ClockStatus::Synchronized);
+        assert_eq!(clock_status, ClockStatus::Synchronized);
     }
 
     /// Assert the bound on clock error is computed correctly, with realtime and monotonic clocks
     /// disagreeing on time
     #[test]
     fn compute_bound_ok_when_real_ahead() {
-        let ceb = clockbound!((0, 0), (10, 0));
+        let ceb = clockbound_v2!((0, 0), (10, 0));
         let real = TimeSpec::new(20, 0); // realtime clock way ahead
         let mono = TimeSpec::new(4, 0);
 
-        let (earliest, latest, status) = ceb
+        let ClockBoundNowResult {
+            earliest,
+            latest,
+            clock_status,
+        } = ceb
             .compute_bound_at(real, mono)
             .expect("Failed to compute bound");
 
@@ -436,18 +552,22 @@ mod t_lib {
         assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 14_000);
         assert_eq!(latest.tv_sec(), 20);
         assert_eq!(latest.tv_nsec(), 14_000);
-        assert_eq!(status, ClockStatus::Synchronized);
+        assert_eq!(clock_status, ClockStatus::Synchronized);
     }
 
     /// Assert the clock status is FreeRunning if the ClockErrorBound data is passed the grace
     /// period
     #[test]
     fn compute_bound_force_free_running_status() {
-        let ceb = clockbound!((0, 0), (100, 0));
+        let ceb = clockbound_v2!((0, 0), (100, 0));
         let real = TimeSpec::new(8, 0);
         let mono = TimeSpec::new(8, 0);
 
-        let (earliest, latest, status) = ceb
+        let ClockBoundNowResult {
+            earliest,
+            latest,
+            clock_status,
+        } = ceb
             .compute_bound_at(real, mono)
             .expect("Failed to compute bound");
 
@@ -457,17 +577,21 @@ mod t_lib {
         assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 18_000);
         assert_eq!(latest.tv_sec(), 8);
         assert_eq!(latest.tv_nsec(), 18_000);
-        assert_eq!(status, ClockStatus::FreeRunning);
+        assert_eq!(clock_status, ClockStatus::FreeRunning);
     }
 
     /// Assert the clock status is Unknown if the ClockErrorBound data is passed void_after
     #[test]
     fn compute_bound_unknown_status_if_expired() {
-        let ceb = clockbound!((0, 0), (5, 0));
+        let ceb = clockbound_v2!((0, 0), (5, 0));
         let real = TimeSpec::new(10, 0);
         let mono = TimeSpec::new(10, 0); // Passed void_after
 
-        let (earliest, latest, status) = ceb
+        let ClockBoundNowResult {
+            earliest,
+            latest,
+            clock_status,
+        } = ceb
             .compute_bound_at(real, mono)
             .expect("Failed to compute bound");
 
@@ -477,13 +601,13 @@ mod t_lib {
         assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 20_000);
         assert_eq!(latest.tv_sec(), 10);
         assert_eq!(latest.tv_nsec(), 20_000);
-        assert_eq!(status, ClockStatus::Unknown);
+        assert_eq!(clock_status, ClockStatus::Unknown);
     }
 
     /// Assert errors are returned if the ClockBoundError data is malformed with bad drift
     #[test]
     fn compute_bound_bad_drift() {
-        let mut ceb = clockbound!((0, 0), (10, 0));
+        let mut ceb = clockbound_v2!((0, 0), (10, 0));
         let real = TimeSpec::new(5, 0);
         let mono = TimeSpec::new(5, 0);
         ceb.max_drift_ppb = 2_000_000_000;
@@ -495,7 +619,7 @@ mod t_lib {
     /// reading clocks at 'now'
     #[test]
     fn compute_bound_causality_break() {
-        let ceb = clockbound!((5, 0), (10, 0));
+        let ceb = clockbound_v2!((5, 0), (10, 0));
         let real = TimeSpec::new(1, 0);
         let mono = TimeSpec::new(1, 0);
 

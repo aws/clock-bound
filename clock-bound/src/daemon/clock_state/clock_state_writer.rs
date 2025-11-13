@@ -10,7 +10,7 @@ use crate::{
             instant::Utc,
         },
     },
-    shm::{ClockErrorBound, ClockStatus, ShmWrite, ShmWriter},
+    shm::{ClockErrorBound, ClockErrorBoundGeneric, ClockStatus, ShmWrite, ShmWriter},
 };
 
 /// The drift rate/maximal frequency error in parts-per-billion
@@ -125,25 +125,33 @@ impl<T: ShmWrite> ClockStateWriter<T> {
     }
 
     fn write_shm(&mut self, as_of: Instant, bound_nsec: i64, clock_status: ClockStatus) {
-        let void_after = as_of + Duration::from_secs(1000);
-        // TODO: It may be worthwhile to add to this max drift ppb base the following components:
-        // - any slew rate for phase correction, since kernel clocks are used on client side
-        // - error inherent to our frequency calculation e.g. `period_max_error`
-        let max_drift_ppb = self.max_drift_ppb;
-        let ceb: ClockErrorBound = ClockErrorBound::new(
-            // Unwrap safety: unlikely to fail for any value for the distant future,
-            // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
-            TimeSpec::try_from(as_of).unwrap(),
-            // Unwrap safety: unlikely to fail for any value for the distant future,
-            // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
-            TimeSpec::try_from(void_after).unwrap(),
-            bound_nsec,
-            self.disruption_marker,
-            max_drift_ppb,
-            clock_status,
-            self.clock_disruption_support_enabled,
-        );
-        self.shm_writer.write(&ceb);
+        let ceb = ClockErrorBoundGeneric::builder()
+            .as_of(
+                // Unwrap safety: unlikely to fail for any value for the distant future,
+                // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
+                TimeSpec::try_from(as_of).unwrap(),
+            )
+            .void_after(
+                // Unwrap safety: unlikely to fail for any value for the distant future,
+                // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
+                TimeSpec::try_from(as_of + Duration::from_secs(1000)).unwrap(),
+            )
+            .bound_nsec(bound_nsec)
+            .disruption_marker(self.disruption_marker)
+            .max_drift_ppb(
+                // TODO: It may be worthwhile to add to this max drift ppb base the following
+                // components:
+                // - any slew rate for phase correction, since kernel clocks are used on client side
+                // - error inherent to our frequency calculation e.g. `period_max_error`
+                self.max_drift_ppb,
+            )
+            .clock_status(clock_status)
+            .clock_disruption_support_enabled(self.clock_disruption_support_enabled)
+            .build(2);
+
+        if let Ok(ceb) = ceb {
+            self.shm_writer.write(&ceb);
+        }
     }
 }
 
@@ -167,12 +175,10 @@ fn get_bound(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::daemon::time::{Duration, TscCount, tsc::Period};
     use mockall::mock;
     use rstest::rstest;
-
-    use crate::daemon::time::{Duration, TscCount, tsc::Period};
-
-    use super::*;
 
     mock! {
         ShmWriter {}
@@ -220,15 +226,16 @@ mod tests {
         let max_drift_ppb = 234;
         let disruption_marker = 345;
         let clock_disruption_support_enabled = true;
-        let expected_ceb = ClockErrorBound::new(
-            TimeSpec::try_from(as_of).unwrap(),
-            TimeSpec::try_from(as_of + Duration::from_secs(1000)).unwrap(),
-            bound_nsec,
-            disruption_marker,
-            max_drift_ppb,
-            clock_status,
-            clock_disruption_support_enabled,
-        );
+        let expected_ceb = ClockErrorBoundGeneric::builder()
+            .as_of(TimeSpec::try_from(as_of).unwrap())
+            .void_after(TimeSpec::try_from(as_of + Duration::from_secs(1000)).unwrap())
+            .bound_nsec(bound_nsec)
+            .disruption_marker(disruption_marker)
+            .max_drift_ppb(max_drift_ppb)
+            .clock_status(clock_status)
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
+            .build(2)
+            .unwrap();
         let mut shm_writer = MockShmWriter::new();
         shm_writer
             .expect_write()

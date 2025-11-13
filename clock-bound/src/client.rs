@@ -3,11 +3,10 @@
 pub use crate::shm::CLOCKBOUND_SHM_DEFAULT_PATH;
 pub use crate::shm::ClockStatus;
 use crate::shm::ShmReader;
-use crate::shm::{ClockErrorBound, ShmError};
+use crate::shm::{ClockBoundNowResult, ClockBoundSnapshot, ClockErrorBound, ShmError};
 pub use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use crate::vmclock::shm_reader::VMClockShmReader;
 use errno::Errno;
-use nix::sys::time::TimeSpec;
 use std::ffi::CString;
 use std::path::Path;
 
@@ -70,7 +69,7 @@ impl ClockBoundClient {
         // Create the VMClock shared memory accessor
         let vmclock_shm = VMClockSHM::new(
             vmclock_shm_path,
-            cb_snapshot.clock_disruption_support_enabled,
+            cb_snapshot.clock_disruption_support_enabled(),
         )?;
 
         Ok(ClockBoundClient {
@@ -94,12 +93,13 @@ impl ClockBoundClient {
         // The very first thing to do is to read from the ClockBound shared memory segment, take a
         // snapshot to obtain the clock parameters and bound on error, and create a timestamp.
         let cb_snap = self.clockbound_shm.snapshot()?;
-        let (earliest, latest, clock_status) = cb_snap.now()?;
+        let mut clock_bound_now_result = cb_snap.now()?;
 
         // Now that the timestamp is created, check whether the clockbound daemon has been
         // restarted and the option to enable the clock disruption support has been turned on. If
         // so, need to create a reader for the VMClock device shared memory.
-        if self.vmclock_shm.vmclock_shm_reader.is_none() && cb_snap.clock_disruption_support_enabled
+        if self.vmclock_shm.vmclock_shm_reader.is_none()
+            && cb_snap.clock_disruption_support_enabled()
         {
             self.vmclock_shm.vmclock_shm_reader = Some(VMClockShmReader::new(
                 self.vmclock_shm.vmclock_shm_path.as_str(),
@@ -112,22 +112,16 @@ impl ClockBoundClient {
         // marker between the clockbound daemon and the VMClock. If these disagree, a disruption
         // has occured, and the clockbound daemon has not recovered from it yet.
         let is_disrupted = match self.vmclock_shm.disruption_marker()? {
-            Some(marker) => marker != cb_snap.disruption_marker,
+            Some(marker) => marker != cb_snap.disruption_marker(),
             None => false,
         };
 
         // If the clock is disrupted, overwrite the status
-        let result_status = if is_disrupted {
-            ClockStatus::Disrupted
-        } else {
-            clock_status
-        };
+        if is_disrupted {
+            clock_bound_now_result.clock_status = ClockStatus::Disrupted;
+        }
 
-        Ok(ClockBoundNowResult {
-            earliest,
-            latest,
-            clock_status: result_status,
-        })
+        Ok(clock_bound_now_result)
     }
 }
 
@@ -224,14 +218,6 @@ impl VMClockSHM {
     }
 }
 
-/// Result of the `ClockBoundClient::now()` function.
-#[derive(PartialEq, Clone, Debug)]
-pub struct ClockBoundNowResult {
-    pub earliest: TimeSpec,
-    pub latest: TimeSpec,
-    pub clock_status: ClockStatus,
-}
-
 #[derive(Debug)]
 pub struct ClockBoundError {
     pub kind: ClockBoundErrorKind,
@@ -284,10 +270,13 @@ pub enum ClockBoundErrorKind {
 #[cfg(test)]
 mod lib_tests {
     use super::*;
+    use crate::shm::ClockErrorBoundGeneric;
     use crate::shm::{ClockErrorBound, ShmWrite, ShmWriter};
     use crate::vmclock::shm::{VMClockClockStatus, VMClockShmBody};
     use crate::vmclock::shm_writer::{VMClockShmWrite, VMClockShmWriter};
+
     use byteorder::{NativeEndian, WriteBytesExt};
+    use nix::sys::time::TimeSpec;
     use std::ffi::CStr;
     use std::fs::{File, OpenOptions};
     use std::io::Write;
@@ -307,16 +296,11 @@ mod lib_tests {
          $segsize:literal,
          $version:literal,
          $generation:literal) => {
-            // Build a the bound on clock error data
-            let ceb = ClockErrorBound::new(
-                TimeSpec::new(0, 0),  // as_of
-                TimeSpec::new(0, 0),  // void_after
-                0,                    // bound_nsec
-                0,                    // disruption_marker
-                0,                    // max_drift_ppb
-                ClockStatus::Unknown, // clock_status
-                true,                 // clock_disruption_support_enabled
-            );
+            // Build a default ClockErrorBound layout version 2
+            let ceb = ClockErrorBoundGeneric::builder()
+                .clock_disruption_support_enabled(true)
+                .build(2)
+                .unwrap();
 
             // Convert the ceb struct into a slice so we can write it all out, fairly magic.
             // Definitely needs the #[repr(C)] layout.
@@ -706,15 +690,7 @@ mod lib_tests {
         let mut writer =
             ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
 
-        let ceb = ClockErrorBound::new(
-            TimeSpec::new(0, 0),  // as_of
-            TimeSpec::new(0, 0),  // void_after
-            0,                    // bound_nsec
-            0,                    // disruption_marker
-            0,                    // max_drift_ppb
-            ClockStatus::Unknown, // clock_status
-            true,                 // clock_disruption_support_enabled
-        );
+        let ceb = ClockErrorBoundGeneric::builder().build(2).unwrap();
         writer.write(&ceb);
 
         let mut clockbound =
@@ -732,15 +708,14 @@ mod lib_tests {
 
         // Write out data with a extremely high max_drift_ppb value so that
         // the client will have an error when calling now().
-        let ceb = ClockErrorBound::new(
-            TimeSpec::new(100, 0),
-            TimeSpec::new(10, 0),
-            0,
-            0,
-            1_000_000_000, // max_drift_ppb
-            ClockStatus::Synchronized,
-            true,
-        );
+        let ceb = ClockErrorBoundGeneric::builder()
+            .as_of(TimeSpec::new(100, 0))
+            .void_after(TimeSpec::new(10, 0))
+            .max_drift_ppb(1_000_000_000)
+            .clock_status(ClockStatus::Synchronized)
+            .clock_disruption_support_enabled(true)
+            .build(2)
+            .unwrap();
         writer.write(&ceb);
 
         // Validate now has Result with an error.

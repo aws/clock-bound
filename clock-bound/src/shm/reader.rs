@@ -8,7 +8,7 @@ use std::sync::atomic;
 
 use crate::shm::shm_header::{CLOCKBOUND_SHM_SUPPORTED_VERSION, ShmHeader};
 use crate::{
-    shm::{ClockErrorBound, ShmError},
+    shm::{ClockErrorBound, ClockErrorBoundGeneric, ShmError},
     syserror,
 };
 
@@ -184,13 +184,18 @@ impl ShmReader {
         cursor = unsafe { cursor.add(size_of::<ShmHeader>()) };
         let ceb_shm = ptr::addr_of!(*cursor.cast::<ClockErrorBound>());
 
+        // Atomically read the current version in the shared memory segment
+        // SAFETY: `self.version` has been validated when creating the reader
+        let shm_version = unsafe { &*version };
+        let shm_version = shm_version.load(atomic::Ordering::Acquire);
+
         Ok(ShmReader {
             _marker: std::marker::PhantomData,
             _guard: mmap_guard,
             version,
             generation,
             ceb_shm,
-            snapshot_ceb: ClockErrorBound::default(),
+            snapshot_ceb: ClockErrorBoundGeneric::builder().build(shm_version)?,
             snapshot_gen: 0,
         })
     }
@@ -327,15 +332,16 @@ mod t_reader {
          $bound_nsec:literal,
          $max_drift: literal) => {
             // Build the bound on clock error data
-            let ceb = ClockErrorBound::new(
-                TimeSpec::new($as_of_sec, $as_of_nsec), // as_of
-                TimeSpec::new($void_after_sec, $void_after_nsec), // void_after
-                $bound_nsec,                            // bound_nsec
-                0,                                      // disruption_marker
-                $max_drift,                             // max_drift_ppb
-                ClockStatus::Synchronized,              // clock_status
-                true,                                   // clock_disruption_support_enabled
-            );
+            let ceb = ClockErrorBoundGeneric::builder()
+                .as_of(TimeSpec::new($as_of_sec, $as_of_nsec))
+                .void_after(TimeSpec::new($void_after_sec, $void_after_nsec))
+                .bound_nsec($bound_nsec)
+                .disruption_marker(0)
+                .max_drift_ppb($max_drift)
+                .clock_status(ClockStatus::Synchronized)
+                .clock_disruption_support_enabled(true)
+                .build(2)
+                .unwrap();
 
             // Convert the ceb struct into a slice so we can write it all out, fairly magic.
             // Definitely needs the #[repr(C)] layout.
@@ -400,7 +406,7 @@ mod t_reader {
 
         assert_eq!(version.load(atomic::Ordering::Relaxed), 2);
         assert_eq!(generation.load(atomic::Ordering::Relaxed), 10);
-        assert_eq!(ceb.bound_nsec, 123);
+        assert_eq!(ceb.bound_nsec(), 123);
     }
 
     /// Assert that creating a reader when the

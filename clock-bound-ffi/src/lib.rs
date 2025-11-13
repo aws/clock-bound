@@ -5,10 +5,8 @@
 // Align with C naming conventions
 #![allow(non_camel_case_types)]
 
-use clock_bound::client::{
-    ClockBoundClient, ClockBoundError, ClockBoundErrorKind, ClockBoundNowResult,
-};
-use clock_bound::shm::ClockStatus;
+use clock_bound::client::{ClockBoundClient, ClockBoundError, ClockBoundErrorKind};
+use clock_bound::shm::{ClockBoundNowResult, ClockStatus};
 use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use core::ptr;
 use errno::Errno;
@@ -346,7 +344,7 @@ pub unsafe extern "C" fn clockbound_now(
 mod t_ffi {
     use super::*;
     use byteorder::{LittleEndian, NativeEndian, WriteBytesExt};
-    use clock_bound::shm::ClockErrorBound;
+    use clock_bound::shm::{ClockErrorBound, ClockErrorBoundGeneric};
     use std::ffi::CString;
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -366,8 +364,8 @@ mod t_ffi {
          $segsize:literal,
          $version:literal,
          $generation:literal) => {
-            // Build a the bound on clock error data
-            let ceb = ClockErrorBound::default();
+            // Build a default ClockErrorBound struct (layout version 2)
+            let ceb = ClockErrorBoundGeneric::builder().build(2).unwrap();
 
             // Convert the ceb struct into a slice so we can write it all out, fairly magic.
             // Definitely needs the #[repr(C)] layout.

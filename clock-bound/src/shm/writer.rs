@@ -312,19 +312,20 @@ mod t_writer {
     /// afterwards.
     use tempfile::NamedTempFile;
 
-    use crate::shm::ClockStatus;
+    use crate::shm::{ClockErrorBoundGeneric, ClockStatus};
 
     macro_rules! clockerrorbound {
         () => {
-            ClockErrorBound::new(
-                TimeSpec::new(1, 2),       // as_of
-                TimeSpec::new(3, 4),       // void_after
-                123,                       // bound_nsec
-                10,                        // disruption_marker
-                100,                       // max_drift_ppb
-                ClockStatus::Synchronized, // clock_status
-                true,                      // clock_disruption_support_enabled
-            )
+            ClockErrorBoundGeneric::builder()
+                .as_of(TimeSpec::new(1, 2))
+                .void_after(TimeSpec::new(3, 4))
+                .bound_nsec(123)
+                .disruption_marker(10)
+                .max_drift_ppb(100)
+                .clock_status(ClockStatus::Synchronized)
+                .clock_disruption_support_enabled(true)
+                .build(2)
+                .unwrap()
         };
     }
 
