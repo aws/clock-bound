@@ -26,6 +26,8 @@ use link_local::LinkLocal;
 mod ntp_source;
 use ntp_source::NTPSource;
 
+mod phc;
+
 pub mod tsc;
 
 mod vmclock;

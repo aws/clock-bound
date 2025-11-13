@@ -23,7 +23,7 @@ libc = { version = "0.2", default-features = false, features = [
   "extra_traits",
 ] }
 md5 = "0.8.0"
-nix = { version = "0.26", features = ["feature", "time"] }
+nix = { version = "0.26" }
 nom = { version = "8", optional = true }
 reqwest = { version = "0.12.24", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
@@ -70,6 +70,7 @@ tracing-test = "0.2.5"
 
 [features]
 client = []
+
 daemon = [
   "dep:clap",
   "dep:serde",
@@ -77,10 +78,13 @@ daemon = [
   "dep:chrono",
   "dep:bytes",
   "dep:nom",
+  "dep:reqwest",
   "dep:thiserror",
   "dep:tracing-appender",
+  "nix/feature",
+  "nix/ioctl",
+  "nix/time",
   "tracing-subscriber/env-filter",
-  "dep:reqwest",
 ]
 test-side-by-side = [
 ] # run without changing system clock. And compare against system clock
