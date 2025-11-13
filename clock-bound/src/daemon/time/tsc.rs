@@ -15,6 +15,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+const FEMTOS_PER_SEC_F64: f64 = 1.0e15;
+
 const FREQUENCY_TO_TIMEX_SCALE: f64 = (1 << 16) as f64;
 
 /// Marker type to crate a raw timestamp with [`super::inner::Time`]
@@ -211,7 +213,7 @@ impl Div<Frequency> for TscDiff {
 
     fn div(self, rhs: Frequency) -> Self::Output {
         let raw = self.get() as f64;
-        let duration_femtos = raw / rhs.0 * 1.0e15;
+        let duration_femtos = raw / rhs.0 * FEMTOS_PER_SEC_F64;
         Duration::from_femtos(duration_femtos.round() as i128)
     }
 }
@@ -221,7 +223,7 @@ impl<T: FemtoType + Copy> Mul<Frequency> for Diff<T> {
 
     fn mul(self, rhs: Frequency) -> Self::Output {
         let duration_femtos = self.as_femtos() as f64;
-        let raw = duration_femtos * rhs.0 / 1.0e15;
+        let raw = duration_femtos * rhs.0 / FEMTOS_PER_SEC_F64;
         TscDiff::new(raw.round() as i128)
     }
 }

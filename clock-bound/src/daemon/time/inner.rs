@@ -11,6 +11,7 @@ use std::{
 };
 
 use libc::timeval;
+use nix::sys::time::TimeSpec;
 
 /// Abstraction used to reuse basic time arithmetic, but allow for different types based on its usage
 pub trait Type {}
@@ -240,6 +241,24 @@ impl<T: FemtoType + Copy> Time<T> {
         let secs = Self::from_secs(secs);
         let nanos = Diff::<T>::from_nanos(i128::from(nanos));
         secs + nanos
+    }
+
+    /// Construct from a `nix::time::TimeSpec` since the Unix Epoch.
+    /// Generally only expected to be called using `TimeSpec` retrieved via
+    /// `nix::time::clock_gettime` call.
+    ///
+    /// # Panics
+    /// Panics if `nanos >= 1_000_000_000`, or value does not fit within the type
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "timespec from clock_gettime tv_nsec should be between 0 and 1e9-1 so no truncation"
+    )]
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "timespect from clock_gettime tv_nsec should be between 0 and 1e9-1 so no loss of sign"
+    )]
+    pub fn from_timespec(timespec: TimeSpec) -> Self {
+        Self::from_time(timespec.tv_sec().into(), timespec.tv_nsec() as u32)
     }
 
     /// Returns the total number of femtoseconds since the Unix Epoch
