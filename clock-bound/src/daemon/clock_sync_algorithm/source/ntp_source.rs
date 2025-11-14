@@ -13,12 +13,12 @@ use crate::daemon::time::tsc::Skew;
 ///
 /// Wraps around an NTP feed-forward clock-sync algorithm
 #[derive(Debug, Clone, PartialEq)]
-pub struct NTPSource {
+pub struct NtpSource {
     source_address: SocketAddr,
     inner: ff::Ntp,
 }
 
-impl NTPSource {
+impl NtpSource {
     const POLL_INTERVAL: Duration = Duration::from_secs(16);
 
     /// Create a new NTP Source reference clock source

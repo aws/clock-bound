@@ -106,7 +106,7 @@ fn tester_event_to_link_local(e: &Event) -> RoutableEvent {
 }
 
 // now-ish. Oct 27 2025
-const NOW_ISH: TrueInstant = TrueInstant::from_days(365 * 55 + 299);
+pub const NOW_ISH: TrueInstant = TrueInstant::from_days(365 * 55 + 299);
 
 #[cfg(test)]
 mod tests {

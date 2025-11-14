@@ -88,12 +88,12 @@ impl Phc {
 
     /// Calculate the clock error bound of this event at the time of the event
     ///
-    /// This is different from the clock error bound that would be reported to a user outside of hte daemon.
+    /// This is different from the clock error bound that would be reported to a user outside of the daemon.
     ///
     /// First because this is a sans-IO input, there is not concept of reading this "after" the event comes in.
     /// Because of this, there is no additional value added to the root-dispersion.
     ///
-    /// Second, the round trip time needs a calculations of hte period to be able to convert hte TSC rtt into a
+    /// Second, the round trip time needs a calculations of the period to be able to convert the TSC rtt into a
     /// duration of time.
     ///
     /// Third, there is no "system clock offset" value. That is a parameter exclusive to modifying the system clock, which this component does not do.

@@ -23,11 +23,9 @@ pub mod selected_clock;
 use std::sync::Arc;
 
 use crate::daemon::{
-    clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source::NTPSource},
-    io::{
-        ClockDisruptionEvent,
-        ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
-    },
+    clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source::NtpSource},
+    io::ClockDisruptionEvent,
+    io::ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
     receiver_stream::{ReceiverStream, RoutableEvent},
     selected_clock::SelectedClockSource,
     time::tsc::Skew,
@@ -96,7 +94,7 @@ impl Daemon {
                 MAX_DISPERSION_GROWTH,
             ))
             .ntp_sources(
-                clock_sync_algorithm::source::NTPSource::create_time_aws_sources(
+                clock_sync_algorithm::source::NtpSource::create_time_aws_sources(
                     MAX_DISPERSION_GROWTH,
                 ),
             )
@@ -242,7 +240,7 @@ impl Daemon {
     /// > 2. `receiver_vec`: Vector of `NTPSourceReceiver`
     fn init_ntp_source_buffers(
         ntp_source_buffer_size: usize,
-        ntp_source_vec: &Vec<NTPSource>,
+        ntp_source_vec: &Vec<NtpSource>,
     ) -> (Vec<NTPSourceSender>, Vec<NTPSourceReceiver>) {
         let mut sender_vec: Vec<NTPSourceSender> = Vec::new();
         let mut receiver_vec: Vec<NTPSourceReceiver> = Vec::new();

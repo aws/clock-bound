@@ -9,6 +9,8 @@
 
 mod link_local;
 mod ntp_source;
+mod phc;
 
 pub use link_local::LinkLocal;
-pub use ntp_source::NTPSource;
+pub use ntp_source::NtpSource;
+pub use phc::Phc;

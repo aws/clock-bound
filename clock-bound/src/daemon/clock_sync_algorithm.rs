@@ -42,7 +42,11 @@ pub struct ClockSyncAlgorithm {
     /// The link-local reference clock's ff algorithm
     link_local: source::LinkLocal,
     // A Vector of ff algorithms for ntp source reference clocks
-    pub ntp_sources: Vec<source::NTPSource>,
+    pub ntp_sources: Vec<source::NtpSource>,
+    /// The PHC device
+    ///
+    /// Optional since not every instance supports this
+    phc: Option<source::Phc>,
     /// Shared reference to the current selected clock source
     selected_clock: Arc<SelectedClockSource>,
     /// Selector. Chooses the best clock source
@@ -98,8 +102,10 @@ impl ClockSyncAlgorithm {
             RoutableEvent::NtpSource(sender_address, event) => {
                 Self::feed_ntp_source(&mut self.ntp_sources, sender_address, event)
             }
-            RoutableEvent::Phc(_data) => {
-                todo!("Implement PHC IO event delivery")
+            RoutableEvent::Phc(event) => {
+                // unwrap: feeding a phc event without PHC built is a bug
+                let phc = self.phc.as_mut().unwrap();
+                Self::feed_phc(phc, event)
             }
         };
         let (clock_parameters, source_info) = alg_output?;
@@ -141,7 +147,7 @@ impl ClockSyncAlgorithm {
 
     /// Feed event into ntp source
     fn feed_ntp_source(
-        ntp_sources: &mut [source::NTPSource],
+        ntp_sources: &mut [source::NtpSource],
         sender_address: SocketAddr,
         event: event::Ntp,
     ) -> Option<(&ClockParameters, SourceInfo)> {
@@ -152,6 +158,14 @@ impl ClockSyncAlgorithm {
             .find(|source| source.socket_address() == sender_address)
             .and_then(|source| source.feed(event))
             .map(|params| (params, SourceInfo::NtpSource(sender_address, stratum)))
+    }
+
+    /// Feed event into the phc
+    fn feed_phc(
+        phc: &mut source::Phc,
+        event: event::Phc,
+    ) -> Option<(&ClockParameters, SourceInfo)> {
+        phc.feed(event).map(|params| (params, SourceInfo::Phc))
     }
 
     fn update_selected_clock(selected_clock: &Arc<SelectedClockSource>, source_info: SourceInfo) {
@@ -179,6 +193,7 @@ impl ClockSyncAlgorithm {
         let Self {
             link_local,
             ntp_sources,
+            phc,
             selected_clock,
             selector,
         } = self;
@@ -187,6 +202,9 @@ impl ClockSyncAlgorithm {
         link_local.handle_disruption();
         for source in ntp_sources {
             source.handle_disruption();
+        }
+        if let Some(phc) = phc {
+            phc.handle_disruption();
         }
         selector.handle_disruption();
         tracing::info!("Handled clock disruption event");
