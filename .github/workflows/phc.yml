@@ -1,0 +1,67 @@
+name: PHC
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cargo build
+        run: cargo build --bin phc-test --release
+
+      - name: Upload phc-test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phc-test
+          path: target/release/phc-test
+
+  PHC_Tests:
+    name: PHC Tests
+    needs: build
+    runs-on:
+      - codebuild-StagingClockBound-${{ github.run_id }}-${{ github.run_attempt }}
+        buildspec-override:true
+
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: phc-test
+
+      - run: echo "Getting details about the host environment."
+      - run: whoami
+      - run: cat /etc/os-release
+      - run: uname -a
+      - run: lsmod
+      - run: ls -al /dev/
+      - run: ip addr
+
+      - run: echo "Validating that the host has an ENA driver installed."
+      - run: lsmod | grep ena
+
+      - run: echo "Validating that the host has a PTP device."
+      - run: ls -al /dev/ptp*
+
+      - run: echo "Changing permissions of PTP devices to be readable by all."
+      - run: sudo chmod a+r /dev/ptp*
+      - run: ls -al /dev/ptp*
+
+      - run: echo "Changing permissions of the test artifact to be executable."
+      - run: chmod a+x phc-test
+
+      - run: echo "Running the PHC test!"
+      - run: ./phc-test
