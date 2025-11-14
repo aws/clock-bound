@@ -10,13 +10,19 @@ use clock_bound::daemon::{
     async_ring_buffer::{self, BufferClosedError, Receiver},
     io::ntp::DaemonInfo,
 };
+use std::fs::OpenOptions;
+use std::io::Seek;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time;
 
 use rand::{RngCore, rng};
+use tempfile::NamedTempFile;
 use tokio::time::{Duration, timeout};
 use tracing_subscriber::EnvFilter;
+
+mod vmclock;
+use vmclock::{VMClockContent, write_vmclock_content};
 
 /// Time out for waiting on source polling task to produce an NTP event
 ///
@@ -30,7 +36,8 @@ async fn main() {
         .init();
 
     test_normal_polling_rate().await;
-    test_burst_polling_rate().await;
+    test_startup_polling_rate().await;
+    test_clock_disruption_polling_rate().await;
     test_polls_with_selected_clock_source_combos().await;
 }
 
@@ -51,10 +58,21 @@ async fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
     (receiver, selected_clock, sourceio)
 }
 
+/// Set up link local source io for testing
+async fn setup_with_vmclock(
+    vmclock_shm_path: &str,
+) -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
+    let (link_local_receiver, selected_clock, mut sourceio) = setup().await;
+
+    sourceio.create_vmclock(vmclock_shm_path).await.unwrap();
+    sourceio.spawn_all();
+
+    (link_local_receiver, selected_clock, sourceio)
+}
+
 /// Test normal polling
 async fn test_normal_polling_rate() {
     println!("Testing normal polling rate ...");
-    let polling_iterations: u32 = 10;
     let (receiver, _selected_clock, _sourceio) = setup().await;
 
     // Wait for burst mode to end before testing normal polling rate
@@ -63,31 +81,89 @@ async fn test_normal_polling_rate() {
     // Clear any burst mode packets from buffer
     while let Ok(Ok(_)) = timeout(Duration::from_millis(100), receiver.recv()).await {}
 
-    let mut start = time::Instant::now();
-    let mut polling_rate = time::Duration::from_secs(0);
-    for _ in 1..=polling_iterations {
-        let ntpevent = timeout(Duration::from_secs(TIMEOUT_SECS), receiver.recv())
-            .await
-            .unwrap();
-        let now = time::Instant::now();
-        let d = now - start;
-        println!(
-            "It looks like we got an ntp packet \n{ntpevent:#?}\n{:?} ms",
-            d.as_millis()
-        );
-        polling_rate += d;
-        start = now;
-    }
-    polling_rate /= polling_iterations;
+    // Poll the link local receiver
+    let polling_rate = measure_polling_rate(&receiver, Duration::from_secs(20)).await;
+
     println!("Polling rate avg: {polling_rate:?}");
     assert!(polling_rate.abs_diff(Duration::from_secs(2)) < time::Duration::from_millis(100));
     println!("Normal poll rate test PASSED");
 }
 
-/// Test burst polling
-async fn test_burst_polling_rate() {
-    println!("Testing burst polling rate ...");
+/// Test startup polling
+async fn test_startup_polling_rate() {
+    println!("Testing startup polling rate ...");
     let (receiver, _selected_clock, _sourceio) = setup().await;
+    let polling_rate = measure_polling_rate(&receiver, time::Duration::from_secs(1)).await;
+
+    println!("Burst Polling rate avg: {polling_rate:?}");
+    assert!(
+        polling_rate.abs_diff(LINK_LOCAL_BURST_INTERVAL_DURATION)
+            < time::Duration::from_millis(100)
+    );
+    println!("Burst poll rate test PASSED");
+}
+
+/// Test clock disruption polling
+async fn test_clock_disruption_polling_rate() {
+    println!("Testing normal polling rate ...");
+
+    let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
+    let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
+    let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
+    let mut vmclock_shm_file = OpenOptions::new()
+        .write(true)
+        .open(vmclock_shm_path)
+        .expect("open vmclock file failed");
+    let mut vmclock_content = VMClockContent::default();
+    write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
+
+    let (receiver, _selected_clock, _sourceio) = setup_with_vmclock(vmclock_shm_path).await;
+
+    // Wait for burst mode, initiated at startup to end
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Clear any burst mode packets from buffer
+    while let Ok(Ok(_)) = timeout(Duration::from_millis(100), receiver.recv()).await {}
+
+    // Base line polling rate.
+    let pre_base_line_polling_rate = measure_polling_rate(&receiver, Duration::from_secs(10)).await;
+    println!("Base line Polling rate avg: {pre_base_line_polling_rate:?}");
+
+    // Simulate a clock disruption event
+    // Update the shared memory file
+    vmclock_content.seq_count += 10;
+    vmclock_content.disruption_marker += 1;
+
+    let write_time = time::SystemTime::now();
+    vmclock_shm_file.rewind().unwrap();
+    write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
+
+    // Clock disruption polling rate
+    let polling_duration = Duration::from_millis(950) - write_time.elapsed().unwrap();
+    let clock_disruption_polling_rate = measure_polling_rate(&receiver, polling_duration).await;
+    println!("Clock disruption polling rate avg: {clock_disruption_polling_rate:?}");
+    println!("Clock disruption polling duration: {polling_duration:?}");
+    assert!(
+        clock_disruption_polling_rate.abs_diff(LINK_LOCAL_BURST_INTERVAL_DURATION)
+            < time::Duration::from_millis(100)
+    );
+
+    // Base line polling rate.
+    let post_base_line_polling_rate =
+        measure_polling_rate(&receiver, Duration::from_secs(10)).await;
+    println!("Base line Polling rate avg: {post_base_line_polling_rate:?}");
+
+    // The pre and post clock disruption event polling rates should be the same.
+    assert!(
+        pre_base_line_polling_rate.abs_diff(post_base_line_polling_rate)
+            < time::Duration::from_millis(100)
+    );
+
+    println!("Clock disruption rate test PASSED");
+}
+
+/// Measure the polling rate over a given period.
+async fn measure_polling_rate(receiver: &Receiver<Ntp>, sampling_period: Duration) -> Duration {
     let start = time::Instant::now();
     let mut polling_rate = time::Duration::from_secs(0);
     let mut count = 0;
@@ -105,6 +181,11 @@ async fn test_burst_polling_rate() {
             d.as_millis()
         );
 
+        // Skip the sample if it comes after the accepted duration.
+        if start.elapsed() >= sampling_period {
+            break;
+        }
+
         // Skip the first sample, the IO runner will poll immediately after it's created.
         if count == 0 {
             count += 1;
@@ -112,18 +193,9 @@ async fn test_burst_polling_rate() {
             polling_rate += d;
             count += 1;
         }
-
-        if start.elapsed() >= Duration::from_secs(1) {
-            break;
-        }
     }
     polling_rate /= count - 1;
-    println!("Burst Polling rate avg: {polling_rate:?}");
-    assert!(
-        polling_rate.abs_diff(LINK_LOCAL_BURST_INTERVAL_DURATION)
-            < time::Duration::from_millis(100)
-    );
-    println!("Burst poll rate test PASSED");
+    polling_rate
 }
 
 /// Test polling with varied selected clock source and stratum combinations
