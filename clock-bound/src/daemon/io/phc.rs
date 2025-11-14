@@ -22,7 +22,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-const PHC_SOURCE_INTERVAL_DURATION: std::time::Duration = tokio::time::Duration::from_secs(1);
+const PHC_SOURCE_INTERVAL_DURATION: std::time::Duration = tokio::time::Duration::from_millis(500);
 
 /// Timeout for a single read of the PHC device.
 const PHC_SOURCE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_millis(20);

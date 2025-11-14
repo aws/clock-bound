@@ -45,24 +45,33 @@ The output should look something like the following:
 
 ```sh
 [ec2-user@ip-172-31-31-154 ~]$ ./phc-test
-Lets get a PHC sample!
-It looks like we got an PHC sample
+Lets get PHC samples!
+PHC event received.
 Ok(
     Phc {
         tsc_pre: TscCount(
-            834121827837145,
+            1425415815539165,
         ),
         tsc_post: TscCount(
-            834121827896745,
+            1425415815545741,
         ),
         data: PhcData {
             time: Instant(
-                1762897830.385_289_585,
+                1763144203.339_967_033,
             ),
             clock_error_bound: Duration(
-                0.000_016_998,
+                0.000_016_188,
             ),
         },
     },
 )
+500 msec
+
+[...]
+
+Expected poll interval duration: 500ms
+Actual poll interval duration (i.e. measured amount): 499.986555ms
+Margin of error allowed for poll interval duration: 30ms
+Poll interval duration difference between actual and expected: 13.445µs
+PHC test is successful.
 ```

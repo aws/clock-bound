@@ -1,7 +1,7 @@
 //! PHC test executable.
 //!
 //! This executable tests that the PHC runner is able to read timestamps and error bounds,
-//! and that the polling rate is roughly once a second.
+//! and that the rate of receiving PHC events closely matches the expected PHC polling rate.
 
 use clock_bound::daemon::io::SourceIO;
 use clock_bound::daemon::selected_clock::SelectedClockSource;
@@ -19,10 +19,8 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    println!("Lets get a PHC sample!");
+    println!("Lets get PHC samples!");
     let (phc_sender, phc_receiver) = async_ring_buffer::create(1);
-
-    let mut start = time::Instant::now();
 
     let daemon_info = DaemonInfo {
         major_version: 2,
@@ -35,9 +33,9 @@ async fn main() {
     sourceio.spawn_all();
 
     let max_events_to_receive = 11;
-
     let mut total_polling_duration = time::Duration::from_secs(0);
     let mut num_events_received = 0;
+    let mut start = time::Instant::now();
 
     for i in 0..max_events_to_receive {
         // PHC events are expected to be received periodically.
@@ -50,7 +48,7 @@ async fn main() {
         let now = time::Instant::now();
         let duration = now - start;
         println!(
-            "It looks like we got an PHC sample \n{phc_event:#?}\n{:?} msec",
+            "PHC event received.\n{phc_event:#?}\n{:?} msec",
             duration.as_millis()
         );
 
@@ -62,7 +60,28 @@ async fn main() {
 
         start = now;
     }
-    let polling_rate = total_polling_duration / num_events_received;
-    println!("Polling rate avg: {polling_rate:?}");
-    assert!(polling_rate.abs_diff(time::Duration::from_secs(1)) < time::Duration::from_millis(100));
+
+    let expected_poll_interval_duration = time::Duration::from_millis(500);
+    println!("Expected poll interval duration: {expected_poll_interval_duration:?}");
+
+    let actual_poll_interval_duration = total_polling_duration / num_events_received;
+    println!("Actual poll interval duration (i.e. measured): {actual_poll_interval_duration:?}");
+
+    let poll_interval_duration_margin_of_error_allowed = time::Duration::from_millis(30);
+    println!(
+        "Margin of error allowed for poll interval duration: {poll_interval_duration_margin_of_error_allowed:?}"
+    );
+
+    let poll_interval_difference_from_expected =
+        actual_poll_interval_duration.abs_diff(expected_poll_interval_duration);
+    println!(
+        "Poll interval duration difference between actual and expected: {poll_interval_difference_from_expected:?}"
+    );
+
+    assert!(
+        poll_interval_difference_from_expected < poll_interval_duration_margin_of_error_allowed
+    );
+
+    // Test is successful because all the assertions passed.
+    println!("PHC test is successful.");
 }
