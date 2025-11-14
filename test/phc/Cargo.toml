@@ -1,0 +1,27 @@
+[package]
+name = "phc"
+description = "A test program that attempts to obtain samples from the PHC."
+license = "Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "phc-test"
+path = "src/main.rs"
+
+[dependencies]
+clock-bound = { version = "2.0", path = "../../clock-bound", features = [
+  "daemon",
+] }
+rand = "0.9.2"
+tokio = { version = "1.47.1", features = ["macros", "rt"] }
+tracing = "0.1"
+tracing-appender = { version = "0.2" }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }

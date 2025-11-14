@@ -7,6 +7,7 @@ members = [
   "test/clock-bound-vmclock-client-test",
   "test/link-local",
   "test/ntp-source",
+  "test/phc",
   "test/vmclock-updater",
   "test/clock-bound-adjust-clock",
   "test/clock-bound-adjust-clock-test",
@@ -25,6 +26,7 @@ authors = [
   "Mohammed Kabir <mekabir93@gmail.com>",
   "Myles Neloms <nelomsmn@gmail.com>",
   "Nick Matthews <nick.matthews1020@gmail.com>",
+  "Jennifer Solidum <jennsolidum@gmail.com>",
 ]
 categories = [ "date-and-time" ]
 edition = "2024"

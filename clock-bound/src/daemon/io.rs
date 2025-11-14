@@ -27,6 +27,7 @@ mod ntp_source;
 use ntp_source::NTPSource;
 
 mod phc;
+use phc::Phc;
 
 pub mod tsc;
 
@@ -42,6 +43,8 @@ pub struct SourceIO {
     link_local: Option<Source<LinkLocal>>,
     /// Mapping between the socket ip-address and the ntp io source
     ntp_sources: HashMap<SocketAddr, Source<NTPSource>>,
+    /// The PHC source.
+    phc: Option<Source<Phc>>,
     /// The VMClock source
     vmclock: Option<Source<VMClock>>,
     /// Contains the channel used to communicate clock disruption events.
@@ -60,6 +63,7 @@ impl SourceIO {
         SourceIO {
             link_local: None,
             ntp_sources: HashMap::new(),
+            phc: None,
             vmclock: None,
             clock_disruption_channels: ClockDisruptionChannels { sender, receiver },
             selected_clock,
@@ -99,7 +103,7 @@ impl SourceIO {
             };
         }
 
-        info!("Source update complete.");
+        info!("Source link local update complete.");
     }
 
     /// Spawns the IO task for sampling a specific NTP Server source.
@@ -139,7 +143,35 @@ impl SourceIO {
             self.ntp_sources.insert(server_address, source);
         }
 
-        info!("Source update complete.");
+        info!("Source NTP update complete.");
+    }
+
+    /// Spawns the IO task for sampling the PHC source.
+    ///
+    /// # Panics
+    /// - If not called within the `tokio` runtime.
+    pub async fn create_phc(&mut self, event_sender: async_ring_buffer::Sender<event::Phc>) {
+        info!("Creating PHC source.");
+
+        debug!(?self.phc, "Current PHC source entry status");
+        if self.phc.is_none() {
+            self.phc = {
+                let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
+                let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
+                match Phc::construct(event_sender, ctrl_receiver, clock_disruption_receiver).await {
+                    Ok(phc) => Some(Source {
+                        state: SourceState::Initialized(phc),
+                        ctrl_sender,
+                    }),
+                    Err(e) => {
+                        warn!("{}", e);
+                        None
+                    }
+                }
+            };
+        }
+
+        info!("Source PHC update complete.");
     }
 
     /// Spawns the IO task for sampling the VMClock shared memory file.
@@ -207,6 +239,23 @@ impl SourceIO {
             }
         } else {
             debug!("Could not spawn a link local source. No source data provided.");
+        }
+
+        // Spawn PHC source
+        if let Some(Source {
+            state,
+            ctrl_sender: _,
+        }) = &mut self.phc
+        {
+            debug!("Attempting to spawn PHC source.");
+            if let SourceState::Initialized(mut phc) = state.transition_to_running() {
+                spawn(async move { phc.run().await });
+                debug!("Successfully spawned PHC source.");
+            } else {
+                warn!("Attempted to spawn a PHC source when one is currently running.");
+            }
+        } else {
+            debug!("Could not spawn a PHC source. No source data provided.");
         }
 
         // Spawn vmclock source
