@@ -29,7 +29,10 @@ use crate::{
 
 mod ntp_adjtime;
 mod state_machine;
-pub use ntp_adjtime::{KAPIClockAdjuster, NtpAdjTimeError, NtpAdjTimeExt};
+pub use ntp_adjtime::KAPIClockAdjuster;
+#[cfg(feature = "test-side-by-side")]
+pub use ntp_adjtime::NoopClockAdjuster;
+pub use ntp_adjtime::{NtpAdjTimeError, NtpAdjTimeExt};
 
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait ClockAdjust: Send + Sync {

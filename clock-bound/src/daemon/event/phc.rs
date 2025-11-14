@@ -18,7 +18,7 @@ pub struct Phc {
     tsc_post: TscCount,
     /// PHC reference clock info
     data: PhcData,
-    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    #[cfg(not(test))]
     #[serde(skip)]
     system_clock: Option<super::SystemClockMeasurement>,
 }
@@ -33,9 +33,7 @@ impl Phc {
         tsc_pre: TscCount,
         tsc_post: TscCount,
         data: PhcData,
-        #[cfg(all(not(test), feature = "test-side-by-side"))] system_clock: Option<
-            super::SystemClockMeasurement,
-        >,
+        #[cfg(not(test))] system_clock: Option<super::SystemClockMeasurement>,
     ) -> Option<Self> {
         if tsc_post <= tsc_pre {
             return None;
@@ -45,7 +43,7 @@ impl Phc {
             tsc_pre,
             tsc_post,
             data,
-            #[cfg(all(not(test), feature = "test-side-by-side"))]
+            #[cfg(not(test))]
             system_clock,
         })
     }
@@ -68,7 +66,7 @@ impl Phc {
     }
 
     /// system time getter
-    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    #[cfg(not(test))]
     pub fn system_clock(&self) -> Option<&super::SystemClockMeasurement> {
         self.system_clock.as_ref()
     }

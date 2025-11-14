@@ -32,14 +32,19 @@ impl NtpAdjTimeExt for KAPIClockAdjuster {}
 
 /// Noop Clock Adjuster, which doesn't actually adjust the clock parameters but just
 /// returns `TIME_OK`.
-#[expect(unused)]
+#[cfg_attr(not(feature = "test-side-by-side"), expect(unused))]
 pub struct NoopClockAdjuster;
 impl NtpAdjTime for NoopClockAdjuster {
     fn ntp_adjtime(&self, _tx: &mut Timex) -> i32 {
         TIME_OK
     }
 }
-impl NtpAdjTimeExt for NoopClockAdjuster {}
+#[cfg(feature = "test-side-by-side")]
+impl NtpAdjTimeExt for NoopClockAdjuster {
+    fn step_clock(&self, _phase_correction: Duration) -> Result<Timex, NtpAdjTimeError> {
+        Ok(Timex::create_dummy_timex())
+    }
+}
 
 /// Lightweight trait around `ntp_adjtime` function (formerly `adjtimex`).
 /// Useful for mocking, or potentially as an abstraction around modifying

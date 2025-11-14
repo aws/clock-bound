@@ -21,7 +21,7 @@ pub struct Ntp {
     tsc_post: TscCount,
     /// NTP Packet data
     data: NtpData,
-    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    #[cfg(not(test))]
     #[serde(skip)]
     system_clock: Option<super::SystemClockMeasurement>,
 }
@@ -36,16 +36,14 @@ impl Ntp {
         tsc_pre: TscCount,
         tsc_post: TscCount,
         ntp_data: NtpData,
-        #[cfg(all(not(test), feature = "test-side-by-side"))] system_clock: Option<
-            super::SystemClockMeasurement,
-        >,
+        #[cfg(not(test))] system_clock: Option<super::SystemClockMeasurement>,
     ) -> Option<Self> {
         if tsc_post > tsc_pre {
             Some(Self {
                 tsc_pre,
                 tsc_post,
                 data: ntp_data,
-                #[cfg(all(not(test), feature = "test-side-by-side"))]
+                #[cfg(not(test))]
                 system_clock,
             })
         } else {
@@ -71,7 +69,7 @@ impl Ntp {
     }
 
     /// system time getter
-    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    #[cfg(not(test))]
     pub fn system_clock(&self) -> Option<&super::SystemClockMeasurement> {
         self.system_clock.as_ref()
     }

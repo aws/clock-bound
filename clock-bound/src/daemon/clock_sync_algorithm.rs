@@ -52,7 +52,7 @@ pub struct ClockSyncAlgorithm {
 impl ClockSyncAlgorithm {
     /// Feed the clock sync algorithm with a time synchronization event
     pub fn feed(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
-        #[cfg(all(feature = "test-side-by-side", not(test)))]
+        #[cfg(not(test))]
         {
             use crate::daemon::event::TscRtt;
             let Some(system_clock) = routable_event.system_clock() else {
@@ -79,7 +79,7 @@ impl ClockSyncAlgorithm {
             }
             retval
         }
-        #[cfg(any(not(feature = "test-side-by-side"), test))]
+        #[cfg(test)]
         {
             self.feed_repro(routable_event)
         }

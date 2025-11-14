@@ -33,7 +33,6 @@ use crate::daemon::{
     time::tsc::Skew,
 };
 
-#[cfg(not(feature = "test-side-by-side"))]
 use crate::daemon::{
     async_ring_buffer::Sender, clock_parameters::ClockParameters, clock_state::ClockState,
 };
@@ -59,9 +58,7 @@ pub struct Daemon {
     clock_sync_algorithm: ClockSyncAlgorithm,
     receiver_stream: ReceiverStream,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
-    #[cfg(not(feature = "test-side-by-side"))]
     clock_state_tx: Sender<ClockParameters>,
-    #[cfg(not(feature = "test-side-by-side"))]
     clock_state: Option<ClockState>,
 }
 
@@ -74,7 +71,6 @@ impl Daemon {
             minor_version: 100,
             startup_id: rng().next_u64(),
         };
-        #[cfg(not(feature = "test-side-by-side"))]
         let (clock_state_tx, clock_state) = {
             let (tx, rx) = async_ring_buffer::create(1);
             let clock_state = ClockState::construct(rx);
@@ -129,9 +125,7 @@ impl Daemon {
             clock_sync_algorithm,
             receiver_stream,
             clock_disruption_receiver,
-            #[cfg(not(feature = "test-side-by-side"))]
             clock_state_tx,
-            #[cfg(not(feature = "test-side-by-side"))]
             clock_state: Some(clock_state),
         }
     }
@@ -140,7 +134,6 @@ impl Daemon {
     pub async fn run(mut self: Box<Self>) {
         // Start IO polling
         self.io_front_end.spawn_all();
-        #[cfg(not(feature = "test-side-by-side"))]
         tokio::spawn({
             #[expect(
                 clippy::missing_panics_doc,
@@ -165,7 +158,6 @@ impl Daemon {
     }
 
     fn handle_event(&mut self, routable_event: RoutableEvent) {
-        #[cfg(not(feature = "test-side-by-side"))]
         if let Some(params) = self.clock_sync_algorithm.feed(routable_event) {
             use crate::daemon::async_ring_buffer::SendError;
 
@@ -187,8 +179,6 @@ impl Daemon {
                 }
             }
         }
-        #[cfg(feature = "test-side-by-side")]
-        let _ = self.clock_sync_algorithm.feed(routable_event);
     }
 
     /// Handle a clock disruption event
@@ -197,20 +187,15 @@ impl Daemon {
             io_front_end: _,
             clock_sync_algorithm,
             receiver_stream,
-            #[cfg(not(feature = "test-side-by-side"))]
-            clock_state, // TODO clear the buffer when the actor pattern comes in
             clock_disruption_receiver,
-            #[cfg(not(feature = "test-side-by-side"))]
             clock_state_tx,
+            clock_state,
         } = self;
         let val = clock_disruption_receiver.borrow_and_update().clone();
-        #[cfg_attr(feature = "test-side-by-side", expect(unused))]
         if let Some(disruption_marker) = val.disruption_marker {
-            #[cfg(not(feature = "test-side-by-side"))]
             if let Some(clock_state) = clock_state {
                 clock_state.handle_disruption(disruption_marker);
             }
-            #[cfg(not(feature = "test-side-by-side"))]
             clock_state_tx.handle_disruption();
             clock_sync_algorithm.handle_disruption();
             receiver_stream.handle_disruption();

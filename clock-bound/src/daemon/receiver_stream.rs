@@ -141,7 +141,7 @@ pub enum RoutableEvent {
 
 impl RoutableEvent {
     /// Get the system clock info
-    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    #[cfg(not(test))]
     pub fn system_clock(&self) -> Option<&crate::daemon::event::SystemClockMeasurement> {
         match self {
             RoutableEvent::LinkLocal(data) | RoutableEvent::NtpSource(_, data) => {

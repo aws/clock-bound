@@ -71,7 +71,7 @@ pub async fn sample_packet(
 
     let (send_timestamp, ntp_data, received_timestamp) = fut.await??;
 
-    #[cfg(all(not(test), feature = "test-side-by-side"))]
+    #[cfg(not(test))]
     let system_clock_reading = crate::daemon::event::SystemClockMeasurement::now();
 
     let builder = event::Ntp::builder()
@@ -80,11 +80,11 @@ pub async fn sample_packet(
         .ntp_data(ntp_data);
 
     let ntp_event = {
-        #[cfg(all(not(test), feature = "test-side-by-side"))]
+        #[cfg(not(test))]
         {
             builder.system_clock(system_clock_reading).build()
         }
-        #[cfg(any(test, not(feature = "test-side-by-side")))]
+        #[cfg(test)]
         {
             builder.build()
         }

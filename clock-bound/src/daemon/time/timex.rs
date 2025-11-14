@@ -419,6 +419,61 @@ impl Timex {
             __unused11: 0,
         })
     }
+
+    // Helper function to create a dummy Timex for `NoopClockAdjuster`.
+    #[cfg(feature = "test-side-by-side")]
+    pub fn create_dummy_timex() -> Timex {
+        Timex(timex {
+            modes: 0,
+            offset: 0,
+            freq: 0,
+            maxerror: 0,
+            esterror: 0,
+            status: 0,
+            constant: 0,
+            precision: 0,
+            tolerance: 0,
+            #[cfg(not(target_os = "macos"))]
+            time: timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            #[cfg(not(target_os = "macos"))]
+            tick: 0,
+            ppsfreq: 0,
+            jitter: 0,
+            shift: 0,
+            stabil: 0,
+            jitcnt: 0,
+            calcnt: 0,
+            errcnt: 0,
+            stbcnt: 0,
+            #[cfg(not(target_os = "macos"))]
+            tai: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused1: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused2: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused3: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused4: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused5: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused6: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused7: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused8: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused9: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused10: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused11: 0,
+        })
+    }
 }
 
 impl AsRef<timex> for Timex {

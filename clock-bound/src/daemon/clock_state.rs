@@ -7,7 +7,11 @@ use tracing::info;
 use crate::daemon::MAX_DISPERSION_GROWTH_PPB;
 use crate::daemon::async_ring_buffer::Receiver;
 use crate::daemon::clock_parameters::ClockParameters;
-use crate::daemon::clock_state::clock_adjust::{ClockAdjust, ClockAdjuster, KAPIClockAdjuster};
+#[cfg(not(feature = "test-side-by-side"))]
+use crate::daemon::clock_state::clock_adjust::KAPIClockAdjuster;
+#[cfg(feature = "test-side-by-side")]
+use crate::daemon::clock_state::clock_adjust::NoopClockAdjuster;
+use crate::daemon::clock_state::clock_adjust::{ClockAdjust, ClockAdjuster};
 use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
 use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
 use crate::daemon::io::tsc::ReadTscImpl;
@@ -28,7 +32,6 @@ pub(crate) struct ClockState {
     clock_params_receiver: Receiver<ClockParameters>,
 }
 
-#[cfg_attr(feature = "test-side-by-side", expect(unused))]
 impl ClockState {
     pub fn new(
         clock_state_writer: Box<dyn ClockStateWrite>,
@@ -54,8 +57,13 @@ impl ClockState {
             .max_drift_ppb(MAX_DISPERSION_GROWTH_PPB)
             .disruption_marker(0)
             .build();
+        #[cfg(not(feature = "test-side-by-side"))]
         let clock_adjuster: ClockAdjuster<KAPIClockAdjuster> =
             ClockAdjuster::new(KAPIClockAdjuster);
+        #[cfg(feature = "test-side-by-side")]
+        let clock_adjuster: ClockAdjuster<NoopClockAdjuster> =
+            ClockAdjuster::new(NoopClockAdjuster);
+
         Self::new(
             Box::new(clock_state_writer),
             Box::new(clock_adjuster),
