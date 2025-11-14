@@ -8,7 +8,7 @@ use std::sync::atomic;
 
 use crate::shm::shm_header::{CLOCKBOUND_SHM_SUPPORTED_VERSION, ShmHeader};
 use crate::{
-    shm::{ClockErrorBound, ClockErrorBoundGeneric, ShmError},
+    shm::{ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ShmError},
     syserror,
 };
 
@@ -188,6 +188,7 @@ impl ShmReader {
         // SAFETY: `self.version` has been validated when creating the reader
         let shm_version = unsafe { &*version };
         let shm_version = shm_version.load(atomic::Ordering::Acquire);
+        let shm_version = ClockErrorBoundLayoutVersion::try_from(shm_version)?;
 
         Ok(ShmReader {
             _marker: std::marker::PhantomData,
@@ -195,7 +196,7 @@ impl ShmReader {
             version,
             generation,
             ceb_shm,
-            snapshot_ceb: ClockErrorBoundGeneric::builder().build(shm_version)?,
+            snapshot_ceb: ClockErrorBoundGeneric::builder().build(shm_version),
             snapshot_gen: 0,
         })
     }
@@ -340,8 +341,7 @@ mod t_reader {
                 .max_drift_ppb($max_drift)
                 .clock_status(ClockStatus::Synchronized)
                 .clock_disruption_support_enabled(true)
-                .build(2)
-                .unwrap();
+                .build(ClockErrorBoundLayoutVersion::V2);
 
             // Convert the ceb struct into a slice so we can write it all out, fairly magic.
             // Definitely needs the #[repr(C)] layout.

@@ -344,7 +344,7 @@ pub unsafe extern "C" fn clockbound_now(
 mod t_ffi {
     use super::*;
     use byteorder::{LittleEndian, NativeEndian, WriteBytesExt};
-    use clock_bound::shm::{ClockErrorBound, ClockErrorBoundGeneric};
+    use clock_bound::shm::{ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion};
     use std::ffi::CString;
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -365,7 +365,7 @@ mod t_ffi {
          $version:literal,
          $generation:literal) => {
             // Build a default ClockErrorBound struct (layout version 2)
-            let ceb = ClockErrorBoundGeneric::builder().build(2).unwrap();
+            let ceb = ClockErrorBoundGeneric::builder().build(ClockErrorBoundLayoutVersion::V2);
 
             // Convert the ceb struct into a slice so we can write it all out, fairly magic.
             // Definitely needs the #[repr(C)] layout.

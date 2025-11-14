@@ -147,14 +147,13 @@ impl<S: clock_error_bound_generic_builder::IsComplete> ClockErrorBoundGenericBui
     ///
     /// Take the layout version number as a parameter, it is a u16 to ease casting of the earlier
     /// version of the `SHMHeader`.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
-    pub fn build(self, layout_version: u16) -> Result<ClockErrorBound, ShmError> {
+    pub fn build(self, layout_version: ClockErrorBoundLayoutVersion) -> ClockErrorBound {
         // Build the ClockErrorBoundGeneric object
         let ceb = self.build_internal();
 
         // Build the specific version of the ClockErrorBound
         match layout_version {
-            2 => Ok(ClockErrorBound::V2(ClockErrorBoundV2::new(
+            ClockErrorBoundLayoutVersion::V2 => ClockErrorBound::V2(ClockErrorBoundV2::new(
                 ceb.as_of,
                 ceb.void_after,
                 ceb.bound_nsec,
@@ -162,7 +161,31 @@ impl<S: clock_error_bound_generic_builder::IsComplete> ClockErrorBoundGenericBui
                 ceb.max_drift_ppb,
                 ceb.clock_status,
                 ceb.clock_disruption_support_enabled,
-            ))),
+            )),
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub enum ClockErrorBoundLayoutVersion {
+    V2,
+}
+
+impl TryFrom<u8> for ClockErrorBoundLayoutVersion {
+    type Error = ShmError;
+    fn try_from(value: u8) -> Result<Self, ShmError> {
+        match value {
+            2 => Ok(ClockErrorBoundLayoutVersion::V2),
+            _ => Err(ShmError::SegmentVersionNotSupported),
+        }
+    }
+}
+
+impl TryFrom<u16> for ClockErrorBoundLayoutVersion {
+    type Error = ShmError;
+    fn try_from(value: u16) -> Result<Self, ShmError> {
+        match value {
+            2 => Ok(ClockErrorBoundLayoutVersion::V2),
             _ => Err(ShmError::SegmentVersionNotSupported),
         }
     }

@@ -10,7 +10,10 @@ use crate::{
             instant::Utc,
         },
     },
-    shm::{ClockErrorBound, ClockErrorBoundGeneric, ClockStatus, ShmWrite, ShmWriter},
+    shm::{
+        ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockStatus,
+        ShmWrite, ShmWriter,
+    },
 };
 
 /// The drift rate/maximal frequency error in parts-per-billion
@@ -147,11 +150,9 @@ impl<T: ShmWrite> ClockStateWriter<T> {
             )
             .clock_status(clock_status)
             .clock_disruption_support_enabled(self.clock_disruption_support_enabled)
-            .build(2);
+            .build(ClockErrorBoundLayoutVersion::V2);
 
-        if let Ok(ceb) = ceb {
-            self.shm_writer.write(&ceb);
-        }
+        self.shm_writer.write(&ceb);
     }
 }
 
@@ -234,8 +235,7 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .clock_status(clock_status)
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .build(2)
-            .unwrap();
+            .build(ClockErrorBoundLayoutVersion::V2);
         let mut shm_writer = MockShmWriter::new();
         shm_writer
             .expect_write()

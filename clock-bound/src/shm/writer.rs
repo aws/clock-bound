@@ -312,7 +312,7 @@ mod t_writer {
     /// afterwards.
     use tempfile::NamedTempFile;
 
-    use crate::shm::{ClockErrorBoundGeneric, ClockStatus};
+    use crate::shm::{ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockStatus};
 
     macro_rules! clockerrorbound {
         () => {
@@ -324,8 +324,7 @@ mod t_writer {
                 .max_drift_ppb(100)
                 .clock_status(ClockStatus::Synchronized)
                 .clock_disruption_support_enabled(true)
-                .build(2)
-                .unwrap()
+                .build(ClockErrorBoundLayoutVersion::V2)
         };
     }
 

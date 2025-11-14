@@ -270,8 +270,8 @@ pub enum ClockBoundErrorKind {
 #[cfg(test)]
 mod lib_tests {
     use super::*;
-    use crate::shm::ClockErrorBoundGeneric;
     use crate::shm::{ClockErrorBound, ShmWrite, ShmWriter};
+    use crate::shm::{ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion};
     use crate::vmclock::shm::{VMClockClockStatus, VMClockShmBody};
     use crate::vmclock::shm_writer::{VMClockShmWrite, VMClockShmWriter};
 
@@ -299,8 +299,7 @@ mod lib_tests {
             // Build a default ClockErrorBound layout version 2
             let ceb = ClockErrorBoundGeneric::builder()
                 .clock_disruption_support_enabled(true)
-                .build(2)
-                .unwrap();
+                .build(ClockErrorBoundLayoutVersion::V2);
 
             // Convert the ceb struct into a slice so we can write it all out, fairly magic.
             // Definitely needs the #[repr(C)] layout.
@@ -690,7 +689,7 @@ mod lib_tests {
         let mut writer =
             ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
 
-        let ceb = ClockErrorBoundGeneric::builder().build(2).unwrap();
+        let ceb = ClockErrorBoundGeneric::builder().build(ClockErrorBoundLayoutVersion::V2);
         writer.write(&ceb);
 
         let mut clockbound =
@@ -714,8 +713,7 @@ mod lib_tests {
             .max_drift_ppb(1_000_000_000)
             .clock_status(ClockStatus::Synchronized)
             .clock_disruption_support_enabled(true)
-            .build(2)
-            .unwrap();
+            .build(ClockErrorBoundLayoutVersion::V2);
         writer.write(&ceb);
 
         // Validate now has Result with an error.
