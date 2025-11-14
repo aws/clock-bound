@@ -1,0 +1,49 @@
+name: VMClock
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cargo build
+        run: cargo build --bin vmclock-test --release
+
+      - name: Upload vmclock-test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmclock-test
+          path: target/release/vmclock-test
+
+  VMClock_Tests:
+    name: VMClock Tests
+    needs: build
+    runs-on:
+      - codebuild-StagingClockBound-${{ github.run_id }}-${{ github.run_attempt }}
+        buildspec-override:true
+
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: vmclock-test
+
+      - run: ls
+      - run: echo "Change permissions of artifact."
+      - run: chmod 755 vmclock-test
+      - run: echo "Run vmclock test!"
+      - run: ./vmclock-test
