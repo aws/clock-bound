@@ -35,9 +35,11 @@ tokio = { version = "1.47.1", features = [
   "macros",
   "rt",
   "rt-multi-thread",
+  "signal",
   "sync",
   "time",
 ], optional = true }
+tokio-util = { version = "0.7.17", features = ["rt"], optional = true }
 tracing = "0.1"
 tracing-appender = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3", features = [
@@ -75,6 +77,7 @@ daemon = [
   "dep:clap",
   "dep:serde",
   "dep:tokio",
+  "dep:tokio-util",
   "dep:chrono",
   "dep:bytes",
   "dep:nom",

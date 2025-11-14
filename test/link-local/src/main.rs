@@ -52,6 +52,7 @@ async fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
     };
 
     let selected_clock = Arc::new(SelectedClockSource::default());
+
     let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info);
     sourceio.create_link_local(sender).await;
     sourceio.spawn_all();

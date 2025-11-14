@@ -36,8 +36,12 @@ use crate::daemon::{
 use crate::daemon::{
     async_ring_buffer::Sender, clock_parameters::ClockParameters, clock_state::ClockState,
 };
+use tokio_util::task::TaskTracker;
+
 use rand::{RngCore, rng};
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 /// The maximum dispersion growth every second
 ///
@@ -58,23 +62,32 @@ pub struct Daemon {
     clock_sync_algorithm: ClockSyncAlgorithm,
     receiver_stream: ReceiverStream,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
-    clock_state_tx: Sender<ClockParameters>,
-    clock_state: Option<ClockState>,
+    cancellation_token: CancellationToken,
+    clock_state_handle: ClockStateHandle,
 }
 
 impl Daemon {
     /// Construct and initialize a new daemon
     /// FIXME: Make this function not async. (Currently required for the io.run methods)
-    pub async fn construct() -> Self {
+    pub async fn construct(cancellation_token: CancellationToken) -> Self {
         let daemon_info = DaemonInfo {
             major_version: 2,
             minor_version: 100,
             startup_id: rng().next_u64(),
         };
+
+        let clock_state_cancellation_token = CancellationToken::new();
         let (clock_state_tx, clock_state) = {
             let (tx, rx) = async_ring_buffer::create(1);
-            let clock_state = ClockState::construct(rx);
+            let clock_state = ClockState::construct(rx, clock_state_cancellation_token.clone());
             (tx, clock_state)
+        };
+        let task_tracker = TaskTracker::new();
+        let clock_state_handle = ClockStateHandle {
+            clock_state: Some(clock_state),
+            tx: clock_state_tx,
+            cancellation_token: clock_state_cancellation_token,
+            task_tracker,
         };
 
         let selected_clock = Arc::new(SelectedClockSource::default());
@@ -104,17 +117,8 @@ impl Daemon {
 
         let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
         let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
-        // FIXME, we are basically starting the application in the constructor
-        // We should be able to construct the link local and spawn it when `run` is called
-        //
-        // Also, this function doesn't return anything?
-        //
-        // Ideally we would construct the `io::LinkLocal` and just build the `io_front_end` with something like
-        // ```
-        // let (tx, rx) = mpsc::channel(1);
-        // let link_local = io::LinkLocal::construct(rx, ..Args);
-        // let io_front_end = SourceIo::builder().link_local(tx, link_local).build();
-        // ```
+
+        // Initialize IO components.
         io_front_end.create_link_local(link_local_tx).await;
         for source in ntp_source_event_senders {
             io_front_end.create_ntp_source(source).await;
@@ -125,8 +129,8 @@ impl Daemon {
             clock_sync_algorithm,
             receiver_stream,
             clock_disruption_receiver,
-            clock_state_tx,
-            clock_state: Some(clock_state),
+            cancellation_token,
+            clock_state_handle,
         }
     }
 
@@ -134,16 +138,17 @@ impl Daemon {
     pub async fn run(mut self: Box<Self>) {
         // Start IO polling
         self.io_front_end.spawn_all();
-        tokio::spawn({
+        self.clock_state_handle.task_tracker.spawn({
             #[expect(
                 clippy::missing_panics_doc,
                 reason = "struct always initialized with Some"
             )]
-            let mut clock_state = self.clock_state.take().unwrap();
+            let mut clock_state = self.clock_state_handle.clock_state.take().unwrap();
             async move {
                 clock_state.run().await;
             }
         });
+        self.clock_state_handle.task_tracker.close();
         loop {
             tokio::select! {
                 biased; // biased to ensure disruption is handled first when this happens
@@ -152,7 +157,22 @@ impl Daemon {
                 }
                 Some(routable_event) = self.receiver_stream.recv() => {
                     self.handle_event(routable_event);
-                },
+                }
+                () = self.cancellation_token.cancelled() => {
+                    info!("Received shutdown signal. Starting graceful shutdown of daemon.");
+
+                    // TODO: we can asynchronously shutdown both clock state and io tasks.
+
+                    // shutdown clock state task
+                    self.clock_state_handle.cancellation_token.cancel();
+                    self.clock_state_handle.task_tracker.wait().await;
+
+                    // shutdown all io tasks
+                    self.io_front_end.shutdown_all().await;
+
+                    // exit ourselves
+                    break;
+                }
             }
         }
     }
@@ -161,7 +181,7 @@ impl Daemon {
         if let Some(params) = self.clock_sync_algorithm.feed(routable_event) {
             use crate::daemon::async_ring_buffer::SendError;
 
-            match self.clock_state_tx.send(params.clone()) {
+            match self.clock_state_handle.tx.send(params.clone()) {
                 Ok(()) => (),
                 Err(SendError::Disrupted(clock_parameters)) => {
                     // don't handle_disruption. It will be handled on the next call of tokio::select
@@ -188,15 +208,23 @@ impl Daemon {
             clock_sync_algorithm,
             receiver_stream,
             clock_disruption_receiver,
-            clock_state_tx,
-            clock_state,
+            cancellation_token: _,
+            clock_state_handle,
         } = self;
+
+        let ClockStateHandle {
+            clock_state, // TODO clear the buffer when the actor pattern comes in
+            tx,
+            cancellation_token: _,
+            task_tracker: _,
+        } = clock_state_handle;
+
         let val = clock_disruption_receiver.borrow_and_update().clone();
         if let Some(disruption_marker) = val.disruption_marker {
             if let Some(clock_state) = clock_state {
                 clock_state.handle_disruption(disruption_marker);
             }
-            clock_state_tx.handle_disruption();
+            tx.handle_disruption();
             clock_sync_algorithm.handle_disruption();
             receiver_stream.handle_disruption();
         }
@@ -227,4 +255,11 @@ impl Daemon {
 
         (sender_vec, receiver_vec)
     }
+}
+
+struct ClockStateHandle {
+    clock_state: Option<ClockState>,
+    tx: Sender<ClockParameters>,
+    cancellation_token: CancellationToken,
+    task_tracker: TaskTracker,
 }

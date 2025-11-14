@@ -2,6 +2,7 @@
 pub mod clock_adjust;
 pub mod clock_state_writer;
 
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::daemon::MAX_DISPERSION_GROWTH_PPB;
@@ -30,6 +31,7 @@ pub(crate) struct ClockState {
     clock_parameters: Option<ClockParameters>,
     interval: tokio::time::Interval,
     clock_params_receiver: Receiver<ClockParameters>,
+    cancellation_token: CancellationToken,
 }
 
 impl ClockState {
@@ -37,6 +39,7 @@ impl ClockState {
         clock_state_writer: Box<dyn ClockStateWrite>,
         clock_adjuster: Box<dyn ClockAdjust>,
         clock_params_receiver: Receiver<ClockParameters>,
+        cancellation_token: CancellationToken,
     ) -> Self {
         let interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
         Self {
@@ -45,10 +48,14 @@ impl ClockState {
             interval,
             clock_params_receiver,
             clock_parameters: None,
+            cancellation_token,
         }
     }
 
-    pub fn construct(clock_params_receiver: Receiver<ClockParameters>) -> Self {
+    pub fn construct(
+        clock_params_receiver: Receiver<ClockParameters>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let shm_writer = ShmWriter::new(std::path::Path::new(CLOCKBOUND_SHM_DEFAULT_PATH)).unwrap();
         let safe_shm_writer = SafeShmWriter::new(shm_writer);
         let clock_state_writer: ClockStateWriter<SafeShmWriter> = ClockStateWriter::builder()
@@ -68,6 +75,7 @@ impl ClockState {
             Box::new(clock_state_writer),
             Box::new(clock_adjuster),
             clock_params_receiver,
+            cancellation_token,
         )
     }
 
@@ -80,9 +88,16 @@ impl ClockState {
                 },
                 params = self.clock_params_receiver.recv() => {
                     self.handle_clock_parameters(params.unwrap()); // todo fixme
-                }
+                },
+                () = self.cancellation_token.cancelled() => {
+                    // nothing fancy for now. just exit
+                    // TODO: we may want to clean-up SHM here.
+                    info!("Received shutdown signal. Exiting.");
+                    break;
+                },
             }
         }
+        info!("ClockState runner exiting.");
     }
 
     fn handle_tick(&mut self, now: tokio::time::Instant) {
@@ -131,6 +146,7 @@ impl ClockState {
             clock_params_receiver,
             interval: _,
             clock_parameters,
+            cancellation_token: _,
         } = self;
         *clock_parameters = None;
         clock_params_receiver.handle_disruption();
@@ -168,6 +184,7 @@ mod tests {
     #[tokio::test]
     async fn handle_clock_parameters() {
         let clock_parameters = get_sample_clock_parameters();
+        let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
         mock_clock_adjuster
             .expect_handle_clock_parameters()
@@ -185,6 +202,7 @@ mod tests {
             Box::new(mock_clock_state_writer),
             Box::new(mock_clock_adjuster),
             rx,
+            cancellation_token,
         );
         assert_eq!(clock_state.clock_parameters, None);
         clock_state.handle_clock_parameters(clock_parameters.clone());
@@ -194,6 +212,7 @@ mod tests {
     #[tokio::test]
     async fn handle_disruption() {
         let disruption_marker = 123;
+        let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
         mock_clock_adjuster
             .expect_handle_disruption()
@@ -211,12 +230,14 @@ mod tests {
             Box::new(mock_clock_state_writer),
             Box::new(mock_clock_adjuster),
             rx,
+            cancellation_token,
         );
         clock_state.handle_disruption(disruption_marker);
     }
 
     #[tokio::test]
     async fn handle_tick_no_parameters() {
+        let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
         mock_clock_adjuster
             .expect_handle_clock_parameters()
@@ -234,6 +255,7 @@ mod tests {
             Box::new(mock_clock_state_writer),
             Box::new(mock_clock_adjuster),
             rx,
+            cancellation_token,
         );
         clock_state.clock_parameters = None;
         clock_state.handle_tick(tokio::time::Instant::now());
@@ -245,6 +267,7 @@ mod tests {
         let expected_clock_status = ClockStatus::Synchronized;
         let expected_clock_params = get_sample_clock_parameters();
         let expected_instant = tokio::time::Instant::now();
+        let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
 
         let expected_clock_params_clone = expected_clock_params.clone();
@@ -282,6 +305,7 @@ mod tests {
             Box::new(mock_clock_state_writer),
             Box::new(mock_clock_adjuster),
             rx,
+            cancellation_token,
         );
         clock_state.clock_parameters = Some(expected_clock_params);
         clock_state.handle_tick(expected_instant);

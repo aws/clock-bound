@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
-use tokio::task::spawn;
+use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn};
 
 pub mod ntp;
@@ -53,6 +53,8 @@ pub struct SourceIO {
     selected_clock: Arc<SelectedClockSource>,
     /// Daemon metadata
     daemon_info: DaemonInfo,
+    /// `tokio::task::TaskTracker` to manage lifecycle of the individual IO tasks
+    task_tracker: TaskTracker,
 }
 
 impl SourceIO {
@@ -60,6 +62,13 @@ impl SourceIO {
     pub fn construct(selected_clock: Arc<SelectedClockSource>, daemon_info: DaemonInfo) -> Self {
         let (sender, receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
+
+        // Task tracker is closed on initialization. We only open it during calls to spawn
+        // the IO tasks. This ensures that we don't introduce a deadlock if the shutdown function
+        // is called before the spawn function.
+        let task_tracker = TaskTracker::new();
+        task_tracker.close();
+
         SourceIO {
             link_local: None,
             ntp_sources: HashMap::new(),
@@ -68,10 +77,11 @@ impl SourceIO {
             clock_disruption_channels: ClockDisruptionChannels { sender, receiver },
             selected_clock,
             daemon_info,
+            task_tracker,
         }
     }
 
-    /// Spawns the IO task for sampling the Link Local NTP source.
+    /// Initializes the IO task for sampling the Link Local NTP source.
     ///
     /// # Panics
     /// - If not called within the `tokio` runtime.
@@ -106,7 +116,7 @@ impl SourceIO {
         info!("Source link local update complete.");
     }
 
-    /// Spawns the IO task for sampling a specific NTP Server source.
+    /// Initializes the IO task for sampling a specific NTP Server source.
     ///
     /// # Panics
     /// - If not called within the `tokio` runtime.
@@ -146,7 +156,7 @@ impl SourceIO {
         info!("Source NTP update complete.");
     }
 
-    /// Spawns the IO task for sampling the PHC source.
+    /// Initializes the IO task for sampling the PHC source.
     ///
     /// # Panics
     /// - If not called within the `tokio` runtime.
@@ -174,7 +184,7 @@ impl SourceIO {
         info!("Source PHC update complete.");
     }
 
-    /// Spawns the IO task for sampling the VMClock shared memory file.
+    /// Initializes the IO task for sampling the VMClock shared memory file.
     ///
     /// # Errors
     /// - If the vmclock shared memory file could not be found.
@@ -212,18 +222,12 @@ impl SourceIO {
         self.clock_disruption_channels.sender.subscribe()
     }
 
-    /// Starts the control flow task.
-    #[allow(
-        clippy::unused_async,
-        reason = "This is a stubbed function. The async component will be implemented at a later date."
-    )]
-    pub async fn run(&self) {}
-
     /// Spawns all io tasks which have been initialized.
     ///
     /// This function will spawn all initialized io tasks. If a task is not initialized it will be
     /// skipped. Spawning will occur in an arbitrary order.
     pub fn spawn_all(&mut self) {
+        self.task_tracker.reopen();
         // Spawn link local source
         if let Some(Source {
             state,
@@ -232,7 +236,8 @@ impl SourceIO {
         {
             debug!("Attempting to spawn link local source.");
             if let SourceState::Initialized(mut link_local) = state.transition_to_running() {
-                spawn(async move { link_local.run().await });
+                self.task_tracker
+                    .spawn(async move { link_local.run().await });
                 debug!("Successfully spawned link local source.");
             } else {
                 warn!("Attempted to spawn a link local source when one is currently running.");
@@ -249,7 +254,7 @@ impl SourceIO {
         {
             debug!("Attempting to spawn PHC source.");
             if let SourceState::Initialized(mut phc) = state.transition_to_running() {
-                spawn(async move { phc.run().await });
+                self.task_tracker.spawn(async move { phc.run().await });
                 debug!("Successfully spawned PHC source.");
             } else {
                 warn!("Attempted to spawn a PHC source when one is currently running.");
@@ -265,7 +270,7 @@ impl SourceIO {
         }) = &mut self.vmclock
         {
             if let SourceState::Initialized(mut vmclock) = state.transition_to_running() {
-                spawn(async move { vmclock.run().await });
+                self.task_tracker.spawn(async move { vmclock.run().await });
             } else {
                 warn!("Attempted to spawn a vmclock source when one is currently running.");
             }
@@ -279,12 +284,59 @@ impl SourceIO {
             if let SourceState::Initialized(mut ntp_source) =
                 ntp_source.state.transition_to_running()
             {
-                spawn(async move { ntp_source.run().await });
+                self.task_tracker
+                    .spawn(async move { ntp_source.run().await });
                 debug!("Successfully spawned ntp source.");
             } else {
                 warn!("Attempted to spawn a ntp source when on is currently running.");
             }
         }
+
+        self.task_tracker.close();
+    }
+
+    /// Sends shutdown signals to all io tasks.
+    ///
+    /// This function sequentially sends `ControlRequest::Shutdown` signals to all
+    /// io tasks and then waits for all io tasks to exit.
+    pub async fn shutdown_all(&mut self) {
+        info!("Starting shutdown of SourceIO components.");
+        // Shutdown link local source
+        if let Some(Source {
+            state: _,
+            ctrl_sender,
+        }) = &mut self.link_local
+        {
+            match ctrl_sender.send(ControlRequest::Shutdown).await {
+                Ok(()) => info!("Successfully sent shutdown signal to link local source."),
+                Err(e) => warn!(?e, "Failed to send shutdown signal to link local source."),
+            }
+        }
+
+        // Shutdown vmclock source
+        if let Some(Source {
+            state: _,
+            ctrl_sender,
+        }) = &mut self.vmclock
+        {
+            match ctrl_sender.send(ControlRequest::Shutdown).await {
+                Ok(()) => info!("Successfully sent shutdown signal to vmclock source."),
+                Err(e) => warn!(?e, "Failed to send shutdown signal to vmclock source."),
+            }
+        }
+
+        // Shutdown ntp sources
+        for ntp_source in self.ntp_sources.values_mut() {
+            match ntp_source.ctrl_sender.send(ControlRequest::Shutdown).await {
+                Ok(()) => info!("Successfully sent shutdown signal to ntp source."),
+                Err(e) => warn!(?e, "Failed to send shutdown signal to ntp source."),
+            }
+        }
+
+        // Wait for all io tasks to exit
+        info!("Waiting for {} io tasks to exit.", self.task_tracker.len());
+        self.task_tracker.wait().await;
+        info!("All tasks exited. Shutdown of io complete.");
     }
 }
 
@@ -299,9 +351,10 @@ pub struct ClockDisruptionEvent {
     pub disruption_marker: Option<u64>,
 }
 
-// TODO: This is a stub for future control events.
 #[derive(Debug)]
-pub struct ControlRequest {}
+pub enum ControlRequest {
+    Shutdown,
+}
 
 /// A helper struct packaging the source state and its control sender together.
 #[derive(Debug)]
