@@ -35,10 +35,11 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    test_normal_polling_rate().await;
-    test_startup_polling_rate().await;
-    test_clock_disruption_polling_rate().await;
-    test_polls_with_selected_clock_source_combos().await;
+    let (receiver, selected_clock, mut sourceio) = setup().await;
+    test_startup_polling_rate(&receiver).await;
+    test_normal_polling_rate(&receiver).await;
+    test_clock_disruption_polling_rate(&receiver, &mut sourceio).await;
+    test_polls_with_selected_clock_source_combos(&receiver, &selected_clock).await;
 }
 
 /// Set up link local source io for testing
@@ -60,30 +61,20 @@ async fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
 }
 
 /// Set up link local source io for testing
-async fn setup_with_vmclock(
-    vmclock_shm_path: &str,
-) -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
-    let (link_local_receiver, selected_clock, mut sourceio) = setup().await;
-
+async fn setup_with_vmclock(vmclock_shm_path: &str, sourceio: &mut SourceIO) {
     sourceio.create_vmclock(vmclock_shm_path).await.unwrap();
     sourceio.spawn_all();
-
-    (link_local_receiver, selected_clock, sourceio)
 }
 
 /// Test normal polling
-async fn test_normal_polling_rate() {
+async fn test_normal_polling_rate(receiver: &Receiver<Ntp>) {
     println!("Testing normal polling rate ...");
-    let (receiver, _selected_clock, _sourceio) = setup().await;
 
-    // Wait for burst mode to end before testing normal polling rate
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Clear any burst mode packets from buffer
+    // Clear any previous packets from buffer
     while let Ok(Ok(_)) = timeout(Duration::from_millis(100), receiver.recv()).await {}
 
     // Poll the link local receiver
-    let polling_rate = measure_polling_rate(&receiver, Duration::from_secs(20)).await;
+    let polling_rate = measure_polling_rate(receiver, Duration::from_secs(20)).await;
 
     println!("Polling rate avg: {polling_rate:?}");
     assert!(polling_rate.abs_diff(Duration::from_secs(2)) < time::Duration::from_millis(100));
@@ -91,10 +82,9 @@ async fn test_normal_polling_rate() {
 }
 
 /// Test startup polling
-async fn test_startup_polling_rate() {
+async fn test_startup_polling_rate(receiver: &Receiver<Ntp>) {
     println!("Testing startup polling rate ...");
-    let (receiver, _selected_clock, _sourceio) = setup().await;
-    let polling_rate = measure_polling_rate(&receiver, time::Duration::from_secs(1)).await;
+    let polling_rate = measure_polling_rate(receiver, time::Duration::from_secs(1)).await;
 
     println!("Burst Polling rate avg: {polling_rate:?}");
     assert!(
@@ -105,7 +95,7 @@ async fn test_startup_polling_rate() {
 }
 
 /// Test clock disruption polling
-async fn test_clock_disruption_polling_rate() {
+async fn test_clock_disruption_polling_rate(receiver: &Receiver<Ntp>, sourceio: &mut SourceIO) {
     println!("Testing normal polling rate ...");
 
     let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
@@ -118,16 +108,13 @@ async fn test_clock_disruption_polling_rate() {
     let mut vmclock_content = VMClockContent::default();
     write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
-    let (receiver, _selected_clock, _sourceio) = setup_with_vmclock(vmclock_shm_path).await;
+    setup_with_vmclock(vmclock_shm_path, sourceio).await;
 
-    // Wait for burst mode, initiated at startup to end
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Clear any burst mode packets from buffer
+    // Clear any previous packets from buffer
     while let Ok(Ok(_)) = timeout(Duration::from_millis(100), receiver.recv()).await {}
 
     // Base line polling rate.
-    let pre_base_line_polling_rate = measure_polling_rate(&receiver, Duration::from_secs(10)).await;
+    let pre_base_line_polling_rate = measure_polling_rate(receiver, Duration::from_secs(10)).await;
     println!("Base line Polling rate avg: {pre_base_line_polling_rate:?}");
 
     // Simulate a clock disruption event
@@ -140,8 +127,8 @@ async fn test_clock_disruption_polling_rate() {
     write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
     // Clock disruption polling rate
-    let polling_duration = Duration::from_millis(950) - write_time.elapsed().unwrap();
-    let clock_disruption_polling_rate = measure_polling_rate(&receiver, polling_duration).await;
+    let polling_duration = Duration::from_secs(1) - write_time.elapsed().unwrap();
+    let clock_disruption_polling_rate = measure_polling_rate(receiver, polling_duration).await;
     println!("Clock disruption polling rate avg: {clock_disruption_polling_rate:?}");
     println!("Clock disruption polling duration: {polling_duration:?}");
     assert!(
@@ -150,8 +137,7 @@ async fn test_clock_disruption_polling_rate() {
     );
 
     // Base line polling rate.
-    let post_base_line_polling_rate =
-        measure_polling_rate(&receiver, Duration::from_secs(10)).await;
+    let post_base_line_polling_rate = measure_polling_rate(receiver, Duration::from_secs(10)).await;
     println!("Base line Polling rate avg: {post_base_line_polling_rate:?}");
 
     // The pre and post clock disruption event polling rates should be the same.
@@ -200,7 +186,10 @@ async fn measure_polling_rate(receiver: &Receiver<Ntp>, sampling_period: Duratio
 }
 
 /// Test polling with varied selected clock source and stratum combinations
-async fn test_polls_with_selected_clock_source_combos() {
+async fn test_polls_with_selected_clock_source_combos(
+    receiver: &Receiver<Ntp>,
+    selected_clock: &SelectedClockSource,
+) {
     println!("Testing polling with all selected clock source combinations ...");
 
     let combinations = generate_selected_clock_combos();
@@ -208,8 +197,6 @@ async fn test_polls_with_selected_clock_source_combos() {
         "Generated {} selected clock source combinations",
         combinations.len()
     );
-
-    let (receiver, selected_clock, _sourceio) = setup().await;
 
     for (source, stratum) in combinations {
         match source.clone() {
