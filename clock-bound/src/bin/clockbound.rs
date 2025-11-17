@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[clap(long, default_value = "clockbound")]
+    #[clap(long, default_value = "/var/log/clockbound")]
     log_dir: PathBuf,
 }
 
