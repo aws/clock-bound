@@ -533,10 +533,18 @@ impl Phc {
                     // Clock Disruption logic here
                     Self::handle_disruption();
                 }
-                _ = self.ctrl_receiver.recv() => {
+                ctrl_req = self.ctrl_receiver.recv() => {
                     // Ctrl logic here.
-                    // Currently we breakout of the loop if we receive a control event.
-                    break;
+                    match ctrl_req {
+                        None => {
+                            // this select can happen if `SourceIO` drops the ctrl_sender
+                            break;
+                        },
+                        Some(ControlRequest::Shutdown) => {
+                            info!("Received shutdown signal. Exiting.");
+                            break;
+                        },
+                    }
                 }
                 _ = self.interval.tick() => {
                     self.handle_interval_tick().await;

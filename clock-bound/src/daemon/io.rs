@@ -318,6 +318,18 @@ impl SourceIO {
             }
         }
 
+        // Shutdown PHC source
+        if let Some(Source {
+            state: _,
+            ctrl_sender,
+        }) = &mut self.phc
+        {
+            match ctrl_sender.send(ControlRequest::Shutdown).await {
+                Ok(()) => info!("Successfully sent shutdown signal to phc source."),
+                Err(e) => warn!(?e, "Failed to send shutdown signal to phc source."),
+            }
+        }
+
         // Shutdown vmclock source
         if let Some(Source {
             state: _,
