@@ -913,7 +913,7 @@ PCI_SLOT_NAME=23456
 twoline",
         "23456"
     )]
-    async fn test_get_pci_slot_name_success(
+    async fn get_pci_slot_name_success(
         #[case] file_contents_to_write: &str,
         #[case] return_value: &str,
     ) {
@@ -931,7 +931,7 @@ twoline",
     #[tokio::test]
     #[rstest]
     #[case::missing_pci_slot_name("no pci slot name")]
-    async fn test_get_pci_slot_name_failure(#[case] file_contents_to_write: &str) {
+    async fn get_pci_slot_name_failure(#[case] file_contents_to_write: &str) {
         let mut test_uevent_file = NamedTempFile::new().expect("create mock uevent file failed");
         test_uevent_file
             .write_all(file_contents_to_write.as_bytes())
@@ -947,7 +947,7 @@ twoline",
     }
 
     #[tokio::test]
-    async fn test_get_pci_slot_name_file_does_not_exist() {
+    async fn get_pci_slot_name_file_does_not_exist() {
         let rt = phc_path_locator::get_pci_slot_name("/does/not/exist").await;
         assert!(rt.is_err());
     }
@@ -955,7 +955,7 @@ twoline",
     #[tokio::test]
     #[rstest]
     #[case::happy_path("12345", 12345)]
-    async fn test_read_phc_error_bound_success(
+    async fn read_phc_error_bound_success(
         #[case] file_contents_to_write: &str,
         #[case] return_value: i64,
     ) {
@@ -975,7 +975,7 @@ twoline",
     #[tokio::test]
     #[rstest]
     #[case::parsing_fail("asdf_not_an_i64")]
-    async fn test_read_phc_error_bound_bad_file_contents(#[case] file_contents_to_write: &str) {
+    async fn read_phc_error_bound_bad_file_contents(#[case] file_contents_to_write: &str) {
         let mut test_phc_error_bound_file =
             NamedTempFile::new().expect("create mock phc error bound file failed");
         test_phc_error_bound_file
@@ -994,21 +994,21 @@ twoline",
     }
 
     #[tokio::test]
-    async fn test_read_phc_error_bound_file_does_not_exist() {
+    async fn read_phc_error_bound_file_does_not_exist() {
         let phc_error_bound_reader = PhcClockErrorBoundReader::new("/does/not/exist".into());
         let rt = phc_error_bound_reader.read().await;
         assert!(rt.is_err());
     }
 
     #[test]
-    fn test_phc_clock_error_bound_reader_new() {
+    fn phc_clock_error_bound_reader_new() {
         let path = PathBuf::from("/test/path");
         let reader = PhcClockErrorBoundReader::new(path.clone());
         assert_eq!(reader.sysfs_phc_error_bound_path, path);
     }
 
     #[test]
-    fn test_phc_sample_try_from_success() {
+    fn phc_sample_try_from_success() {
         let sample = PhcSample {
             counter_pre: 100,
             counter_post: 200,
@@ -1026,7 +1026,7 @@ twoline",
     }
 
     #[test]
-    fn test_phc_sample_try_from_invalid_counter_diff() {
+    fn phc_sample_try_from_invalid_counter_diff() {
         let sample = PhcSample {
             counter_pre: 200,
             counter_post: 100,
@@ -1048,7 +1048,7 @@ twoline",
     }
 
     #[test]
-    fn test_phc_sample_try_from_invalid_clock_error_bound() {
+    fn phc_sample_try_from_invalid_clock_error_bound() {
         let sample = PhcSample {
             counter_pre: 100,
             counter_post: 200,
@@ -1070,7 +1070,7 @@ twoline",
     }
 
     #[tokio::test]
-    async fn test_get_network_interfaces_directory_not_found() {
+    async fn get_network_interfaces_directory_not_found() {
         let ctx = mock_filesystem::fs_try_exists_context();
         ctx.expect().returning(|_| Ok(false));
 
@@ -1085,7 +1085,7 @@ twoline",
     }
 
     #[tokio::test]
-    async fn test_get_uevent_file_path_for_network_interface_success() {
+    async fn get_uevent_file_path_for_network_interface_success() {
         let ctx = mock_filesystem::fs_try_exists_context();
         ctx.expect().returning(|_| Ok(true));
 
@@ -1099,10 +1099,7 @@ twoline",
     #[case::ena_driver("DRIVER=ena", true)]
     #[case::other_driver("DRIVER=e1000e", false)]
     #[case::multiline_ena("SUBSYSTEM=net\nDRIVER=ena\nOTHER=value", true)]
-    async fn test_is_ena_network_interface_success(
-        #[case] file_contents: &str,
-        #[case] expected: bool,
-    ) {
+    async fn is_ena_network_interface_success(#[case] file_contents: &str, #[case] expected: bool) {
         let mut test_file = NamedTempFile::new().expect("create temp file failed");
         test_file
             .write_all(file_contents.as_bytes())
@@ -1115,7 +1112,7 @@ twoline",
     }
 
     #[tokio::test]
-    async fn test_is_ena_network_interface_no_driver() {
+    async fn is_ena_network_interface_no_driver() {
         let mut test_file = NamedTempFile::new().expect("create temp file failed");
         test_file
             .write_all(b"SUBSYSTEM=net\nOTHER=value")
@@ -1131,7 +1128,8 @@ twoline",
     }
 
     #[tokio::test]
-    async fn test_get_ptp_uevent_file_paths_for_pci_slot_directory_not_found() {
+    #[ignore = "static mocks require synchronization"]
+    async fn get_ptp_uevent_file_paths_for_pci_slot_directory_not_found() {
         let ctx = mock_filesystem::fs_try_exists_context();
         ctx.expect().returning(|_| Ok(false));
 
@@ -1149,7 +1147,7 @@ twoline",
     #[rstest]
     #[case::simple_devname("DEVNAME=ptp0", "ptp0")]
     #[case::multiline_devname("SUBSYSTEM=ptp\nDEVNAME=ptp1\nOTHER=value", "ptp1")]
-    async fn test_get_ptp_device_name_from_uevent_file_success(
+    async fn get_ptp_device_name_from_uevent_file_success(
         #[case] file_contents: &str,
         #[case] expected: &str,
     ) {
@@ -1167,7 +1165,7 @@ twoline",
     }
 
     #[tokio::test]
-    async fn test_get_ptp_device_name_from_uevent_file_no_devname() {
+    async fn get_ptp_device_name_from_uevent_file_no_devname() {
         let mut test_file = NamedTempFile::new().expect("create temp file failed");
         test_file
             .write_all(b"SUBSYSTEM=ptp\nOTHER=value")
@@ -1185,7 +1183,7 @@ twoline",
     }
 
     #[tokio::test]
-    async fn test_get_phc_clock_error_bound_sysfs_path_not_found() {
+    async fn get_phc_clock_error_bound_sysfs_path_not_found() {
         let ctx = mock_filesystem::fs_try_exists_context();
         ctx.expect().returning(|_| Ok(false));
 

@@ -7,7 +7,7 @@ use crate::{
         clock_parameters::ClockParameters,
         time::{
             Clock, Duration, Instant, clocks::MonotonicCoarse, inner::ClockOffsetAndRtt,
-            instant::Utc,
+            instant::Utc, tsc::Skew,
         },
     },
     shm::{
@@ -15,12 +15,6 @@ use crate::{
         ShmWrite, ShmWriter,
     },
 };
-
-/// The drift rate/maximal frequency error in parts-per-billion
-/// for the `ClockBound` clock. The error bounds returned from the client
-/// expand by this * the duration since `as_of`.
-#[expect(unused)]
-const FREQUENCY_ERROR_PPB: u32 = 15_000;
 
 /// Newtype wrapper around `ShmWriter` so we can implement `Send` + `Sync`,
 /// and thus construct this as part of an async task.
@@ -81,7 +75,16 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
         // For the sake of backwards compatibility, we will have our initial/alpha release continue to work
         // using `CLOCK_MONOTONIC_COARSE`.
         let as_of = MonotonicCoarse.get_time();
-        self.write_shm(as_of, bound_nsec, clock_status);
+        let software_skew =
+            Skew::from_period_and_error(clock_parameters.period, clock_parameters.period_max_error);
+        let Some(software_skew_ppb) = software_skew.to_ppb() else {
+            tracing::error!(
+                "Software skew is too large to be expressed as a ppb, skipping writing to SHM"
+            );
+            return;
+        };
+        let max_drift_ppb = self.max_drift_ppb + software_skew_ppb;
+        self.write_shm(as_of, bound_nsec, clock_status, max_drift_ppb);
     }
 
     /// Handle a clock disruption event
@@ -105,7 +108,7 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
             "Writing `ClockStatus::Disrupted` to SHM with 0 `bound_nsec` and `ClockStatus::Disrupted`"
         );
         // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
-        self.write_shm(as_of, 0, ClockStatus::Disrupted);
+        self.write_shm(as_of, 0, ClockStatus::Disrupted, 0);
         tracing::info!("Handled clock disruption event");
     }
 }
@@ -127,7 +130,13 @@ impl<T: ShmWrite> ClockStateWriter<T> {
         }
     }
 
-    fn write_shm(&mut self, as_of: Instant, bound_nsec: i64, clock_status: ClockStatus) {
+    fn write_shm(
+        &mut self,
+        as_of: Instant,
+        bound_nsec: i64,
+        clock_status: ClockStatus,
+        max_drift_ppb: u32,
+    ) {
         let ceb = ClockErrorBoundGeneric::builder()
             .as_of(
                 // Unwrap safety: unlikely to fail for any value for the distant future,
@@ -145,8 +154,7 @@ impl<T: ShmWrite> ClockStateWriter<T> {
                 // TODO: It may be worthwhile to add to this max drift ppb base the following
                 // components:
                 // - any slew rate for phase correction, since kernel clocks are used on client side
-                // - error inherent to our frequency calculation e.g. `period_max_error`
-                self.max_drift_ppb,
+                max_drift_ppb,
             )
             .clock_status(clock_status)
             .clock_disruption_support_enabled(self.clock_disruption_support_enabled)
@@ -224,7 +232,7 @@ mod tests {
     fn test_write_shm(#[case] clock_status: ClockStatus) {
         let as_of = MonotonicCoarse.get_time();
         let bound_nsec = 1234;
-        let max_drift_ppb = 234;
+        let max_drift_ppb = 15_000;
         let disruption_marker = 345;
         let clock_disruption_support_enabled = true;
         let expected_ceb = ClockErrorBoundGeneric::builder()
@@ -248,7 +256,7 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer.write_shm(as_of, bound_nsec, clock_status);
+        clock_state_writer.write_shm(as_of, bound_nsec, clock_status, max_drift_ppb);
     }
 
     #[test]
@@ -274,7 +282,6 @@ mod tests {
                     == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
                     && ceb.bound_nsec() == 2250
                     && ceb.disruption_marker() == disruption_marker
-                    && ceb.max_drift_ppb() == max_drift_ppb
                     && ceb.clock_status() == clock_status
                     && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
             })

@@ -288,8 +288,7 @@ impl Phc {
         // these values in search. That kind of approach is TBD.
         //
         // TODO explore this a bit more.
-        let p_estimate =
-            (newest.data().time - oldest.data().time) / (newest.tsc_post() - oldest.tsc_post());
+        let p_estimate = oldest.calculate_period(newest);
 
         let k = p_estimate * TscDiff::new(newest.tsc_post().get());
         let k = newest.data().time - k;
@@ -308,10 +307,6 @@ impl Phc {
     /// Calculate the local period and associated error
     ///
     /// Returns `None` if `local` has less than 2 data points
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "Needed an escape hatch. Error units weren't lining up"
-    )]
     fn calculate_local_period_and_error(
         local: &event_buffer::Local<event::Phc>,
     ) -> Option<LocalPeriodAndError> {
@@ -322,38 +317,15 @@ impl Phc {
         let old = local.as_ref().min_rtt_in_quarter(Quarter::Oldest).unwrap();
         let new = local.as_ref().min_rtt_in_quarter(Quarter::Newest).unwrap();
 
-        let period_local = new.calculate_period_backward(old);
+        let local_period_and_error = old.calculate_period_with_error(new);
 
-        // unwrap okay, local is not empty
-        let min = local.as_ref().min_rtt().unwrap();
-        let min_rtt = min.rtt();
-        let new_sample_error = new.rtt() - min_rtt;
-        let old_sample_error = old.rtt() - min_rtt;
-
-        assert!(new_sample_error.get() >= 0);
-        assert!(old_sample_error.get() >= 0);
-
-        // We have used this somewhere else, but I don't see the math for this.
-        // units also come out as GHz... (ticks / nanoseconds)
-        // seems sus...
-        //
-        // Currently this value is not used within the FF algorithm nor client, but we need to address this calculation
-        // in the future
-        let error = ((new_sample_error + old_sample_error).get() as f64)
-            / (new.data().time - old.data().time).as_nanos() as f64;
-        let error = Period::from_seconds(error);
         tracing::debug!(
             ?old,
             ?new,
-            min_rtt = ?min,
-            %period_local,
-            %error,
+            ?local_period_and_error,
             "Calculated local period and error"
         );
-        Some(LocalPeriodAndError {
-            period_local,
-            error,
-        })
+        Some(local_period_and_error)
     }
 
     /// Calculate the theta value, which is the time correction to be applied

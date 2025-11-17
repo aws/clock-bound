@@ -16,11 +16,12 @@ pub use uncorrected_clock::UncorrectedClock;
 use crate::daemon::time::{Duration, tsc::Period};
 
 /// Used as the output for `calculate_local_period_and_error` methods
-struct LocalPeriodAndError {
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalPeriodAndError {
     /// period calculation
-    period_local: Period,
+    pub period_local: Period,
     /// period error
-    error: Period,
+    pub error: Period,
 }
 
 /// Output from `calculate_theta` methods

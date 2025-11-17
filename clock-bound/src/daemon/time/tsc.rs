@@ -263,6 +263,7 @@ impl MulAssign<f64> for Frequency {
 pub struct Skew(f64);
 
 impl Skew {
+    const PPB: f64 = 1.0e-9;
     const PPM: f64 = 1.0e-6;
     const PERCENT: f64 = 0.01;
 
@@ -273,7 +274,20 @@ impl Skew {
 
     /// Construct a new skew from parts per billion (ppb)
     pub const fn from_ppb(skew: f64) -> Self {
-        Self(skew * Self::PPM / 1_000.0)
+        Self(skew * Self::PPB)
+    }
+
+    /// To PPB
+    ///
+    /// Returns none if the value is larger than 1 billion part per billion
+    pub const fn to_ppb(self) -> Option<u32> {
+        let skew = self.0.abs();
+        if skew < 1e9 {
+            #[expect(clippy::cast_sign_loss, reason = "did abs above")]
+            Some((skew / Self::PPB).round() as u32)
+        } else {
+            None
+        }
     }
 
     /// Construct a new skew from percentage
@@ -292,6 +306,15 @@ impl Skew {
     pub fn from_ratio(num: Period, den: Period) -> Self {
         let ratio = num.get() / den.get();
         Self(1.0 - ratio)
+    }
+
+    /// Calculate skew from period and associated error
+    ///
+    /// Equivalent to
+    /// `Skew = error (in seconds) / period (in seconds`
+    pub fn from_period_and_error(period: Period, error: Period) -> Self {
+        let skew = error.get() / period.get();
+        Self(skew)
     }
 
     /// In struct timex, freq, ppsfreq, and stabil are ppm (parts per

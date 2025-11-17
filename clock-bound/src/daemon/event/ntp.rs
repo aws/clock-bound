@@ -6,7 +6,7 @@ use std::{
 
 use super::TscRtt;
 use crate::daemon::{
-    clock_sync_algorithm::ff::UncorrectedClock,
+    clock_sync_algorithm::ff::{LocalPeriodAndError, UncorrectedClock},
     time::{Duration, Instant, TscCount, tsc::Period},
 };
 
@@ -74,7 +74,7 @@ impl Ntp {
         self.system_clock.as_ref()
     }
 
-    /// Calculate a period by using 2 NTP events using return path
+    /// Calculate a period by using 2 NTP events using midpoints
     ///
     /// NTP traffic is characterized in ClockBound with each exchange having a
     /// - `tsc_pre`: The TSC reading before sending the NTP packet
@@ -82,21 +82,68 @@ impl Ntp {
     /// - `server_send_system_time`: The server's system time after sending the NTP packet
     /// - `tsc_post`: The TSC reading after sending the NTP packet
     ///
-    /// The "backward" path here means using the `server_send_system_time` and `tsc_post` from
-    /// two events to calculate the TSC period.
-    ///
     /// # Panics
-    /// - Panics if events share the same `tsc_post` (happens if the events are the same).
-    /// - Panics if events share the same `server_send_time` (also happens if the events are the same)
-    pub fn calculate_period_backward(&self, other: &Self) -> Period {
-        let (old, new) = if self.tsc_post < other.tsc_post {
-            (self, other)
-        } else {
-            (other, self)
-        };
+    /// - Panics if events share the same tsc midpoint (happens if the events are the same).
+    /// - Panics if events share the same server time midpoint (also happens if the events are the same)
+    pub fn calculate_period(&self, other: &Self) -> Period {
+        let self_server_midpoint = self
+            .data()
+            .server_recv_time
+            .midpoint(self.data().server_send_time);
+        let self_tsc_midpoint = self.tsc_midpoint();
 
-        (new.data().server_send_time - old.data().server_send_time)
-            / (new.tsc_post() - old.tsc_post())
+        let other_server_midpoint = other
+            .data()
+            .server_recv_time
+            .midpoint(other.data().server_send_time);
+        let other_tsc_midpoint = other.tsc_midpoint();
+
+        (self_server_midpoint - other_server_midpoint) / (self_tsc_midpoint - other_tsc_midpoint)
+    }
+
+    /// Calculate the period along with the error in the period estimation
+    ///
+    /// When calculating the period, the error in the measurement has a direct relationship with
+    /// the reference clock's clock error bound and network RTT, and an inverse relationship
+    /// with the time between the two events.
+    ///
+    /// Over the steady state, the FF algorithm will use data points which are minutes apart. This will
+    /// make the reference clock's clock error bound and RTT values statistically insignificant.
+    ///
+    /// However, after a disruption event the effects from the clock error bound and RTT can become more pronounced.
+    /// This calculation stays honest with that.
+    pub fn calculate_period_with_error(&self, other: &Self) -> LocalPeriodAndError {
+        // This is the server reported clock error bound. Includes neither peer delay nor local dispersion
+        let other_server_ceb = other.data().root_dispersion + other.data().root_delay / 2;
+        let self_server_ceb = self.data().root_dispersion + self.data().root_delay / 2;
+
+        let self_server_midpoint = self
+            .data()
+            .server_recv_time
+            .midpoint(self.data().server_send_time);
+        let other_server_midpoint = other
+            .data()
+            .server_recv_time
+            .midpoint(other.data().server_send_time);
+
+        let period_bound_one = ((self_server_midpoint - self_server_ceb)
+            - (other_server_midpoint + other_server_ceb))
+            / (self.tsc_post - other.tsc_pre);
+        let period_bound_two = ((self_server_midpoint + self_server_ceb)
+            - (other_server_midpoint - other_server_ceb))
+            / (self.tsc_pre - other.tsc_post);
+
+        let period = self.calculate_period(other);
+
+        let period_error_one = (period_bound_one.get() - period.get()).abs();
+        let period_error_two = (period_bound_two.get() - period.get()).abs();
+
+        let error = Period::from_seconds(period_error_one.max(period_error_two));
+
+        LocalPeriodAndError {
+            period_local: period,
+            error,
+        }
     }
 
     /// Calculate the clock error bound of this event at the time of the event
@@ -387,13 +434,14 @@ mod tests {
         assert!(matches!(Stratum::try_from(255), Err(TryFromU8Error)));
     }
 
-    fn create_ntp_event(pre: TscCount, post: TscCount, server_send_time: Instant) -> Ntp {
+    fn create_ntp_event(pre: TscCount, post: TscCount, server_time: Instant) -> Ntp {
+        let server_duration = Duration::from_micros(40);
         Ntp::builder()
             .tsc_pre(pre)
             .tsc_post(post)
             .ntp_data(NtpData {
-                server_recv_time: Instant::from_nanos(0), // Not used in calculation
-                server_send_time: server_send_time,
+                server_recv_time: server_time - (server_duration / 2),
+                server_send_time: server_time + (server_duration / 2),
                 root_delay: Duration::from_nanos(0), // Not used in calculation
                 root_dispersion: Duration::from_nanos(0), // Not used in calculation
                 stratum: Stratum::ONE,               // Not used in calculation
@@ -487,7 +535,7 @@ mod tests {
         // Expected period (server_time_diff / tsc_diff = (200000-100000)/(40000-20000) = 5)
         Period::from_seconds(5.0),
     )]
-    fn test_calculate_period_backward(
+    fn test_calculate_period(
         #[case] (first_pre, first_post, first_send): (TscCount, TscCount, Instant),
         #[case] (second_pre, second_post, second_send): (TscCount, TscCount, Instant),
         #[case] expected_period: Period,
@@ -495,9 +543,10 @@ mod tests {
         let event1 = create_ntp_event(first_pre, first_post, first_send);
         let event2 = create_ntp_event(second_pre, second_post, second_send);
 
-        let period = event1.calculate_period_backward(&event2);
+        let period = event1.calculate_period(&event2);
         approx::assert_abs_diff_eq!(period.get(), expected_period.get());
     }
+
     #[rstest]
     #[case(
         // Zero root delay and dispersion
@@ -635,5 +684,77 @@ mod tests {
             expected_offset.as_seconds_f64(),
             epsilon = 1e-9
         );
+    }
+
+    fn create_ntp_event_with_error(
+        pre: TscCount,
+        post: TscCount,
+        server_time: Instant,
+        server_time_error: Duration,
+    ) -> Ntp {
+        let server_duration = Duration::from_micros(40);
+        Ntp::builder()
+            .tsc_pre(pre)
+            .tsc_post(post)
+            .ntp_data(NtpData {
+                server_recv_time: server_time - (server_duration / 2),
+                server_send_time: server_time + (server_duration / 2),
+                root_delay: Duration::from_nanos(0), // Kinda not used in calculation
+                root_dispersion: server_time_error,
+                stratum: Stratum::ONE, // Not used in calculation
+            })
+            .build()
+            .unwrap()
+    }
+
+    // grabbed data from atss
+    #[rstest]
+    #[case::first_two_burst(
+        // First event
+        (TscCount::new(1369766986771638), TscCount::new(1369766987268186), Instant::from_femtos(1763156375539567199000000), Duration::from_femtos(15_258_789_063)),
+        // Second event
+        (TscCount::new(1369767115896036), TscCount::new(1369767116312166), Instant::from_femtos(1763156375589220795000000), Duration::from_femtos(15_258_789_063)),
+        Period::from_seconds(3.84660556685218820E-10),
+        Period::from_seconds(1.601932955446111e-12),
+    )]
+    #[case::longer_term(
+        // First event
+        (TscCount::new(1372612880990286), TscCount::new(1372612881496636), Instant::from_femtos(1763157470124988894000000), Duration::from_femtos(30517578125)),
+        // Second event
+        (TscCount::new(1372984678771576), TscCount::new(1372984679237314), Instant::from_femtos(1763157613125523830000000), Duration::from_femtos(15258789063)),
+        Period::from_seconds(3.846191396030325e-10),
+        Period::from_seconds(6.259276438100348e-16),
+    )]
+    #[case::backward(
+        // Second event
+        (TscCount::new(1369767115896036), TscCount::new(1369767116312166), Instant::from_femtos(1763156375589220795000000), Duration::from_femtos(15_258_789_063)),
+        // First event
+        (TscCount::new(1369766986771638), TscCount::new(1369766987268186), Instant::from_femtos(1763156375539567199000000), Duration::from_femtos(15_258_789_063)),
+        Period::from_seconds(3.84660556685218820E-10),
+        Period::from_seconds(1.601932955446111e-12),
+    )]
+
+    fn test_calculate_period_with_error(
+        #[case] (first_pre, first_post, first_send, first_ceb): (
+            TscCount,
+            TscCount,
+            Instant,
+            Duration,
+        ),
+        #[case] (second_pre, second_post, second_send, second_ceb): (
+            TscCount,
+            TscCount,
+            Instant,
+            Duration,
+        ),
+        #[case] expected_period: Period,
+        #[case] expected_period_error: Period,
+    ) {
+        let event1 = create_ntp_event_with_error(first_pre, first_post, first_send, first_ceb);
+        let event2 = create_ntp_event_with_error(second_pre, second_post, second_send, second_ceb);
+
+        let res = event1.calculate_period_with_error(&event2);
+        approx::assert_abs_diff_eq!(res.period_local.get(), expected_period.get());
+        approx::assert_abs_diff_eq!(res.error.get(), expected_period_error.get());
     }
 }
