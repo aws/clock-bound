@@ -11,10 +11,13 @@
 pub mod common;
 mod reader;
 mod shm_header;
+mod tsc;
 mod writer;
 
 // Re-exports reader and writer. The writer is conditionally included under the "writer" feature.
+use common::{CLOCK_MONOTONIC, CLOCK_REALTIME, clock_gettime_safe};
 pub use reader::ShmReader;
+use tsc::read_timestamp_counter_begin;
 pub use writer::{ShmWrite, ShmWriter};
 
 use bon::Builder;
@@ -24,11 +27,10 @@ use std::error::Error;
 use std::ffi::CStr;
 use std::fmt;
 
-use common::{CLOCK_MONOTONIC, CLOCK_REALTIME, clock_gettime_safe};
-
 pub const CLOCKBOUND_SHM_DEFAULT_PATH: &str = "/var/run/clockbound/shm0";
 
 const CLOCKBOUND_RESTART_GRACE_PERIOD: TimeSpec = TimeSpec::new(5, 0);
+const NANOS_PER_SECOND: f64 = 1_000_000_000.0;
 
 /// Convenience macro to build a `ShmError::SyscallError` with extra info from errno and custom
 /// origin information.
@@ -60,48 +62,56 @@ pub trait ClockBoundSnapshot {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ClockErrorBound {
     V2(ClockErrorBoundV2),
+    V3(ClockErrorBoundV3),
 }
 
 impl ClockErrorBound {
     pub fn as_of(&self) -> TimeSpec {
         match self {
             ClockErrorBound::V2(ceb) => ceb.as_of,
+            ClockErrorBound::V3(ceb) => ceb.as_of,
         }
     }
 
     pub fn void_after(&self) -> TimeSpec {
         match self {
             ClockErrorBound::V2(ceb) => ceb.void_after,
+            ClockErrorBound::V3(ceb) => ceb.void_after,
         }
     }
 
     pub fn bound_nsec(&self) -> i64 {
         match self {
             ClockErrorBound::V2(ceb) => ceb.bound_nsec,
+            ClockErrorBound::V3(ceb) => ceb.bound_nsec,
         }
     }
 
     pub fn max_drift_ppb(&self) -> u32 {
         match self {
             ClockErrorBound::V2(ceb) => ceb.max_drift_ppb,
+            ClockErrorBound::V3(ceb) => ceb.max_drift_ppb,
         }
     }
 
     pub fn clock_status(&self) -> ClockStatus {
         match self {
             ClockErrorBound::V2(ceb) => ceb.clock_status,
+            ClockErrorBound::V3(ceb) => ceb.clock_status,
         }
     }
 
     pub fn disruption_marker(&self) -> u64 {
         match self {
             ClockErrorBound::V2(ceb) => ceb.disruption_marker,
+            ClockErrorBound::V3(ceb) => ceb.disruption_marker,
         }
     }
 
     pub fn clock_disruption_support_enabled(&self) -> bool {
         match self {
             ClockErrorBound::V2(ceb) => ceb.clock_disruption_support_enabled,
+            ClockErrorBound::V3(ceb) => ceb.clock_disruption_support_enabled,
         }
     }
 }
@@ -110,6 +120,7 @@ impl ClockBoundSnapshot for ClockErrorBound {
     fn now(&self) -> Result<ClockBoundNowResult, ShmError> {
         match self {
             ClockErrorBound::V2(ceb) => ceb.now(),
+            ClockErrorBound::V3(ceb) => ceb.now(),
         }
     }
 }
@@ -120,6 +131,9 @@ impl ClockBoundSnapshot for ClockErrorBound {
 // function to create the enum variants
 #[builder(finish_fn(vis = "", name = build_internal))]
 pub struct ClockErrorBoundGeneric {
+    #[builder(default)]
+    as_of_tsc: u64,
+
     #[builder(default = TimeSpec::new(0, 0))]
     as_of: TimeSpec,
 
@@ -128,6 +142,12 @@ pub struct ClockErrorBoundGeneric {
 
     #[builder(default)]
     bound_nsec: i64,
+
+    #[builder(default)]
+    period: f64,
+
+    #[builder(default)]
+    period_err: f64,
 
     #[builder(default)]
     disruption_marker: u64,
@@ -162,6 +182,18 @@ impl<S: clock_error_bound_generic_builder::IsComplete> ClockErrorBoundGenericBui
                 ceb.clock_status,
                 ceb.clock_disruption_support_enabled,
             )),
+            ClockErrorBoundLayoutVersion::V3 => ClockErrorBound::V3(ClockErrorBoundV3::new(
+                ceb.as_of_tsc,
+                ceb.as_of,
+                ceb.void_after,
+                ceb.period,
+                ceb.period_err,
+                ceb.bound_nsec,
+                ceb.disruption_marker,
+                ceb.max_drift_ppb,
+                ceb.clock_status,
+                ceb.clock_disruption_support_enabled,
+            )),
         }
     }
 }
@@ -169,6 +201,7 @@ impl<S: clock_error_bound_generic_builder::IsComplete> ClockErrorBoundGenericBui
 #[derive(Copy, Clone)]
 pub enum ClockErrorBoundLayoutVersion {
     V2,
+    V3,
 }
 
 impl TryFrom<u8> for ClockErrorBoundLayoutVersion {
@@ -176,6 +209,7 @@ impl TryFrom<u8> for ClockErrorBoundLayoutVersion {
     fn try_from(value: u8) -> Result<Self, ShmError> {
         match value {
             2 => Ok(ClockErrorBoundLayoutVersion::V2),
+            3 => Ok(ClockErrorBoundLayoutVersion::V3),
             _ => Err(ShmError::SegmentVersionNotSupported),
         }
     }
@@ -186,6 +220,7 @@ impl TryFrom<u16> for ClockErrorBoundLayoutVersion {
     fn try_from(value: u16) -> Result<Self, ShmError> {
         match value {
             2 => Ok(ClockErrorBoundLayoutVersion::V2),
+            3 => Ok(ClockErrorBoundLayoutVersion::V3),
             _ => Err(ShmError::SegmentVersionNotSupported),
         }
     }
@@ -306,7 +341,7 @@ pub struct ClockErrorBoundV2 {
     ///
     /// This value is incremented (by an unspecified delta) each time the clock has been disrupted.
     /// This count value is specific to a particular VM/EC2 instance.
-    pub disruption_marker: u64,
+    disruption_marker: u64,
 
     /// Maximum drift rate of the clock between updates of the synchronization daemon. The value
     /// stored in `bound_nsec` should increase by the following to account for the clock drift
@@ -322,7 +357,7 @@ pub struct ClockErrorBoundV2 {
     ///
     /// This indicates whether or not the ClockBound daemon was started with a
     /// configuration that supports detecting clock disruptions.
-    pub clock_disruption_support_enabled: bool,
+    clock_disruption_support_enabled: bool,
 
     /// Padding.
     _padding: [u8; 7],
@@ -510,6 +545,293 @@ impl ClockBoundSnapshot for ClockErrorBoundV2 {
     }
 }
 
+/// Structure that holds the `ClockErrorBound` data captured at a specific point in time and valid
+/// until a subsequent point in time.
+///
+/// The `ClockErrorBound` structure supports calculating the actual bound on clock error at any time,
+/// using its `now()` method. The internal fields are not meant to be accessed directly.
+///
+/// Note that this version of the layout allow to not use the OS system clock to retrieve the
+/// current time or grow the clock error bound.
+///
+/// The structure is shared across the Shared Memory segment and has a C representation to enforce
+/// this specific layout.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct ClockErrorBoundV3 {
+    /// TSC counter value identifying this clock update.
+    ///
+    /// The TSC counter timestamp marking the time the clock and the clock error bound where
+    /// updated last. It represents the same instant as `as_of`.
+    as_of_tsc: u64,
+
+    /// Timestamp of this clock update.
+    ///
+    /// The nanosecond resolution timestamp marking the time the clock and the clock error bound
+    /// where updated last. This timestamp is derived from `as_of_tsc`.
+    as_of: TimeSpec,
+
+    /// Time after which this clock update is void.
+    ///
+    /// The nanosecond timestamp beyond which the bound on clock error should not be trusted. This
+    /// is a useful signal that the communication with the synchronization daemon is has failed,
+    /// for example.
+    void_after: TimeSpec,
+
+    /// Oscillator period estimate.
+    ///
+    /// The period of the oscillator, represented as a fractional part of a second.
+    period_frac: u64,
+
+    /// Oscillator period estimate error.
+    ///
+    /// The error on the estimate of the period of the oscillator, in ppb, represented as a
+    /// fractional part of a second.
+    period_err_frac: u64,
+
+    /// Clock Error Bound
+    ///
+    /// An absolute upper bound on the accuracy of the feed-forward synchronization clock with
+    /// regards to true time at the instant represented by `as_of` and `as_of_tsc`.
+    bound_nsec: i64,
+
+    /// Disruption marker.
+    ///
+    /// This value is incremented (by an unspecified delta) each time the clock has been disrupted.
+    /// This count value is specific to a particular VM/EC2 instance.
+    disruption_marker: u64,
+
+    /// Maximum drift rate in part-per-billion.
+    ///
+    /// Maximum drift rate of the clock between updates of the synchronization daemon. The value
+    /// stored in `bound_nsec` should increase by the following to account for the clock drift
+    /// since `bound_nsec` was computed:
+    /// `bound_nsec += max_drift_ppb * (now - as_of)`
+    max_drift_ppb: u32,
+
+    /// Clock status.
+    ///
+    /// The synchronization daemon status indicates whether the daemon is synchronized,
+    /// free-running, etc.
+    clock_status: ClockStatus,
+
+    /// Clock disruption support enabled flag.
+    ///
+    /// This indicates whether or not the ClockBound daemon was started with a
+    /// configuration that supports detecting clock disruptions.
+    clock_disruption_support_enabled: bool,
+
+    /// Period shift
+    ///
+    /// This is a scaling parameter to convert the `period` into a fractional representation with
+    /// significant digits.
+    period_shift: u8,
+
+    /// Period error shift
+    ///
+    /// This is a scaling parameter to convert the `period_err` into a fractional representation with
+    /// significant digits.
+    period_err_shift: u8,
+
+    /// Padding.
+    _padding: [u8; 5],
+}
+
+impl ClockErrorBoundV3 {
+    /// Create a new `ClockErrorBound` struct.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        as_of_tsc: u64,
+        as_of: TimeSpec,
+        void_after: TimeSpec,
+        period: f64,
+        period_err: f64,
+        bound_nsec: i64,
+        disruption_marker: u64,
+        max_drift_ppb: u32,
+        clock_status: ClockStatus,
+        clock_disruption_support_enabled: bool,
+    ) -> ClockErrorBoundV3 {
+        // Convert period and period_err into u64 representation
+        let p_frac = PeriodFrac::from(period);
+        let p_err_frac = PeriodFrac::from(period_err);
+
+        ClockErrorBoundV3 {
+            as_of_tsc,
+            as_of,
+            void_after,
+            period_frac: p_frac.frac,
+            period_err_frac: p_err_frac.frac,
+            bound_nsec,
+            disruption_marker,
+            max_drift_ppb,
+            clock_status,
+            clock_disruption_support_enabled,
+            period_shift: p_frac.shift,
+            period_err_shift: p_err_frac.shift,
+            _padding: [0u8; 5],
+        }
+    }
+
+    /// Get the oscillator period as a floating point value in seconds.
+    fn period(&self) -> f64 {
+        f64::from(PeriodFrac {
+            frac: self.period_frac,
+            shift: self.period_shift,
+        })
+    }
+
+    /// Get the oscillator period error as a floating point value.
+    fn period_err(&self) -> f64 {
+        f64::from(PeriodFrac {
+            frac: self.period_err_frac,
+            shift: self.period_err_shift,
+        })
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    fn compute_bound_at_tsc(&self, now_tsc: u64) -> Result<ClockBoundNowResult, ShmError> {
+        // Sanity checks:
+        // - `now()` should operate on a consistent snapshot of the shared memory segment, and
+        //   causality between mono and as_of should be enforced.
+        // - a extremely high value of the `max_drift_ppb` is a sign of something going wrong
+        if self.max_drift_ppb >= 1_000_000_000 {
+            return Err(ShmError::SegmentMalformed);
+        }
+
+        // Compute the number of TSC cycles between now and the instant the ff-sync clock was
+        // updated last. This is computed of a TSC value stored in the snapshot, hence this
+        // duration should never be negative.
+        let duration_tsc = now_tsc.saturating_sub(self.as_of_tsc);
+        let duration_nsec = duration_tsc as f64 * self.period() * NANOS_PER_SECOND;
+
+        // Convert the TSC timestamp into seconds with a linear projection.
+        let now = TimeSpec::nanoseconds(
+            ((self.as_of.tv_nsec() as f64)
+                + (NANOS_PER_SECOND * self.as_of.tv_sec() as f64)
+                + duration_nsec) as i64,
+        );
+
+        // Similarly, need to grow the bound on the clock error since the last update.
+        // This takes into accounts the fact that the ff-sync period is an estimate (polluted by
+        // measurement noise), and that the underlying oscillator drifts (possibly at a worse
+        // possible rate) in between consecutive clock adjustments.
+        let oscillator_err_nsec = duration_nsec * f64::from(self.max_drift_ppb) / NANOS_PER_SECOND;
+        let p_estimate_err_nsec = duration_nsec * self.period_err() / NANOS_PER_SECOND;
+
+        let updated_bound = TimeSpec::nanoseconds(
+            (self.bound_nsec as f64 + oscillator_err_nsec + p_estimate_err_nsec) as i64,
+        );
+
+        // Build the (earliest, latest) interval within which true time exists.
+        let earliest = now - updated_bound;
+        let latest = now + updated_bound;
+
+        // If the ClockErrorBound data has not been updated "recently", the status of the clock
+        // cannot be guaranteed. Things are ambiguous, the synchronization daemon may be dead, or
+        // its interaction with the clockbound daemon is broken, or ... In any case, we signal the
+        // caller that guarantees are gone. We could return an Err here, but choosing to leverage
+        // ClockStatus instead, and putting the responsibility on the caller to check the clock
+        // status value being returned.
+        let duration = TimeSpec::nanoseconds(duration_nsec as i64);
+        let clock_status = match self.clock_status {
+            // If the status in the shared memory segment is Unknown or Disrupted, returns that
+            // status.
+            ClockStatus::Unknown | ClockStatus::Disrupted => self.clock_status,
+
+            // If the status is Synchronized or FreeRunning, the expectation from the client is
+            // that the data is useable. However, if the clockbound daemon died or has not update
+            // the shared memory segment in a while, the status written to the shared memory
+            // segment may not be reliable anymore.
+            ClockStatus::Synchronized | ClockStatus::FreeRunning => {
+                if duration < CLOCKBOUND_RESTART_GRACE_PERIOD {
+                    // Allow for a restart of the daemon, for a short period of time, the status is
+                    // trusted to be correct.
+                    self.clock_status
+                } else if now < self.void_after {
+                    // Beyond the grace period, for a free running status.
+                    ClockStatus::FreeRunning
+                } else {
+                    // If beyond void_after, no guarantee is provided anymore.
+                    ClockStatus::Unknown
+                }
+            }
+        };
+
+        Ok(ClockBoundNowResult {
+            earliest,
+            latest,
+            clock_status,
+        })
+    }
+}
+
+impl ClockBoundSnapshot for ClockErrorBoundV3 {
+    /// The `ClockErrorBoundV3` implementation of `now()`.
+    ///
+    /// This version relies on the system clock to retrieve the current time as well as grow the
+    /// bound on the clock error at a constant rate.
+    fn now(&self) -> Result<ClockBoundNowResult, ShmError> {
+        let now_tsc = read_timestamp_counter_begin();
+        self.compute_bound_at_tsc(now_tsc)
+    }
+}
+
+struct PeriodFrac {
+    frac: u64,
+    shift: u8,
+}
+
+impl PeriodFrac {
+    /// Calculate the multiplication factor to maximize the number of significant digits when
+    /// converting the period from a floating point to an integer representation.
+    ///
+    /// # Panic:
+    /// Panic if the period passed is larger that 1 second.
+    ///
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    fn calculate_frac_shift(period: f64) -> u8 {
+        // 1HZ and slower should not be seen.
+        assert!(
+            period < 1.0,
+            "Cannot convert period larger than 1 second: {period}"
+        );
+
+        // Protects against the case where a zero period is passed in.
+        if period == 0_f64 {
+            return 0_u8;
+        }
+        let freq: u64 = (1.0 / period) as u64;
+        // Cast: at most 64 zeros in a u64, hence can never go over u8::MAX.
+        (64 - freq.leading_zeros() - 1) as u8
+    }
+}
+
+impl From<f64> for PeriodFrac {
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    fn from(value: f64) -> Self {
+        let shift = PeriodFrac::calculate_frac_shift(value);
+        // Cast: 64 + 255 unsigned does fit into a i32 without risk of sign error
+        let scale = 64 + i32::from(shift);
+        let frac = (value * 2_f64.powi(scale)) as u64;
+        PeriodFrac { frac, shift }
+    }
+}
+
+impl From<PeriodFrac> for f64 {
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    fn from(value: PeriodFrac) -> Self {
+        let denominator = 2_f64.powi(64 + i32::from(value.shift));
+        (value.frac as f64) / denominator
+    }
+}
+
 #[cfg(test)]
 mod t_lib {
     use super::*;
@@ -649,5 +971,190 @@ mod t_lib {
         let res = ceb.compute_bound_at(real, mono);
 
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_ceb_v3_new() {
+        let ceb = ClockErrorBoundV3::new(
+            1000,                      // as_of_tsc
+            TimeSpec::new(1, 0),       // as_of
+            TimeSpec::new(10, 0),      // void_after
+            1e-9,                      // period
+            1e-12,                     // period_err
+            5000,                      // bound_nsec
+            42,                        // disruption_marker
+            1000,                      // max_drift_ppb
+            ClockStatus::Synchronized, // clock_status
+            true,                      // clock_disruption_support_enabled
+        );
+
+        assert_eq!(ceb.as_of_tsc, 1000);
+        assert_eq!(ceb.as_of, TimeSpec::new(1, 0));
+        assert_eq!(ceb.void_after, TimeSpec::new(10, 0));
+        assert_eq!(ceb.bound_nsec, 5000);
+        assert_eq!(ceb.disruption_marker, 42);
+        assert_eq!(ceb.max_drift_ppb, 1000);
+        assert_eq!(ceb.clock_status, ClockStatus::Synchronized);
+        assert_eq!(ceb.clock_disruption_support_enabled, true);
+
+        // Test period conversion
+        let period = ceb.period();
+        assert!((period - 1e-9).abs() < 1e-15);
+
+        let period_err = ceb.period_err();
+        assert!((period_err - 1e-12).abs() < 1e-18);
+    }
+
+    #[test]
+    fn test_ceb_v3_period_conversion() {
+        let ceb = ClockErrorBoundV3::new(
+            0,
+            TimeSpec::new(0, 0),
+            TimeSpec::new(10, 0),
+            2.5e-9, // 400 MHz
+            1e-11,
+            1000,
+            0,
+            1000,
+            ClockStatus::Synchronized,
+            true,
+        );
+
+        let period = ceb.period();
+        let relative_error = (period - 2.5e-9).abs() / 2.5e-9;
+        assert!(relative_error < 1e-10);
+
+        let period_err = ceb.period_err();
+        let relative_error = (period_err - 1e-11).abs() / 1e-11;
+        assert!(relative_error < 1e-10);
+    }
+
+    #[test]
+    fn test_v3_compute_bound_at_tsc_synchronized_status() {
+        // Create a V3 CEB with known values
+        let ceb = ClockErrorBoundV3::new(
+            1_000_000_000,         // as_of_tsc (1 billion cycles)
+            TimeSpec::new(1, 0),   // as_of = 1 second
+            TimeSpec::new(100, 0), // void_after = 100 seconds
+            1e-9,                  // period = 1 ns (1 GHz clock)
+            1e-12,                 // period_err = 1ps
+            10_000,                // bound_nsec = 10 microseconds
+            0,                     // disruption_marker
+            1000,                  // max_drift_ppb = 1 ppm
+            ClockStatus::Synchronized,
+            true,
+        );
+
+        // Simulate reading TSC 2 seconds later (2 billion more cycles at 1 GHz)
+        let now_tsc = 3_500_000_000;
+
+        let result = ceb.compute_bound_at_tsc(now_tsc).expect("Should succeed");
+
+        // Expected time: as_of + 2 seconds = 3 seconds
+        assert_eq!(result.earliest.tv_sec(), 3); // approximately
+        assert_eq!(result.latest.tv_sec(), 3); // approximately
+
+        // Status should still be Synchronized (within grace period)
+        assert_eq!(result.clock_status, ClockStatus::Synchronized);
+    }
+
+    // Assert that typical TSC periods (1Hz to 10 GHz range) are converted into scaled integers
+    // without a loss of precision.
+    #[test]
+    fn test_period_frac_conversion_typical_periods() {
+        let periods = [1e-3, 1e-6, 1e-7, 1e-8, 1e-9, 2e-9, 5e-9, 1e-10];
+
+        for &period in &periods {
+            let frac = PeriodFrac::from(period);
+            let result: f64 = f64::from(frac);
+            assert!(result == period);
+        }
+    }
+
+    // Assert atypical TSC periods are converted into scaled integers
+    // with a minimum loss of precision.
+    #[test]
+    fn test_period_frac_conversion_edge_cases() {
+        // Very small period (very high frequency)
+        let small_period = 1e-25;
+        let frac = PeriodFrac::from(small_period);
+        let result: f64 = f64::from(frac);
+        let relative_error = (result - small_period).abs() / small_period;
+        assert!(relative_error < 1e-10);
+
+        // Larger period (lower frequency)
+        let large_period = 0.1;
+        let frac = PeriodFrac::from(large_period);
+        let result: f64 = f64::from(frac);
+        let relative_error = (result - large_period).abs() / large_period;
+        assert!(relative_error < 1e-10);
+    }
+
+    // Assert that the conversion panics on non-realistic frequencies.
+    #[test]
+    #[should_panic(expected = "Cannot convert period larger than 1 second")]
+    fn test_period_frac_conversion_panci() {
+        let large_period = 1.0;
+        let _ = PeriodFrac::from(large_period);
+    }
+
+    #[test]
+    fn test_calculate_frac_shift_typical() {
+        // For a 1 GHz clock (period = 1e-9), frequency = 1e9
+        // 1e9 in binary is about 30 bits, so shift should be around 29
+        let period = 1e-9;
+        let shift = PeriodFrac::calculate_frac_shift(period);
+        assert!(shift >= 29 && shift <= 30, "shift = {}", shift);
+
+        // For a 2.5 GHz clock (period = 4e-10), frequency = 2.5e9
+        // 2.5e9 in binary is about 31 bits
+        let period = 4e-10;
+        let shift = PeriodFrac::calculate_frac_shift(period);
+        assert!(shift >= 30 && shift <= 32, "shift = {}", shift);
+    }
+
+    #[test]
+    fn test_calculate_frac_shift_zero() {
+        // Zero period should return 0 (max of 0 and negative value)
+        let period = 0.0;
+        let shift = PeriodFrac::calculate_frac_shift(period);
+        assert_eq!(shift, 0);
+    }
+
+    #[test]
+    fn test_zero_period_frac_conversion() {
+        // Test that zero period doesn't panic and gives reasonable result
+        let period = 0.0;
+        let frac = PeriodFrac::from(period);
+        assert_eq!(frac.shift, 0);
+        assert_eq!(frac.frac, 0);
+
+        let result: f64 = f64::from(frac);
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn test_precision_maintained() {
+        // Test that we maintain good precision across conversions
+        let period = 2.718281828e-9; // Some arbitrary value
+        let frac = PeriodFrac::from(period);
+        let result: f64 = f64::from(frac);
+
+        // Should maintain at least 10 significant digits
+        let relative_error = (result - period).abs() / period;
+        assert!(relative_error < 1e-10);
+    }
+
+    #[test]
+    fn test_frac_representation_property() {
+        // Test that the fixed-point representation makes sense
+        let period = 1e-9;
+        let frac = PeriodFrac::from(period);
+
+        // frac should be non-zero for non-zero period
+        assert!(frac.frac > 0);
+
+        // shift should be reasonable (not 0 or 255)
+        assert!(frac.shift > 0 && frac.shift < 64);
     }
 }
