@@ -1,6 +1,6 @@
 //! A client library to communicate with ClockBound daemon. This client library is written in pure Rust.
 //!
-pub use crate::shm::CLOCKBOUND_SHM_DEFAULT_PATH;
+pub use crate::shm::CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH;
 pub use crate::shm::ClockStatus;
 use crate::shm::ShmReader;
 use crate::shm::{ClockBoundNowResult, ClockBoundSnapshot, ClockErrorBound, ShmError};
@@ -29,7 +29,7 @@ impl ClockBoundClient {
     /// # Errors
     /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
     pub fn new() -> Result<ClockBoundClient, ClockBoundError> {
-        Self::new_with_path(CLOCKBOUND_SHM_DEFAULT_PATH)
+        Self::new_with_path(CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH)
     }
 
     /// Creates and returns a new `ClockBoundClient`.
@@ -635,7 +635,7 @@ mod lib_tests {
     #[ignore = "can fail if daemon has run previously with root privs"]
     fn test_new_sanity_check() {
         let result = ClockBoundClient::new();
-        if Path::new(CLOCKBOUND_SHM_DEFAULT_PATH).exists() {
+        if Path::new(CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH).exists() {
             assert!(result.is_ok());
         } else {
             assert!(result.is_err());

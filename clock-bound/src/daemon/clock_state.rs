@@ -18,7 +18,7 @@ use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWri
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::time::ClockExt;
 use crate::daemon::time::clocks::{ClockBound, RealTime};
-use crate::shm::{CLOCKBOUND_SHM_DEFAULT_PATH, ShmWriter};
+use crate::shm::{CLOCKBOUND_SHM_DEFAULT_PATH_V0, ShmWriter};
 
 /// The whole `ClockState` component struct.
 /// This encompasses both `ClockAdjust` component which interfaces
@@ -56,7 +56,8 @@ impl ClockState {
         clock_params_receiver: Receiver<ClockParameters>,
         cancellation_token: CancellationToken,
     ) -> Self {
-        let shm_writer = ShmWriter::new(std::path::Path::new(CLOCKBOUND_SHM_DEFAULT_PATH)).unwrap();
+        let shm_writer =
+            ShmWriter::new(std::path::Path::new(CLOCKBOUND_SHM_DEFAULT_PATH_V0)).unwrap();
         let safe_shm_writer = SafeShmWriter::new(shm_writer);
         let clock_state_writer: ClockStateWriter<SafeShmWriter> = ClockStateWriter::builder()
             .clock_disruption_support_enabled(true)

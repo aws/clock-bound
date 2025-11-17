@@ -1,5 +1,5 @@
 use clock_bound::client::{
-    CLOCKBOUND_SHM_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
+    CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
     VMCLOCK_SHM_DEFAULT_PATH,
 };
 use std::process;
@@ -8,7 +8,7 @@ use std::time::Duration;
 
 fn main() {
     let mut clockbound = match ClockBoundClient::new_with_paths(
-        CLOCKBOUND_SHM_DEFAULT_PATH,
+        CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH,
         VMCLOCK_SHM_DEFAULT_PATH,
     ) {
         Ok(c) => c,
