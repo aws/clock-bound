@@ -29,10 +29,7 @@ async fn main() {
     let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info);
 
     println!("Attempting to create vmclock runner using {VMCLOCK_SHM_DEFAULT_PATH:?} file.");
-    sourceio
-        .create_vmclock(VMCLOCK_SHM_DEFAULT_PATH)
-        .await
-        .unwrap();
+    sourceio.create_vmclock(VMCLOCK_SHM_DEFAULT_PATH).await;
     sourceio.spawn_all();
 
     // Allow the runner to poll the shared memory file for a while.

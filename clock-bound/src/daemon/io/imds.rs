@@ -23,16 +23,24 @@ pub enum InstanceTypeError {
 
 /// Instance type meta data used to determine instance capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstanceType(String);
+pub struct InstanceType(pub String);
 
 impl InstanceType {
     // Instance metadata service
     const IMDS_ORIGIN: &'static str = "http://169.254.169.254";
     const IMDS_TIMEOUT_DURATION: Duration = Duration::from_secs(1);
 
+    #[cfg(test)]
+    pub async fn get_from_imds() -> Result<Self, InstanceTypeError> {
+        // Setting InstanceType explicitly to prevent unit tests from attempting to reach out to
+        // imds.
+        Ok(InstanceType("m7i.xlarge".to_string()))
+    }
+
     /// Request and parse info using the [IMDSv2 API]
     ///
     /// [IMDSv2 API]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+    #[cfg(not(test))]
     pub async fn get_from_imds() -> Result<Self, InstanceTypeError> {
         let client = reqwest::Client::new();
 
@@ -84,7 +92,8 @@ impl InstanceType {
 mod test {
     use super::*;
 
-    #[ignore = "works only on ec2. Run manually if desired"]
+    // This tests does NOT reach out to IMDS. Instead it uses `get_from_imds` specific to the test
+    // binary which returns a hard coded value, `m7i.xlarge`.
     #[tokio::test]
     async fn from_imds() {
         let instance_type = InstanceType::get_from_imds().await.unwrap();

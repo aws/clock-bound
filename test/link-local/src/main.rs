@@ -62,7 +62,7 @@ async fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
 
 /// Set up link local source io for testing
 async fn setup_with_vmclock(vmclock_shm_path: &str, sourceio: &mut SourceIO) {
-    sourceio.create_vmclock(vmclock_shm_path).await.unwrap();
+    sourceio.create_vmclock(vmclock_shm_path).await;
     sourceio.spawn_all();
 }
 

@@ -19,6 +19,7 @@ use crate::daemon::selected_clock::SelectedClockSource;
 use crate::daemon::{async_ring_buffer, event};
 
 mod imds;
+use imds::InstanceType;
 
 mod link_local;
 use link_local::LinkLocal;
@@ -191,26 +192,51 @@ impl SourceIO {
 
     /// Initializes the IO task for sampling the VMClock shared memory file.
     ///
-    /// # Errors
-    /// - If the vmclock shared memory file could not be found.
-    /// - If the vmclock shared memory file is malformed.
-    pub async fn create_vmclock(
-        &mut self,
-        vmclock_shm_path: &str,
-    ) -> Result<(), vmclock::VMClockConstructionError> {
+    /// A VMClock object will not be created if the daemon is running on a unsupported instance
+    /// type, the shared memory file is not found or if IMDS fails to provide instance metadata.
+    ///
+    /// # Panics
+    /// - When the vmclock device can not be constructed using the provided shared memory path.
+    pub async fn create_vmclock(&mut self, vmclock_shm_path: &str) {
         info!("Creating link local source.");
 
-        debug!(?self.vmclock, "Current source entry status.");
+        info!(?self.vmclock, "Current source entry status.");
         if self.vmclock.is_none() {
             self.vmclock = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
+                // Not all instance types are able to use vmclock. Before attempting to create the
+                // vmclock object the instance is first determined to be viable.
 
+                // NOTE: There are scenarios when the vmclock should be created, but
+                // is not -- IMDS timeouts, droplet live updates and IMDS queries too close instance
+                // launch will result in no vmclock runner, even when the user might expect
+                // it to.
+                //
+                // Future work is required to disambiguate and handle these failure modes as well as identify
+                // and handle vmclock runner creation on non EC2 instances.
+                let instance_type = match InstanceType::get_from_imds().await {
+                    Ok(it) => it,
+                    Err(e) => {
+                        warn!(?e, "EC2 instance type not determined. VMClock not enabled.");
+                        return;
+                    }
+                };
+
+                // Metal instances do not benefit from the vmclock and the vmclock will not be
+                // enabled on this instance types.
+                if instance_type.is_metal() {
+                    info!("EC2 metal instance type determined. Not enabling VMClock");
+                    return;
+                }
+
+                info!("EC2 non-metal instance type determined. Enabling VMClock.");
                 let vmclock = VMClock::construct(
                     vmclock_shm_path,
                     ctrl_receiver,
                     self.clock_disruption_channels.sender.clone(),
                 )
-                .await?;
+                .await
+                .unwrap_or_else(|_| panic!("vmclock device not found {vmclock_shm_path}"));
 
                 let source = Source {
                     state: SourceState::Initialized(vmclock),
@@ -219,7 +245,6 @@ impl SourceIO {
                 Some(source)
             };
         }
-        Ok(())
     }
 
     // Creates a new [`watch::Receiver`] connected to the clock distribution watch [`watch::Sender`].

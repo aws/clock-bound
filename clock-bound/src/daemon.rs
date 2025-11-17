@@ -30,6 +30,7 @@ use crate::daemon::{
     selected_clock::SelectedClockSource,
     time::tsc::Skew,
 };
+use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 
 use crate::daemon::{
     async_ring_buffer::Sender, clock_parameters::ClockParameters, clock_state::ClockState,
@@ -106,6 +107,9 @@ impl Daemon {
         for source in ntp_source_event_senders {
             io_front_end.create_ntp_source(source).await;
         }
+
+        // Initialize vmclock IO component.
+        io_front_end.create_vmclock(VMCLOCK_SHM_DEFAULT_PATH).await;
 
         // Initialize PHC event buffer and IO component.
         let (phc_tx, phc_rx) = async_ring_buffer::create(2);
