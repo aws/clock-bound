@@ -184,6 +184,11 @@ impl SourceIO {
         info!("Source PHC update complete.");
     }
 
+    /// Returns true if a PHC source exists (has been created).
+    pub fn phc_exists(&self) -> bool {
+        self.phc.is_some()
+    }
+
     /// Initializes the IO task for sampling the VMClock shared memory file.
     ///
     /// # Errors

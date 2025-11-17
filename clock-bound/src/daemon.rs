@@ -39,7 +39,7 @@ use tokio_util::task::TaskTracker;
 use rand::{RngCore, rng};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 /// The maximum dispersion growth every second
 ///
@@ -89,38 +89,62 @@ impl Daemon {
         };
 
         let selected_clock = Arc::new(SelectedClockSource::default());
+
+        // Initialize IO components.
+        let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
+        let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
+
+        // Initialize link-local event buffer and IO component.
+        let (link_local_tx, link_local_rx) = async_ring_buffer::create(2);
+        io_front_end.create_link_local(link_local_tx).await;
+
+        // Initialize ntp source event buffer and IO component.
+        let ntp_sources =
+            clock_sync_algorithm::source::NtpSource::create_time_aws_sources(MAX_DISPERSION_GROWTH);
+        let (ntp_source_event_senders, ntp_source_event_receivers) =
+            Self::init_ntp_source_buffers(2, &ntp_sources);
+        for source in ntp_source_event_senders {
+            io_front_end.create_ntp_source(source).await;
+        }
+
+        // Initialize PHC event buffer and IO component.
+        let (phc_tx, phc_rx) = async_ring_buffer::create(2);
+        io_front_end.create_phc(phc_tx).await;
+
+        // Note: Failure to create a PHC IO component here is considered non-fatal,
+        // we will continue without using the device as an clock sync input.
+        let phc = if io_front_end.phc_exists() {
+            Some(clock_sync_algorithm::source::Phc::new(
+                std::path::PathBuf::new(), //TODO: propagate actual device path.
+                MAX_DISPERSION_GROWTH,
+            ))
+        } else {
+            warn!("PHC source failed creation. Continuing without it.");
+            None
+        };
+        let phc_rx = if io_front_end.phc_exists() {
+            Some(phc_rx)
+        } else {
+            None
+        };
+
+        // Initialize clock sync algorithm.
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .link_local(clock_sync_algorithm::source::LinkLocal::new(
                 MAX_DISPERSION_GROWTH,
             ))
-            .ntp_sources(
-                clock_sync_algorithm::source::NtpSource::create_time_aws_sources(
-                    MAX_DISPERSION_GROWTH,
-                ),
-            )
+            .ntp_sources(ntp_sources)
+            .maybe_phc(phc)
             .selected_clock(selected_clock.clone())
             .selector(Selector::new(MAX_DISPERSION_GROWTH))
             .build();
-
-        // Initializing async ring buffers for IO event delivery
-        let (link_local_tx, link_local_rx) = async_ring_buffer::create(2);
-        let (ntp_source_event_senders, ntp_source_event_receivers) =
-            Self::init_ntp_source_buffers(2, &clock_sync_algorithm.ntp_sources);
 
         // Initializing receiver stream with IO ring buffer receivers
         let receiver_stream: ReceiverStream = ReceiverStream::builder()
             .link_local(link_local_rx)
             .ntp_sources(ntp_source_event_receivers.into_iter().collect())
+            .maybe_phc(phc_rx)
             .build();
-
-        let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
-        let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
-
-        // Initialize IO components.
-        io_front_end.create_link_local(link_local_tx).await;
-        for source in ntp_source_event_senders {
-            io_front_end.create_ntp_source(source).await;
-        }
 
         Self {
             io_front_end,
