@@ -17,17 +17,18 @@ resolver = "3"
 
 [workspace.package]
 authors = [
-  "Jacob Wisniewski <wisnjaco@amazon.com>",
-  "Julien Ridoux <ridouxj@amazon.com>",
-  "Tam Phan <tmpha@amazon.com>",
-  "Ryan Luu <rluu@amazon.com>",
-  "Wenhao Piao <wenhaopi@amazon.com>",
-  "Thoth Gunter <mtgunter@amazon.com>",
-  "Shamik Chakraborty <shamchak808@gmail.com>",
-  "Mohammed Kabir <mekabir93@gmail.com>",
-  "Myles Neloms <nelomsmn@gmail.com>",
-  "Nick Matthews <nick.matthews1020@gmail.com>",
+  "Jacob Wisniewski <jacoblwisniewski@gmail.com>",
   "Jennifer Solidum <jennsolidum@gmail.com>",
+  "Julien Ridoux <julien@synclab.org>",
+  "Mohammed Kabir <mekabir93@gmail.com>",
+  "Myles Neloms <mcneloms.451@gmail.com>",
+  "Nick Matthews <nick.matthews1020@gmail.com>",
+  "Ryan Luu <ryanluu@gmail.com>",
+  "Shamik Chakraborty <shamchak808@gmail.com>",
+  "Tam Phan <tphan093@gmail.com>",
+  "Thoth Gunter <thothgunter@live.com>",
+  "Wei-Han Huang <danny87123@gmail.com>",
+  "Wenhao Piao <wenhao.piao@outlook.com>",
 ]
 categories = [ "date-and-time" ]
 edition = "2024"
