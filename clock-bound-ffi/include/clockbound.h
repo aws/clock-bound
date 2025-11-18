@@ -5,7 +5,7 @@
 #include <time.h>
 
 #define CLOCKBOUND_ERROR_DETAIL_SIZE 128
-#define CLOCKBOUND_SHM_DEFAULT_PATH "/var/run/clockbound/shm0"
+#define CLOCKBOUND_SHM_DEFAULT_PATH "/var/run/clockbound/shm1"
 #define VMCLOCK_SHM_DEFAULT_PATH "/dev/vmclock0"
 
 /*

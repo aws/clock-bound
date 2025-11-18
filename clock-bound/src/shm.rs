@@ -29,7 +29,7 @@ use std::fmt;
 
 pub const CLOCKBOUND_SHM_DEFAULT_PATH_V0: &str = "/var/run/clockbound/shm0";
 pub const CLOCKBOUND_SHM_DEFAULT_PATH_V1: &str = "/var/run/clockbound/shm1";
-pub const CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH: &str = CLOCKBOUND_SHM_DEFAULT_PATH_V0;
+pub const CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH: &str = CLOCKBOUND_SHM_DEFAULT_PATH_V1;
 
 const CLOCKBOUND_RESTART_GRACE_PERIOD: TimeSpec = TimeSpec::new(5, 0);
 const NANOS_PER_SECOND: f64 = 1_000_000_000.0;

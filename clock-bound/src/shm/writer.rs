@@ -361,9 +361,6 @@ mod t_writer {
 
     /// Assert that a new memory mapped segment is created it does not exist.
     #[test]
-    // FIXME: this will fail until the writer is upgraded
-    // https://github.com/aws/private-clock-bound-staging/pull/158
-    #[ignore = "daemon version mismatch"]
     fn test_writer_create_new_if_not_exist() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
@@ -374,8 +371,8 @@ mod t_writer {
         let ceb = clockerrorbound!();
         let mut writer = ShmWriter::new(
             Path::new(clockbound_shm_path),
-            ClockErrorBoundLayoutVersion::V2,
-            ClockErrorBoundLayoutVersion::V2,
+            ClockErrorBoundLayoutVersion::V3,
+            ClockErrorBoundLayoutVersion::V3,
         )
         .expect("Failed to create a writer");
         writer.write(&ceb);
@@ -392,9 +389,6 @@ mod t_writer {
 
     /// Assert that an existing memory mapped segment is wiped clean if dirty.
     #[test]
-    // FIXME: this will fail until the writer is upgraded
-    // https://github.com/aws/private-clock-bound-staging/pull/158
-    #[ignore = "daemon version mismatch"]
     fn test_writer_wipe_clean_on_new() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
@@ -412,8 +406,8 @@ mod t_writer {
         let ceb = clockerrorbound!();
         let mut writer = ShmWriter::new(
             Path::new(clockbound_shm_path),
-            ClockErrorBoundLayoutVersion::V2,
-            ClockErrorBoundLayoutVersion::V2,
+            ClockErrorBoundLayoutVersion::V3,
+            ClockErrorBoundLayoutVersion::V3,
         )
         .expect("Failed to create a writer");
         writer.write(&ceb);
