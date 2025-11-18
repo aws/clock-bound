@@ -149,7 +149,11 @@ impl LinkLocal {
         loop {
             tokio::select! {
                 biased; // priority order is disruption, commands, and ticks
-                _ = self.clock_disruption_receiver.changed() => {
+                val = self.clock_disruption_receiver.changed() => {
+                    if let Err(e) = val {
+                        tracing::error!(?e, "Clock disruption receiver dropped.");
+                        break;
+                    }
                     // Clock Disruption logic here
                     self.handle_disruption();
                     info!("Received clock disruption signal. Entering Burst mode.");

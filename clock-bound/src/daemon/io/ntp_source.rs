@@ -142,7 +142,11 @@ impl NTPSource {
         loop {
             tokio::select! {
                 biased; // priority order is disruption, commands, and ticks
-                _ = self.clock_disruption_receiver.changed() => {
+                val = self.clock_disruption_receiver.changed() => {
+                    if let Err(e) = val {
+                        tracing::error!(?e, "Clock disruption receiver dropped.");
+                        break;
+                    }
                     self.handle_disruption();
                 }
                 ctrl_req = self.ctrl_receiver.recv() => {
