@@ -8,7 +8,10 @@ use std::sync::atomic::{self, AtomicU16};
 
 use crate::shm::shm_header::{CLOCKBOUND_SHM_LATEST_VERSION, ShmHeader};
 use crate::{
-    shm::{ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ShmError},
+    shm::{
+        ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockErrorBoundV2,
+        ClockErrorBoundV3, ShmError,
+    },
     syserror,
 };
 
@@ -254,9 +257,23 @@ impl ShmReader {
         let version = unsafe { ptr::addr_of!((*cursor.cast::<ShmHeader>()).version) };
         let generation = unsafe { ptr::addr_of!((*cursor.cast::<ShmHeader>()).generation) };
 
+        // Atomically read the current version in the shared memory segment
+        // SAFETY: `self.version` has been validated when creating the reader
+        let shm_version = unsafe { &*version };
+        let shm_version = shm_version.load(atomic::Ordering::Acquire);
+
+        // FIXME: temporary workaround waiting for https://github.com/aws/private-clock-bound-staging/pull/150
+        // to be pulled in
+        let shm_version = ClockErrorBoundLayoutVersion::try_from(shm_version & 0x00ff)?;
+
         // Move to the end of the header and map the ClockErrorBound data, but only if the segment
         // size allows it and matches our expectation.
-        if mmap_guard.segsize < size_of::<ShmHeader>() + size_of::<ClockErrorBound>() {
+        let layout_size = match shm_version {
+            ClockErrorBoundLayoutVersion::V2 => size_of::<ClockErrorBoundV2>(),
+            ClockErrorBoundLayoutVersion::V3 => size_of::<ClockErrorBoundV3>(),
+        };
+
+        if mmap_guard.segsize < size_of::<ShmHeader>() + layout_size {
             return Err(ShmError::SegmentMalformed);
         }
 

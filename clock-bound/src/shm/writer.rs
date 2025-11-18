@@ -13,8 +13,10 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 
 use crate::shm::reader::ShmReader;
-use crate::shm::shm_header::{CLOCKBOUND_SHM_SUPPORTED_VERSION, SHM_MAGIC, ShmHeader};
-use crate::shm::{ClockErrorBound, ShmError};
+use crate::shm::shm_header::{CLOCKBOUND_SHM_LATEST_VERSION, SHM_MAGIC, ShmHeader};
+use crate::shm::{
+    ClockErrorBound, ClockErrorBoundLayoutVersion, ClockErrorBoundV2, ClockErrorBoundV3, ShmError,
+};
 
 /// Trait that a writer to the shared memory segment has to implement.
 pub trait ShmWrite {
@@ -62,12 +64,14 @@ impl ShmWriter {
     ///    happened. That's a warm reboot-like scenario.
     /// 3. A variation of 2., but where the layout is being changed (a version bump). This is
     ///    analog to a cold boot.
-    ///
-    /// TODO: implement scenario 3 once the readers support a version bump.
     #[expect(clippy::missing_errors_doc, reason = "todo")]
-    pub fn new(path: &Path) -> std::io::Result<ShmWriter> {
+    pub fn new(
+        path: &Path,
+        minimum_version: ClockErrorBoundLayoutVersion,
+        current_version: ClockErrorBoundLayoutVersion,
+    ) -> std::io::Result<ShmWriter> {
         // Determine the size of the segment.
-        let segsize = ShmWriter::segment_size();
+        let segsize = ShmWriter::segment_size(current_version);
 
         // Use the ShmReader to assert the state of the segment. If the segment does not exist or
         // cannot be read correctly, wipe it clean. Note that there is a strong assumption here
@@ -103,19 +107,25 @@ impl ShmWriter {
         };
 
         // Update the memory segment with bound on clock error data and write the layout version.
-        // - If the segment was wiped clean, this defines the memory layout. It is still not useable
-        //   by readers, until the next `update()` is successful.
-        // - If the segment existed and was valid, the version is over-written, and with a single
-        //   version defined today, this overwrites the same value and the segment is readily
-        //   available to the existing readers.
-        //
-        // TODO: remove the hard coded version 1 below, manage a change of version, and update the
-        // comment above since the no-op assumption won't hold true anymore with more than one
-        // version.
+        // - If the segment was wiped clean, this defines the memory layout. It is still not
+        //   useable by readers, until the next `update()` is successful.
+        // - If the segment existed and was valid, the version is over-written. The minimum_version
+        //   SHOULD NOT change when writing to a given path.
+        // - It is possible for the current version to increment, if the daemon has been upgraded
+        //   and the new version is backward compatible with the miminum one.
+        let (min_ver, cur_ver): (u16, u16) = match current_version {
+            // FIXME: the version 2 of the layout does not support minimum_version
+            // interpretation of the u16 field. Set that to zero deliberately until the
+            // implementation changes.
+            ClockErrorBoundLayoutVersion::V2 => (0, current_version.into()),
+            ClockErrorBoundLayoutVersion::V3 => (minimum_version.into(), current_version.into()),
+        };
+        let version_value = (min_ver << 8) | (cur_ver & 0x00ff);
+
         // SAFETY: segment has been validated to be usable, can use pointers.
         unsafe {
             let version = &*writer.version;
-            version.store(CLOCKBOUND_SHM_SUPPORTED_VERSION, atomic::Ordering::Relaxed);
+            version.store(version_value, atomic::Ordering::Relaxed);
         }
 
         Ok(writer)
@@ -130,7 +140,7 @@ impl ShmWriter {
 
         match ShmReader::new_with_max_version_unchecked(path_cstring.as_c_str()) {
             Ok((_reader, max_version)) => {
-                if max_version == CLOCKBOUND_SHM_SUPPORTED_VERSION {
+                if max_version == CLOCKBOUND_SHM_LATEST_VERSION {
                     Ok(())
                 } else {
                     Err(ShmError::SegmentVersionNotSupported)
@@ -141,9 +151,13 @@ impl ShmWriter {
     }
 
     /// Return a segment size which is large enough to store everything we need.
-    fn segment_size() -> usize {
+    fn segment_size(version: ClockErrorBoundLayoutVersion) -> usize {
         // Need to hold the header and the bound on clock error data.
-        let size = size_of::<ShmHeader>() + size_of::<ClockErrorBound>();
+        let size = size_of::<ShmHeader>()
+            + match version {
+                ClockErrorBoundLayoutVersion::V2 => size_of::<ClockErrorBoundV2>(),
+                ClockErrorBoundLayoutVersion::V3 => size_of::<ClockErrorBoundV3>(),
+            };
 
         // Round up to have 64 bit alignment. Not absolutely required but convenient. Currently,
         // the size of the data shared is almost two order of magnitude smaller than the minimum
@@ -358,8 +372,12 @@ mod t_writer {
 
         // Create and wipe the memory segment
         let ceb = clockerrorbound!();
-        let mut writer =
-            ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
+        let mut writer = ShmWriter::new(
+            Path::new(clockbound_shm_path),
+            ClockErrorBoundLayoutVersion::V2,
+            ClockErrorBoundLayoutVersion::V2,
+        )
+        .expect("Failed to create a writer");
         writer.write(&ceb);
 
         // Read it back into a snapshot
@@ -392,8 +410,12 @@ mod t_writer {
 
         // Create and wipe the memory segment
         let ceb = clockerrorbound!();
-        let mut writer =
-            ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
+        let mut writer = ShmWriter::new(
+            Path::new(clockbound_shm_path),
+            ClockErrorBoundLayoutVersion::V2,
+            ClockErrorBoundLayoutVersion::V2,
+        )
+        .expect("Failed to create a writer");
         writer.write(&ceb);
 
         // Read it back into a snapshot
@@ -416,8 +438,12 @@ mod t_writer {
 
         // Create a clean memory segment
         let ceb = clockerrorbound!();
-        let mut writer =
-            ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
+        let mut writer = ShmWriter::new(
+            Path::new(clockbound_shm_path),
+            ClockErrorBoundLayoutVersion::V2,
+            ClockErrorBoundLayoutVersion::V2,
+        )
+        .expect("Failed to create a writer");
 
         // Push two updates to the shared memory segment, the generation moves from 0, to 2, to 4
         writer.write(&ceb);

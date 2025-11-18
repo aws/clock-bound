@@ -228,6 +228,15 @@ impl TryFrom<u16> for ClockErrorBoundLayoutVersion {
     }
 }
 
+impl From<ClockErrorBoundLayoutVersion> for u16 {
+    fn from(value: ClockErrorBoundLayoutVersion) -> Self {
+        match value {
+            ClockErrorBoundLayoutVersion::V2 => 2,
+            ClockErrorBoundLayoutVersion::V3 => 3,
+        }
+    }
+}
+
 /// Result of the `ClockBoundClient::now()` function.
 #[derive(PartialEq, Clone, Debug)]
 pub struct ClockBoundNowResult {

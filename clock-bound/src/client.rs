@@ -704,8 +704,12 @@ mod lib_tests {
         };
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
-        let mut writer =
-            ShmWriter::new(Path::new(clockbound_shm_path)).expect("Failed to create a writer");
+        let mut writer = ShmWriter::new(
+            Path::new(clockbound_shm_path),
+            ClockErrorBoundLayoutVersion::V2,
+            ClockErrorBoundLayoutVersion::V2,
+        )
+        .expect("Failed to create a writer");
 
         let ceb = ClockErrorBoundGeneric::builder().build(ClockErrorBoundLayoutVersion::V3);
         writer.write(&ceb);

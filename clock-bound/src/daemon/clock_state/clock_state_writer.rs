@@ -37,7 +37,10 @@ unsafe impl Sync for SafeShmWriter {}
 
 pub struct ClockStateWriter<T> {
     clock_disruption_support_enabled: bool,
-    shm_writer: T,
+    // Writer to the */shm0 memory segment path
+    shm_writer_0: T,
+    // Writer to the */shm1 memory segment path
+    shm_writer_1: T,
     max_drift_ppb: u32,
     disruption_marker: u64,
 }
@@ -50,7 +53,7 @@ pub trait ClockStateWrite: Send + Sync {
         clock_status: ClockStatus,
         clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
     );
-    fn handle_disruption(&mut self, new_disruption_marker: u64);
+    fn handle_disruption(&mut self, clock_parameters: &ClockParameters, new_disruption_marker: u64);
 }
 
 impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
@@ -64,6 +67,11 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
         clock_status: ClockStatus,
         clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
     ) {
+        // Write to the shared memory segment shm1 first...
+        self.write_shm1(clock_parameters, clock_status);
+
+        // .. and then write to the legacy shared memory segment shm0, of which the client relies
+        // on the system clock..
         let bound = get_bound(clock_parameters, clock_realtime_offset_and_rtt);
         // Unwrap safety: sane error bound should be less than `i64::MAX`
         let bound_nsec = i64::try_from(bound.as_nanos()).unwrap();
@@ -75,6 +83,10 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
         // For the sake of backwards compatibility, we will have our initial/alpha release continue to work
         // using `CLOCK_MONOTONIC_COARSE`.
         let as_of = MonotonicCoarse.get_time();
+
+        // FIXME: revisit whether we want to add this to the max_drift_ppb, since that is not
+        // exactly the previous behavior. If not, this would simplify this block, avoiding to have
+        // the writer logic implement something that should be in the ff-sync one.
         let software_skew =
             Skew::from_period_and_error(clock_parameters.period, clock_parameters.period_max_error);
         let Some(software_skew_ppb) = software_skew.to_ppb() else {
@@ -84,7 +96,7 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
             return;
         };
         let max_drift_ppb = self.max_drift_ppb + software_skew_ppb;
-        self.write_shm(as_of, bound_nsec, clock_status, max_drift_ppb);
+        self.write_shm0(as_of, bound_nsec, clock_status, max_drift_ppb);
     }
 
     /// Handle a clock disruption event
@@ -92,23 +104,37 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
     /// Call this function after the system detects a VMClock disruption event.
     ///
     /// It will go through and clear the state (like startup).
-    fn handle_disruption(&mut self, new_disruption_marker: u64) {
+    fn handle_disruption(
+        &mut self,
+        clock_parameters: &ClockParameters,
+        new_disruption_marker: u64,
+    ) {
         // Use the destructure pattern to get a mutable reference to each item.
         //
         // This makes it a compilation error if we add a new field to Self without handling it here
         let Self {
             clock_disruption_support_enabled: _,
-            shm_writer: _,
+            shm_writer_0: _,
+            shm_writer_1: _,
             max_drift_ppb: _,
             disruption_marker,
         } = self;
         *disruption_marker = new_disruption_marker;
+
+        // Write shm1
+        self.write_shm1(clock_parameters, ClockStatus::Disrupted);
+
+        // Write to shm0
         let as_of = MonotonicCoarse.get_time();
         info!(
             "Writing `ClockStatus::Disrupted` to SHM with 0 `bound_nsec` and `ClockStatus::Disrupted`"
         );
+
+        // FIXME: the behavior when writing a V2 layout to shm0 is to only overwrite the clock
+        // status only. Comment on line below and code to be fixed.
         // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
-        self.write_shm(as_of, 0, ClockStatus::Disrupted, 0);
+        self.write_shm0(as_of, 0, ClockStatus::Disrupted, 0);
+
         tracing::info!("Handled clock disruption event");
     }
 }
@@ -118,19 +144,24 @@ impl<T: ShmWrite> ClockStateWriter<T> {
     #[builder]
     pub fn new(
         clock_disruption_support_enabled: bool,
-        shm_writer: T,
+        shm_writer_0: T,
+        shm_writer_1: T,
         max_drift_ppb: u32,
         disruption_marker: u64,
     ) -> Self {
         Self {
             clock_disruption_support_enabled,
-            shm_writer,
+            shm_writer_0,
+            shm_writer_1,
             max_drift_ppb,
             disruption_marker,
         }
     }
 
-    fn write_shm(
+    /// Write out to the ClockBound daemon shared memory segment shm0.
+    ///
+    /// Writes the latest supported layout version (V2) of the shared memory segment.
+    fn write_shm0(
         &mut self,
         as_of: Instant,
         bound_nsec: i64,
@@ -159,8 +190,35 @@ impl<T: ShmWrite> ClockStateWriter<T> {
             .clock_status(clock_status)
             .clock_disruption_support_enabled(self.clock_disruption_support_enabled)
             .build(ClockErrorBoundLayoutVersion::V2);
+        self.shm_writer_0.write(&ceb);
+    }
 
-        self.shm_writer.write(&ceb);
+    /// Write out to the ClockBound daemon shared memory segment shm1.
+    ///
+    /// Writes the latest supported layout version (V3) of the shared memory segment.
+    fn write_shm1(&mut self, clock_parameters: &ClockParameters, clock_status: ClockStatus) {
+        let bound_nsec = i64::try_from(clock_parameters.clock_error_bound.as_nanos()).unwrap();
+
+        // Unwrap safety: unlikely to fail for any value for the distant future,
+        // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
+        let as_of = TimeSpec::try_from(clock_parameters.time).unwrap();
+        let void_after = as_of + TimeSpec::new(1000, 0);
+
+        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_sign_loss)]
+        let ceb = ClockErrorBoundGeneric::builder()
+            .as_of_tsc(clock_parameters.tsc_count.get() as u64)
+            .as_of(as_of)
+            .void_after(void_after)
+            .bound_nsec(bound_nsec)
+            .period(clock_parameters.period.get())
+            .period_err(clock_parameters.period_max_error.get())
+            .disruption_marker(self.disruption_marker)
+            .max_drift_ppb(self.max_drift_ppb)
+            .clock_status(clock_status)
+            .clock_disruption_support_enabled(self.clock_disruption_support_enabled)
+            .build(ClockErrorBoundLayoutVersion::V3);
+        self.shm_writer_1.write(&ceb);
     }
 }
 
@@ -235,7 +293,7 @@ mod tests {
         let max_drift_ppb = 15_000;
         let disruption_marker = 345;
         let clock_disruption_support_enabled = true;
-        let expected_ceb = ClockErrorBoundGeneric::builder()
+        let expected_ceb_v2 = ClockErrorBoundGeneric::builder()
             .as_of(TimeSpec::try_from(as_of).unwrap())
             .void_after(TimeSpec::try_from(as_of + Duration::from_secs(1000)).unwrap())
             .bound_nsec(bound_nsec)
@@ -244,19 +302,50 @@ mod tests {
             .clock_status(clock_status)
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
             .build(ClockErrorBoundLayoutVersion::V2);
-        let mut shm_writer = MockShmWriter::new();
-        shm_writer
+        let mut shm_writer_0 = MockShmWriter::new();
+        shm_writer_0
             .expect_write()
-            .withf(move |ceb: &ClockErrorBound| expected_ceb == *ceb)
+            .withf(move |ceb: &ClockErrorBound| expected_ceb_v2 == *ceb)
             .times(1)
             .return_const(());
+
+        let clock_parameters = create_test_clock_parameters()
+            .tsc_count(1_000_000)
+            .clock_error_bound_nanos(500)
+            .time_nanos(3_000_000_000)
+            .call();
+
+        let expected_ceb_v3 = ClockErrorBoundGeneric::builder()
+            .as_of_tsc(1_000_000)
+            .as_of(TimeSpec::try_from(Instant::from_nanos(3_000_000_000)).unwrap())
+            .void_after(
+                TimeSpec::try_from(Instant::from_nanos(3_000_000_000) + Duration::from_secs(1000))
+                    .unwrap(),
+            )
+            .period(1e-9)
+            .period_err(1e-11)
+            .bound_nsec(500)
+            .disruption_marker(disruption_marker)
+            .max_drift_ppb(max_drift_ppb)
+            .clock_status(clock_status)
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
+            .build(ClockErrorBoundLayoutVersion::V3);
+        let mut shm_writer_1 = MockShmWriter::new();
+        shm_writer_1
+            .expect_write()
+            .withf(move |ceb: &ClockErrorBound| expected_ceb_v3 == *ceb)
+            .times(1)
+            .return_const(());
+
         let mut clock_state_writer = ClockStateWriter::builder()
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .shm_writer(shm_writer)
+            .shm_writer_0(shm_writer_0)
+            .shm_writer_1(shm_writer_1)
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer.write_shm(as_of, bound_nsec, clock_status, max_drift_ppb);
+        clock_state_writer.write_shm0(as_of, bound_nsec, clock_status, max_drift_ppb);
+        clock_state_writer.write_shm1(&clock_parameters, clock_status);
     }
 
     #[test]
@@ -264,7 +353,7 @@ mod tests {
         let clock_parameters = create_test_clock_parameters()
             .clock_error_bound_nanos(1000)
             .tsc_count(1000)
-            .time_nanos(1_000_000_000)
+            .time_nanos(123_000)
             .call();
         let clock_realtime_offset_and_rtt = create_test_clock_offset_and_rtt()
             .offset_nanos(1000)
@@ -274,8 +363,9 @@ mod tests {
         let max_drift_ppb = 0;
         let disruption_marker = 0;
         let clock_status = ClockStatus::Synchronized;
-        let mut shm_writer = MockShmWriter::new();
-        shm_writer
+
+        let mut shm_writer_0 = MockShmWriter::new();
+        shm_writer_0
             .expect_write()
             .withf(move |ceb: &ClockErrorBound| {
                 ceb.void_after()
@@ -287,9 +377,25 @@ mod tests {
             })
             .times(1)
             .return_const(());
+
+        let mut shm_writer_1 = MockShmWriter::new();
+        shm_writer_1
+            .expect_write()
+            .withf(move |ceb: &ClockErrorBound| {
+                ceb.void_after()
+                    == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
+                    && ceb.bound_nsec() == 1000
+                    && ceb.disruption_marker() == disruption_marker
+                    && ceb.clock_status() == clock_status
+                    && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
+            })
+            .times(1)
+            .return_const(());
+
         let mut clock_state_writer = ClockStateWriter::builder()
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .shm_writer(shm_writer)
+            .shm_writer_0(shm_writer_0)
+            .shm_writer_1(shm_writer_1)
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
@@ -315,11 +421,14 @@ mod tests {
         let clock_disruption_support_enabled = false;
         let max_drift_ppb = 0;
         let disruption_marker = 0;
-        let mut shm_writer = MockShmWriter::new();
-        shm_writer.expect_write().never();
+        let mut shm_writer_0 = MockShmWriter::new();
+        shm_writer_0.expect_write().never();
+        let mut shm_writer_1 = MockShmWriter::new();
+        shm_writer_1.expect_write().never();
         let mut clock_state_writer = ClockStateWriter::builder()
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .shm_writer(shm_writer)
+            .shm_writer_0(shm_writer_0)
+            .shm_writer_1(shm_writer_1)
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
@@ -370,8 +479,14 @@ mod tests {
         let max_drift_ppb = 0;
         let initial_disruption_marker = 0;
         let final_disruption_marker = 1;
-        let mut shm_writer = MockShmWriter::new();
-        shm_writer
+        let clock_parameters = create_test_clock_parameters()
+            .clock_error_bound_nanos(1000)
+            .tsc_count(1000)
+            .time_nanos(123_000)
+            .call();
+
+        let mut shm_writer_0 = MockShmWriter::new();
+        shm_writer_0
             .expect_write()
             .withf(move |ceb: &ClockErrorBound| {
                 ceb.void_after()
@@ -384,9 +499,26 @@ mod tests {
             })
             .times(1)
             .return_const(());
+
+        let mut shm_writer_1 = MockShmWriter::new();
+        shm_writer_1
+            .expect_write()
+            .withf(move |ceb: &ClockErrorBound| {
+                ceb.void_after()
+                    == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
+                    && ceb.bound_nsec() == 1000
+                    && ceb.disruption_marker() == final_disruption_marker
+                    && ceb.max_drift_ppb() == max_drift_ppb
+                    && ceb.clock_status() == ClockStatus::Disrupted
+                    && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
+            })
+            .times(1)
+            .return_const(());
+
         let mut clock_state_writer = ClockStateWriter::builder()
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .shm_writer(shm_writer)
+            .shm_writer_0(shm_writer_0)
+            .shm_writer_1(shm_writer_1)
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(initial_disruption_marker)
             .build();
@@ -394,7 +526,7 @@ mod tests {
             clock_state_writer.disruption_marker,
             initial_disruption_marker
         );
-        clock_state_writer.handle_disruption(final_disruption_marker);
+        clock_state_writer.handle_disruption(&clock_parameters, final_disruption_marker);
         assert_eq!(
             clock_state_writer.disruption_marker,
             final_disruption_marker

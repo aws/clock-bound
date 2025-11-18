@@ -2,6 +2,7 @@
 pub mod clock_adjust;
 pub mod clock_state_writer;
 
+use std::path::Path;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -19,7 +20,10 @@ use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::subscriber::CLOCK_METRICS_TARGET;
 use crate::daemon::time::ClockExt;
 use crate::daemon::time::clocks::{ClockBound, MonotonicRaw, RealTime};
-use crate::shm::{CLOCKBOUND_SHM_DEFAULT_PATH_V0, ShmWriter};
+use crate::shm::{
+    CLOCKBOUND_SHM_DEFAULT_PATH_V0, CLOCKBOUND_SHM_DEFAULT_PATH_V1, ClockErrorBoundLayoutVersion,
+    ShmWriter,
+};
 
 /// The whole `ClockState` component struct.
 /// This encompasses both `ClockAdjust` component which interfaces
@@ -57,12 +61,31 @@ impl ClockState {
         clock_params_receiver: Receiver<ClockParameters>,
         cancellation_token: CancellationToken,
     ) -> Self {
-        let shm_writer =
-            ShmWriter::new(std::path::Path::new(CLOCKBOUND_SHM_DEFAULT_PATH_V0)).unwrap();
-        let safe_shm_writer = SafeShmWriter::new(shm_writer);
+        // Build two writers, each writing to a specific shared memory segment path.
+        //
+        // FIXME: given these path are const strings, would be worth looking into moving the
+        // creation of these writers to the ClockStateWriter::new() method.
+        //
+        let shm_writer_0 = ShmWriter::new(
+            Path::new(CLOCKBOUND_SHM_DEFAULT_PATH_V0),
+            ClockErrorBoundLayoutVersion::V2,
+            ClockErrorBoundLayoutVersion::V2,
+        )
+        .unwrap();
+        let safe_shm_writer_0 = SafeShmWriter::new(shm_writer_0);
+
+        let shm_writer_1 = ShmWriter::new(
+            Path::new(CLOCKBOUND_SHM_DEFAULT_PATH_V1),
+            ClockErrorBoundLayoutVersion::V3,
+            ClockErrorBoundLayoutVersion::V3,
+        )
+        .unwrap();
+        let safe_shm_writer_1 = SafeShmWriter::new(shm_writer_1);
+
         let clock_state_writer: ClockStateWriter<SafeShmWriter> = ClockStateWriter::builder()
             .clock_disruption_support_enabled(true)
-            .shm_writer(safe_shm_writer)
+            .shm_writer_0(safe_shm_writer_0)
+            .shm_writer_1(safe_shm_writer_1)
             .max_drift_ppb(MAX_DISPERSION_GROWTH_PPB)
             .disruption_marker(0)
             .build();
@@ -179,10 +202,16 @@ impl ClockState {
             clock_parameters,
             cancellation_token: _,
         } = self;
+
+        // Update the clock status on the shared memory segments
+        if let Some(params) = clock_parameters {
+            clock_state_writer.handle_disruption(params, new_disruption_marker);
+        }
+
         *clock_parameters = None;
         clock_params_receiver.handle_disruption();
         clock_adjuster.handle_disruption(new_disruption_marker);
-        clock_state_writer.handle_disruption(new_disruption_marker);
+
         tracing::info!("Handled clock disruption event");
     }
 }
@@ -245,6 +274,14 @@ mod tests {
         let disruption_marker = 123;
         let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
+        let clock_parameters = ClockParameters {
+            tsc_count: TscCount::new(1000),
+            time: Instant::from_nanos(1000),
+            clock_error_bound: Duration::from_nanos(1000),
+            period: Period::from_seconds(1e-9),
+            period_max_error: Period::from_seconds(1e-11),
+        };
+        let expected_clock_parameters = clock_parameters.clone();
         mock_clock_adjuster
             .expect_handle_disruption()
             .once()
@@ -254,7 +291,9 @@ mod tests {
         mock_clock_state_writer
             .expect_handle_disruption()
             .once()
-            .with(eq(disruption_marker))
+            .withf(move |param: &ClockParameters, marker: &u64| {
+                *param == expected_clock_parameters && *marker == 123
+            })
             .return_const(());
         let (_tx, rx) = async_ring_buffer::create(1);
         let mut clock_state = ClockState::new(
@@ -263,6 +302,8 @@ mod tests {
             rx,
             cancellation_token,
         );
+        clock_state.clock_parameters = Some(clock_parameters);
+
         clock_state.handle_disruption(disruption_marker);
     }
 
