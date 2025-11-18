@@ -13,6 +13,7 @@ use tracing_subscriber::{
 };
 
 pub const PRIMER_TARGET: &str = "clock_bound::primer";
+pub const CLOCK_METRICS_TARGET: &str = "clock_bound::clock_metrics";
 
 /// Initialize the tracing subscriber
 ///
@@ -26,6 +27,15 @@ pub fn init(log_directory: impl AsRef<Path>) {
         .with_writer(primer_writer)
         .with_filter(filter_fn(|md| md.target().starts_with(PRIMER_TARGET)));
 
+    let clock_metrics_writer =
+        tracing_appender::rolling::never(&log_directory, "clock_metrics.log");
+    let clock_metrics_layer = tracing_subscriber::fmt::layer()
+        .json()
+        .with_writer(clock_metrics_writer)
+        .with_filter(filter_fn(|md| {
+            md.target().starts_with(CLOCK_METRICS_TARGET)
+        }));
+
     let log_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout) // this is the default, just making it explicit
         .with_filter(
@@ -33,16 +43,23 @@ pub fn init(log_directory: impl AsRef<Path>) {
                 .with_default_directive(Level::INFO.into())
                 .from_env_lossy(),
         )
-        .with_filter(filter_fn(|md| !md.target().starts_with(PRIMER_TARGET)));
+        .with_filter(filter_fn(|md| !md.target().starts_with(PRIMER_TARGET)))
+        .with_filter(filter_fn(|md| {
+            !md.target().starts_with(CLOCK_METRICS_TARGET)
+        }));
 
     tracing_subscriber::registry()
         // this is the default logging layer
         .with(log_layer)
         // and this is the primer reproducibility layer
         .with(primer_layer)
+        // and this is the clock metrics layer
+        .with(clock_metrics_layer)
         .init();
 
     tracing::info!("Initialized tracing subscriber");
     let primer_log_file = PathBuf::from(log_directory.as_ref()).join("primer.log");
     tracing::info!(primer_log_file = %primer_log_file.display(), "Primer log file");
+    let clock_metrics_log_file = PathBuf::from(log_directory.as_ref()).join("clock_metrics.log");
+    tracing::info!(clock_metrics_log_file = %clock_metrics_log_file.display(), "Clock metrics log file");
 }

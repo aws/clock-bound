@@ -1,10 +1,13 @@
 //! A simplified time type for `ClockBound`
 use nix::sys::time::TimeSpec;
+use serde::{Deserialize, Serialize};
 
 use super::inner::{Diff, Time};
 
 /// Marker type to signify a time as a timestamp
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub struct Utc;
 
 impl super::inner::Type for Utc {}

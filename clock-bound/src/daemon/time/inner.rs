@@ -12,6 +12,7 @@ use std::{
 
 use libc::timeval;
 use nix::sys::time::TimeSpec;
+use serde::{Deserialize, Serialize};
 
 /// Abstraction used to reuse basic time arithmetic, but allow for different types based on its usage
 pub trait Type {}
@@ -31,7 +32,7 @@ pub trait FemtoType: Type {
 /// reads and the `other_clock_t2` reads.
 /// The comparison is bounded by the round-trip-time of this measurement, and thus is useful for
 /// determining the quality of the sample or bounding the clock error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ClockOffsetAndRtt<T: FemtoType + Copy> {
     /// Offset
     offset: Diff<T>,

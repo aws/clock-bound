@@ -16,8 +16,9 @@ use crate::daemon::clock_state::clock_adjust::{ClockAdjust, ClockAdjuster};
 use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
 use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
 use crate::daemon::io::tsc::ReadTscImpl;
+use crate::daemon::subscriber::CLOCK_METRICS_TARGET;
 use crate::daemon::time::ClockExt;
-use crate::daemon::time::clocks::{ClockBound, RealTime};
+use crate::daemon::time::clocks::{ClockBound, MonotonicRaw, RealTime};
 use crate::shm::{CLOCKBOUND_SHM_DEFAULT_PATH_V0, ShmWriter};
 
 /// The whole `ClockState` component struct.
@@ -81,9 +82,14 @@ impl ClockState {
     }
 
     pub async fn run(&mut self) {
+        let mut clock_offset_metric_interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(1));
         info!("Starting run for ClockState");
         loop {
             tokio::select! {
+                _ = clock_offset_metric_interval.tick() => {
+                    self.emit_clock_offsets();
+                },
                 now = self.interval.tick() => {
                     self.handle_tick(now);
                 },
@@ -99,6 +105,30 @@ impl ClockState {
             }
         }
         info!("ClockState runner exiting.");
+    }
+
+    fn emit_clock_offsets(&self) {
+        let realtime_to_monotonic_raw = RealTime.get_offset_and_rtt(&MonotonicRaw);
+        tracing::info!(
+            target: CLOCK_METRICS_TARGET,
+            realtime_to_monotonic_raw = serde_json::to_string(&realtime_to_monotonic_raw).unwrap(),
+            "metrics"
+        );
+        if let Some(parameters) = &self.clock_parameters {
+            let clockbound_clock = ClockBound::new(parameters.clone(), ReadTscImpl);
+            let clockbound_to_realtime = clockbound_clock.get_offset_and_rtt(&RealTime);
+            let clockbound_to_monotonic_raw = clockbound_clock.get_offset_and_rtt(&MonotonicRaw);
+            tracing::info!(
+                target: CLOCK_METRICS_TARGET,
+                clockbound_to_realtime = serde_json::to_string(&clockbound_to_realtime).unwrap(),
+                "metrics"
+            );
+            tracing::info!(
+                target: CLOCK_METRICS_TARGET,
+                clockbound_to_monotonic_raw = serde_json::to_string(&clockbound_to_monotonic_raw).unwrap(),
+                "metrics"
+            );
+        }
     }
 
     fn handle_tick(&mut self, now: tokio::time::Instant) {
