@@ -9,6 +9,7 @@ pub const SHM_MAGIC: [u32; 2] = [0x414D_5A4E, 0x4342_0200];
 /// Version of the ClockBound shared memory segment layout that is supported by this
 /// implementation of ClockBound.
 pub const CLOCKBOUND_SHM_SUPPORTED_VERSION: u16 = 2_u16;
+pub const CLOCKBOUND_SHM_LATEST_VERSION: u16 = 3_u16;
 
 /// Header structure to the Shared Memory segment where the `ClockErrorBound` data is kept.
 ///
@@ -72,7 +73,15 @@ impl ShmHeader {
     /// Check whether the header is marked with a valid version
     fn has_valid_version(&self) -> bool {
         let version = self.version.load(atomic::Ordering::Relaxed);
-        version > 0
+
+        // FIXME: the ShmHeader should be versioned behind an enum instead.
+        let min_version = version >> 8;
+        let cur_version = version & 0x00ff;
+        match cur_version {
+            2 => min_version == 0,
+            3 => min_version == 3,
+            _ => false,
+        }
     }
 
     /// Check whether the header is initialized
@@ -94,21 +103,11 @@ impl ShmHeader {
         }
 
         if !self.has_valid_version() {
-            return Err(ShmError::SegmentNotInitialized);
+            return Err(ShmError::SegmentVersionNotSupported);
         }
 
         if !self.is_initialized() {
             return Err(ShmError::SegmentNotInitialized);
-        }
-
-        // Check if the ClockBound shared memory segment has a version that is
-        // supported by this implementation of ClockBound.
-        let version = self.version.load(atomic::Ordering::Relaxed);
-        if version != CLOCKBOUND_SHM_SUPPORTED_VERSION {
-            eprintln!(
-                "ClockBound shared memory segment has version {version:?} which is not supported by this software."
-            );
-            return Err(ShmError::SegmentVersionNotSupported);
         }
 
         if !self.is_well_formed() {

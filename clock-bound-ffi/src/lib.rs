@@ -508,7 +508,14 @@ mod t_ffi {
             .write(true)
             .open(clockbound_shm_path)
             .expect("open clockbound file failed");
-        write_clockbound_memory_segment!(clockbound_shm_file, 0x414D5A4E, 0x43420200, 800, 2, 10);
+        write_clockbound_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            800,
+            0x0303,
+            10
+        );
 
         let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();

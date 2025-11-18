@@ -4,9 +4,9 @@ use errno::{Errno, errno};
 use std::ffi::{CStr, c_void};
 use std::mem::size_of;
 use std::ptr;
-use std::sync::atomic;
+use std::sync::atomic::{self, AtomicU16};
 
-use crate::shm::shm_header::{CLOCKBOUND_SHM_SUPPORTED_VERSION, ShmHeader};
+use crate::shm::shm_header::{CLOCKBOUND_SHM_LATEST_VERSION, ShmHeader};
 use crate::{
     shm::{ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ShmError},
     syserror,
@@ -161,6 +161,86 @@ impl ShmReader {
     /// returned.
     #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(path: &CStr) -> Result<ShmReader, ShmError> {
+        // Map the segment, with explicit pointers to fields
+        let (mmap_guard, version, generation, ceb_shm) = ShmReader::map_segment(path)?;
+
+        // Atomically read the current version in the shared memory segment
+        // SAFETY: `self.version` has been validated when creating the reader
+        let shm_version = unsafe { &*version };
+        let shm_version = shm_version.load(atomic::Ordering::Acquire);
+
+        // FIXME: the ShmHeader should be versioned behind an enum instead.
+        let min_version = shm_version >> 8;
+        let max_version = shm_version & 0x00ff;
+        if CLOCKBOUND_SHM_LATEST_VERSION < min_version
+            || CLOCKBOUND_SHM_LATEST_VERSION > max_version
+        {
+            return Err(ShmError::SegmentVersionNotSupported);
+        }
+        let shm_version = ClockErrorBoundLayoutVersion::try_from(CLOCKBOUND_SHM_LATEST_VERSION)?;
+
+        Ok(ShmReader {
+            _marker: std::marker::PhantomData,
+            _guard: mmap_guard,
+            version,
+            generation,
+            ceb_shm,
+            snapshot_ceb: ClockErrorBoundGeneric::builder().build(shm_version),
+            snapshot_gen: 0,
+        })
+    }
+
+    /// Open a ClockBound shared memory segment for reading.
+    ///
+    /// On error, returns an appropriate `Errno`. If the content of the segment
+    /// is uninitialized, unparseable, or otherwise malformed, EPROTO will be
+    /// returned.
+    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    pub fn new_with_max_version_unchecked(path: &CStr) -> Result<(ShmReader, u16), ShmError> {
+        // Map the segment, with explicit pointers to fields
+        let (mmap_guard, version, generation, ceb_shm) = ShmReader::map_segment(path)?;
+
+        // Atomically read the current version from the shared memory segment
+        // SAFETY: `self.version` has been validated when creating the reader
+        let shm_version = unsafe { &*version };
+        let shm_version = shm_version.load(atomic::Ordering::Acquire);
+        let max_version = shm_version & 0x00ff;
+
+        let current_version =
+            ClockErrorBoundLayoutVersion::try_from(CLOCKBOUND_SHM_LATEST_VERSION)?;
+
+        Ok((
+            ShmReader {
+                _marker: std::marker::PhantomData,
+                _guard: mmap_guard,
+                version,
+                generation,
+                ceb_shm,
+                snapshot_ceb: ClockErrorBoundGeneric::builder().build(current_version),
+                snapshot_gen: 0,
+            },
+            max_version,
+        ))
+    }
+
+    /// Open and map the ClockBound shared memory segment.
+    ///
+    /// Make sure the file can be open, and that the raw pointers into memory are set.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ShmError` if the path is not found, the file cannot be open or sanity checks fail.
+    fn map_segment(
+        path: &CStr,
+    ) -> Result<
+        (
+            MmapGuard,
+            *const AtomicU16,
+            *const AtomicU16,
+            *const ClockErrorBound,
+        ),
+        ShmError,
+    > {
         let fdguard = FdGuard::new(path)?;
         let mmap_guard = MmapGuard::new(&fdguard)?;
 
@@ -184,21 +264,7 @@ impl ShmReader {
         cursor = unsafe { cursor.add(size_of::<ShmHeader>()) };
         let ceb_shm = ptr::addr_of!(*cursor.cast::<ClockErrorBound>());
 
-        // Atomically read the current version in the shared memory segment
-        // SAFETY: `self.version` has been validated when creating the reader
-        let shm_version = unsafe { &*version };
-        let shm_version = shm_version.load(atomic::Ordering::Acquire);
-        let shm_version = ClockErrorBoundLayoutVersion::try_from(shm_version)?;
-
-        Ok(ShmReader {
-            _marker: std::marker::PhantomData,
-            _guard: mmap_guard,
-            version,
-            generation,
-            ceb_shm,
-            snapshot_ceb: ClockErrorBoundGeneric::builder().build(shm_version),
-            snapshot_gen: 0,
-        })
+        Ok((mmap_guard, version, generation, ceb_shm))
     }
 
     /// Return a consistent snapshot of the shared memory segment.
@@ -226,10 +292,18 @@ impl ShmReader {
         // returned to the caller to take appropriate action (e.g. assert clock status).
         if version == 0 {
             return Ok(&self.snapshot_ceb);
-        } else if version != CLOCKBOUND_SHM_SUPPORTED_VERSION {
-            eprintln!(
-                "ClockBound shared memory segment has version {version:?} which is not supported by this software."
-            );
+        }
+
+        // It is possible the daemon has been upgraded and restarted. It is meant to be backward
+        // compatible when writing to the default path to the shared memory segment. That is, the
+        // current version written by the daemon may have incremented, but the minimum version
+        // supported must ours or lower. In the other direction, if the clockbound daemon was
+        // downgraded, also have to report errors, since expected features may be missing.
+        let min_version = version >> 8;
+        let max_version = version & 0x00ff;
+        if CLOCKBOUND_SHM_LATEST_VERSION < min_version
+            || CLOCKBOUND_SHM_LATEST_VERSION < max_version
+        {
             return Err(ShmError::SegmentVersionNotSupported);
         }
 
@@ -376,7 +450,7 @@ mod t_reader {
 
     /// Assert that the reader can map a file.
     #[test]
-    fn test_reader_new() {
+    fn test_reader_new_shm_v2() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
@@ -389,7 +463,36 @@ mod t_reader {
             0x414D5A4E,
             0x43420200,
             400,
-            2,
+            0x0002,
+            10,
+            (0, 0),
+            (0, 0),
+            123,
+            0
+        );
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
+
+        // This should fail with a version mismatch error
+        let res = ShmReader::new(&path);
+        assert!(res.is_err());
+    }
+
+    /// Assert that the reader can map a file.
+    #[test]
+    fn test_reader_new_shm_v3() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
+        write_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            400,
+            0x0303,
             10,
             (0, 0),
             (0, 0),
@@ -404,7 +507,7 @@ mod t_reader {
         let generation = unsafe { &*reader.generation };
         let ceb = unsafe { *reader.ceb_shm };
 
-        assert_eq!(version.load(atomic::Ordering::Relaxed), 2);
+        assert_eq!(version.load(atomic::Ordering::Relaxed), 0x0303);
         assert_eq!(generation.load(atomic::Ordering::Relaxed), 10);
         assert_eq!(ceb.bound_nsec(), 123);
     }
@@ -459,7 +562,7 @@ mod t_reader {
             0x414D5A4E,
             0x43420200,
             400,
-            2,
+            0x0303,
             10,
             (0, 0),
             (0, 0),
@@ -470,7 +573,7 @@ mod t_reader {
         let path = CString::new(clockbound_shm_path).expect("CString failed");
         let mut reader = ShmReader::new(&path).expect("Failed to create ShmReader");
         let version = unsafe { &*reader.version };
-        assert_eq!(version.load(atomic::Ordering::Relaxed), 2);
+        assert_eq!(version.load(atomic::Ordering::Relaxed), 0x0303);
 
         // Assert that snapshot works without an error with this supported version.
         let result = reader.snapshot();
