@@ -1,0 +1,34 @@
+[package]
+name = "clock-bound-now"
+description = "A Rust example program to read the current bounds from ClockBound"
+license = "MIT OR Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "clock-bound-now"
+path = "src/main.rs"
+
+[dependencies]
+clock-bound-client-generic = { version = "2.0", path = "../clock-bound-client-generic" }
+
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5.31", features = ["derive"] }
+tracing = "0.1"
+tracing-appender = { version = "0.2", optional = true }
+tracing-subscriber = { version = "0.3", features = [
+  "std",
+  "fmt",
+  "json",
+  "registry",
+] }
+serde = "1.0"
+serde_json = "1.0.145"

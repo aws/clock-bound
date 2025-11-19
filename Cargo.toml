@@ -11,7 +11,8 @@ members = [
   "test/vmclock-updater",
   "test/clock-bound-adjust-clock",
   "test/clock-bound-adjust-clock-test",
-  "test/vmclock"
+  "test/vmclock",
+  "test/clock-bound-now",
 ]
 resolver = "3"
 

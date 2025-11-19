@@ -219,6 +219,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -319,6 +320,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "clock-bound-client"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb3c3c254b59d38185b423b73aaca289e0e5a39a6c4441d64d7ff404c71519b4"
+dependencies = [
+ "clock-bound-shm",
+ "clock-bound-vmclock",
+ "errno",
+ "nix",
+]
+
+[[package]]
+name = "clock-bound-client-generic"
+version = "2.0.3"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clock-bound",
+ "clock-bound-client",
+ "nix",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "clock-bound-ff-tester"
 version = "2.0.3"
 dependencies = [
@@ -354,6 +384,47 @@ dependencies = [
  "libc",
  "nix",
  "tempfile",
+]
+
+[[package]]
+name = "clock-bound-now"
+version = "2.0.3"
+dependencies = [
+ "chrono",
+ "clap",
+ "clock-bound-client-generic",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "clock-bound-shm"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9929c408b1b2d4d12670c2df2cfc6ed1880edfad0f77319cea3dc86c82de094b"
+dependencies = [
+ "byteorder",
+ "errno",
+ "libc",
+ "nix",
+]
+
+[[package]]
+name = "clock-bound-vmclock"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b6c6a3b05d0e05a61e3dedd1b30b5be49995f75b5bef1b014ddeaaca464e419"
+dependencies = [
+ "byteorder",
+ "clock-bound-shm",
+ "errno",
+ "libc",
+ "nix",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

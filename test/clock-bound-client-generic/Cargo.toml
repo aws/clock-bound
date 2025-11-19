@@ -1,0 +1,35 @@
+[package]
+name = "clock-bound-client-generic"
+description = "A Rust library that facilitates ClockBound v2 and v3 clients"
+license = "MIT OR Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+clock-bound = { version = "2.0", path = "../../clock-bound", features = [
+  "client",
+] }
+clock-bound-client = { version = "2.0" }
+
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5.31", features = ["derive"] }
+tracing = "0.1"
+tracing-appender = { version = "0.2", optional = true }
+tracing-subscriber = { version = "0.3", features = [
+  "std",
+  "fmt",
+  "json",
+  "registry",
+] }
+serde = "1.0"
+serde_json = "1.0.145"
+anyhow = "1.0.100"
+nix = "0.26"
