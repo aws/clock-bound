@@ -247,6 +247,16 @@ impl SourceIO {
         }
     }
 
+    /// Returns `VMCLock` if it has been initialized
+    pub fn vmclock(&self) -> Option<&VMClock> {
+        self.vmclock
+            .as_ref()
+            .and_then(|source| match &source.state {
+                SourceState::Initialized(vmclock) => Some(vmclock),
+                SourceState::Running => None,
+            })
+    }
+
     // Creates a new [`watch::Receiver`] connected to the clock distribution watch [`watch::Sender`].
     pub fn clock_disruption_receiver(&self) -> watch::Receiver<ClockDisruptionEvent> {
         self.clock_disruption_channels.sender.subscribe()

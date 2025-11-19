@@ -60,6 +60,7 @@ impl ClockState {
     pub fn construct(
         clock_params_receiver: Receiver<ClockParameters>,
         cancellation_token: CancellationToken,
+        disruption_marker: u64,
     ) -> Self {
         // Build two writers, each writing to a specific shared memory segment path.
         //
@@ -87,7 +88,7 @@ impl ClockState {
             .shm_writer_0(safe_shm_writer_0)
             .shm_writer_1(safe_shm_writer_1)
             .max_drift_ppb(MAX_DISPERSION_GROWTH_PPB)
-            .disruption_marker(0)
+            .disruption_marker(disruption_marker)
             .build();
         #[cfg(not(feature = "test-side-by-side"))]
         let clock_adjuster: ClockAdjuster<KAPIClockAdjuster> =

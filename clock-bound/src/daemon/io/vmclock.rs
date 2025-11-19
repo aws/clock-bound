@@ -106,6 +106,11 @@ impl VMClock {
         })
     }
 
+    /// Returns the last VMClock read's disruption marker
+    pub fn last_disruption_marker(&self) -> u64 {
+        self.previous_shm_body.disruption_marker
+    }
+
     /// Reads the VMClock shared memory page and returns the current clock state.
     fn sample(&mut self) -> Result<ClockDisruptionStatus, ShmError> {
         let vmclock_snapshot = self.reader.snapshot()?;

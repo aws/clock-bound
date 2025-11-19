@@ -76,18 +76,6 @@ impl Daemon {
         };
 
         let clock_state_cancellation_token = CancellationToken::new();
-        let (clock_state_tx, clock_state) = {
-            let (tx, rx) = async_ring_buffer::create(1);
-            let clock_state = ClockState::construct(rx, clock_state_cancellation_token.clone());
-            (tx, clock_state)
-        };
-        let task_tracker = TaskTracker::new();
-        let clock_state_handle = ClockStateHandle {
-            clock_state: Some(clock_state),
-            tx: clock_state_tx,
-            cancellation_token: clock_state_cancellation_token,
-            task_tracker,
-        };
 
         let selected_clock = Arc::new(SelectedClockSource::default());
 
@@ -110,6 +98,11 @@ impl Daemon {
 
         // Initialize vmclock IO component.
         io_front_end.create_vmclock(VMCLOCK_SHM_DEFAULT_PATH).await;
+        #[expect(clippy::redundant_closure_for_method_calls)]
+        let disruption_marker = io_front_end
+            .vmclock()
+            .map(|vmclock| vmclock.last_disruption_marker())
+            .unwrap_or_default();
 
         // Initialize PHC event buffer and IO component.
         let (phc_tx, phc_rx) = async_ring_buffer::create(2);
@@ -149,6 +142,24 @@ impl Daemon {
             .ntp_sources(ntp_source_event_receivers.into_iter().collect())
             .maybe_phc(phc_rx)
             .build();
+
+        // Initialize the Clock State component
+        let (clock_state_tx, clock_state) = {
+            let (tx, rx) = async_ring_buffer::create(1);
+            let clock_state = ClockState::construct(
+                rx,
+                clock_state_cancellation_token.clone(),
+                disruption_marker,
+            );
+            (tx, clock_state)
+        };
+        let task_tracker = TaskTracker::new();
+        let clock_state_handle = ClockStateHandle {
+            clock_state: Some(clock_state),
+            tx: clock_state_tx,
+            cancellation_token: clock_state_cancellation_token,
+            task_tracker,
+        };
 
         Self {
             io_front_end,
