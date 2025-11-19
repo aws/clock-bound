@@ -109,6 +109,13 @@ impl ClockState {
         let mut clock_offset_metric_interval =
             tokio::time::interval(tokio::time::Duration::from_secs(1));
         info!("Starting run for ClockState");
+        // FIXME: This clears the SHM segment quite early, before we have
+        // even received `ClockParameters` and started trying to adjust the clock -
+        // it is overly cautious. We could hold off even longer before clearing things,
+        // in case a previous `ClockBound` has written reliable SHM data.
+        // We could consider to wait til we are about to step the clock, and set the
+        // clock status to unknown right before then.
+        self.state_writer.initialize_ceb_v2_shm();
         loop {
             tokio::select! {
                 _ = clock_offset_metric_interval.tick() => {

@@ -47,6 +47,7 @@ pub struct ClockStateWriter<T> {
 
 #[cfg_attr(test, mockall::automock)]
 pub trait ClockStateWrite: Send + Sync {
+    fn initialize_ceb_v2_shm(&mut self);
     fn handle_clock_parameters(
         &mut self,
         clock_parameters: &ClockParameters,
@@ -57,6 +58,21 @@ pub trait ClockStateWrite: Send + Sync {
 }
 
 impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
+    /// Initializes the `ClockErrorBoundV2` segment on daemon startup. Since `ClockBound` manages adjusting
+    /// kernel system clock and the client currently depends on those clocks for the `ClockErrorBoundV2` SHM segment
+    /// version, before we perform any adjustments, in case the SHM was already written to previously,
+    /// we initialize and write the SHM with `ClockStatus::Unknown` BEFORE any adjustments are done.
+    /// This is to ensure we don't end up breaking the underlying clock for the client.
+    /// This does not apply to `ClockErrorBoundV3`, which does not depend on a kernel exposed system clock.
+    fn initialize_ceb_v2_shm(&mut self) {
+        info!("Initializing SHM segment to status `ClockStatus::Unknown` and zeroing other fields");
+        let as_of = MonotonicCoarse.get_time();
+        // FIXME: the behavior when writing a V2 layout to shm0 is to only overwrite the clock
+        // status only. Comment on line below and code to be fixed.
+        // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
+        self.write_shm0(as_of, 0, ClockStatus::Unknown, self.max_drift_ppb);
+    }
+
     /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector.
     ///
     /// # Panics
@@ -243,7 +259,7 @@ fn get_bound(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::time::{Duration, TscCount, tsc::Period};
+    use crate::daemon::time::{Duration, Instant, TscCount, tsc::Period};
     use mockall::mock;
     use rstest::rstest;
 
@@ -471,6 +487,41 @@ mod tests {
     ) {
         let bound_nsec = get_bound(&clock_parameters, clock_realtime_offset_and_rtt);
         assert_eq!(bound_nsec, expected);
+    }
+
+    #[test]
+    fn initialize_ceb_v2_shm() {
+        let clock_disruption_support_enabled = false;
+        let expected_max_drift_ppb = 0;
+        let expected_disruption_marker = 0;
+        let mut shm_writer_0 = MockShmWriter::new();
+        shm_writer_0
+            .expect_write()
+            .withf(move |ceb: &ClockErrorBound| {
+                ceb.void_after()
+                    == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
+                    && ceb.bound_nsec() == 0
+                    && ceb.disruption_marker() == expected_disruption_marker
+                    && ceb.max_drift_ppb() == expected_max_drift_ppb
+                    && ceb.clock_status() == ClockStatus::Unknown
+                    && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
+            })
+            .times(1)
+            .return_const(());
+        let mut shm_writer_1 = MockShmWriter::new();
+        shm_writer_1.expect_write().never();
+        let mut clock_state_writer = ClockStateWriter::builder()
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
+            .shm_writer_0(shm_writer_0)
+            .shm_writer_1(shm_writer_1)
+            .max_drift_ppb(expected_max_drift_ppb)
+            .disruption_marker(expected_disruption_marker)
+            .build();
+        assert_eq!(
+            clock_state_writer.disruption_marker,
+            expected_disruption_marker
+        );
+        clock_state_writer.initialize_ceb_v2_shm();
     }
 
     #[test]
