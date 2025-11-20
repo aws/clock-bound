@@ -67,9 +67,11 @@ fi
 # First check if the driver has been enabled with phc_enable
 param_file="/sys/module/ena/parameters/phc_enable"
 if [[ ! -f "$param_file" ]]; then
-  echo "ERROR: ENA driver parameter file not found at $param_file"
-  exit 1
+  echo "ENA driver parameter file not found at $param_file"
+  echo "phc_enable not supported by this version of the driver. Exiting."
+  exit 0
 fi
+
 phc_value=$(cat "$param_file")
 if [[ "$phc_value" == "1" ]]; then
   echo "PHC is already enabled for the ENA driver (phc_enable=1). Exiting."
@@ -77,15 +79,6 @@ if [[ "$phc_value" == "1" ]]; then
 else
   echo "PHC is not enabled for the ENA driver (phc_enable=0). Continuing."
 fi
-
-# Check if the kernel supports this option and bail out if not
-# NOTE: Not doing this check for "-c", because there is no immediate impact.
-echo -n "Checking if ENA driver supports PTP 1588 clock..."
-grep -w '^CONFIG_PTP_1588_CLOCK=[ym]' /boot/config-`uname -r` || {
-  echo "ENA driver does not support PTP 1588 clock. Exiting."
-  exit 0
-}
-echo "Success"
 
 # Write the ena config
 enable_phc || exit 1
