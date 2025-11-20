@@ -462,6 +462,7 @@ mod test {
             time: Instant::new(0),
             clock_error_bound: Duration::new(0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         }
     }
 
@@ -773,6 +774,7 @@ mod test {
             time: Instant::new(0),
             clock_error_bound: Duration::new(0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         },
         ClockSnapshot {
             system_clock: SystemClockMeasurement {
@@ -798,6 +800,7 @@ mod test {
             time: Instant::new(0),
             clock_error_bound: Duration::new(0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         },
         ClockSnapshot {
             system_clock: SystemClockMeasurement {
@@ -823,6 +826,7 @@ mod test {
             time: Instant::new(0),
             clock_error_bound: Duration::new(0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         },
         ClockSnapshot {
             system_clock: SystemClockMeasurement {
@@ -848,6 +852,7 @@ mod test {
             time: Instant::new(0),
             clock_error_bound: Duration::new(0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         },
         ClockSnapshot {
             system_clock: SystemClockMeasurement {
@@ -873,6 +878,7 @@ mod test {
             time: Instant::new(0),
             clock_error_bound: Duration::new(0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         },
         ClockSnapshot {
             system_clock: SystemClockMeasurement {
@@ -899,6 +905,7 @@ mod test {
             time: Instant::new(0),
             clock_error_bound: Duration::new(0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         },
         ClockSnapshot {
             system_clock: SystemClockMeasurement {
@@ -925,6 +932,7 @@ mod test {
             time: Instant::new(0),
             clock_error_bound: Duration::new(0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         },
         ClockSnapshot {
             system_clock: SystemClockMeasurement {

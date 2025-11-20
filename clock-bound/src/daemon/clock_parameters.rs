@@ -23,6 +23,10 @@ pub struct ClockParameters {
     pub period: Period,
     /// The max error of the `period` at `tsc_count`
     pub period_max_error: Period,
+    /// The `CLOCK_MONOTONIC_COARSE` time just before these parameters are calculated.
+    /// FIXME: remove when ClockBound 2.0 clients are not supported anymore.
+    #[serde(skip)]
+    pub as_of_monotonic: Instant,
 }
 
 impl ClockParameters {
@@ -84,6 +88,7 @@ mod test {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1) + Duration::from_nanos(500), // unused
         },
         // Second event (identical)
         event::Ntp::builder()
@@ -110,6 +115,7 @@ mod test {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1) + Duration::from_nanos(500), // unused
         },
         // Second event with worse RTT
         event::Ntp::builder()
@@ -136,6 +142,7 @@ mod test {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1) + Duration::from_nanos(500), // unused
         },
         // Second event (newer, 1 second later)
         event::Ntp::builder()
@@ -162,6 +169,7 @@ mod test {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1) + Duration::from_nanos(500), // unused
         },
         // Second event
         event::Ntp::builder()
@@ -188,6 +196,7 @@ mod test {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1) + Duration::from_nanos(500), // unused
         },
         // Second event
         event::Ntp::builder()
@@ -222,6 +231,7 @@ mod test {
             clock_error_bound: second.calculate_clock_error_bound(period),
             period,
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1) + Duration::from_nanos(500), // unused
         };
         let result = val.more_accurate_than(&first, max_dispersion);
         assert_eq!(result, expected);
@@ -236,6 +246,7 @@ mod test {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1) + Duration::from_nanos(500), // unused
         },
         // Second event (new, 10 seconds later)
         event::Ntp::builder()
@@ -270,6 +281,7 @@ mod test {
             clock_error_bound: second.calculate_clock_error_bound(period),
             period,
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1) + Duration::from_nanos(500), // unused
         };
         let result = val.more_accurate_than(&first, max_dispersion);
         assert_eq!(result, expected);

@@ -5,10 +5,7 @@ use tracing::info;
 use crate::{
     daemon::{
         clock_parameters::ClockParameters,
-        time::{
-            Clock, Duration, Instant, clocks::MonotonicCoarse, inner::ClockOffsetAndRtt,
-            instant::Utc, tsc::Skew,
-        },
+        time::{Duration, Instant, TscCount, tsc::Period, tsc::Skew},
     },
     shm::{
         ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockStatus,
@@ -52,25 +49,35 @@ pub trait ClockStateWrite: Send + Sync {
         &mut self,
         clock_parameters: &ClockParameters,
         clock_status: ClockStatus,
-        clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
     );
     fn handle_disruption(&mut self, clock_parameters: &ClockParameters, new_disruption_marker: u64);
 }
 
 impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
-    /// Initializes the `ClockErrorBoundV2` segment on daemon startup. Since `ClockBound` manages adjusting
-    /// kernel system clock and the client currently depends on those clocks for the `ClockErrorBoundV2` SHM segment
-    /// version, before we perform any adjustments, in case the SHM was already written to previously,
-    /// we initialize and write the SHM with `ClockStatus::Unknown` BEFORE any adjustments are done.
-    /// This is to ensure we don't end up breaking the underlying clock for the client.
-    /// This does not apply to `ClockErrorBoundV3`, which does not depend on a kernel exposed system clock.
+    /// Initialize the `ClockErrorBoundV2` segment on daemon startup.
+    ///
+    /// ClockBound 2.0 clients rely on the OS system clock to 1) create a timestamp, and 2) grow
+    /// the value of the CEB since it was last computed.
+    ///
+    /// Upon restart, we may be stepping the OS clock. Consequently, we cannot let clients use
+    /// data from an existing SHM segment, as this would break all guarantees we must provide.
+    /// To be safe, we initialize and write the SHM segment with `ClockStatus::Unknown` BEFORE any
+    /// adjustments are done. This will lead to a short period of time during which clients will
+    /// see the clock not being useable. We have a fairly aggressive burst mode on start to
+    /// minimize this interruption.
+    /// This is a minor change in behavior compared to how ClockBound 2.0 manages the SHM segment
+    /// upon restart.
     fn initialize_ceb_v2_shm(&mut self) {
         info!("Initializing SHM segment to status `ClockStatus::Unknown` and zeroing other fields");
-        let as_of = MonotonicCoarse.get_time();
-        // FIXME: the behavior when writing a V2 layout to shm0 is to only overwrite the clock
-        // status only. Comment on line below and code to be fixed.
-        // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
-        self.write_shm0(as_of, 0, ClockStatus::Unknown, self.max_drift_ppb);
+        let clock_parameters = ClockParameters {
+            tsc_count: TscCount::new(0),
+            time: Instant::new(0),
+            clock_error_bound: Duration::new(0),
+            period: Period::from_seconds(0.0),
+            period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
+        };
+        self.write_shm0(&clock_parameters, ClockStatus::Unknown);
     }
 
     /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector.
@@ -81,38 +88,11 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
         &mut self,
         clock_parameters: &ClockParameters,
         clock_status: ClockStatus,
-        clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
     ) {
-        // Write to the shared memory segment shm1 first...
+        // Write to the shared memory segment shm1 first...and then write to the legacy shared
+        // memory segment shm0, of which the client relies
         self.write_shm1(clock_parameters, clock_status);
-
-        // .. and then write to the legacy shared memory segment shm0, of which the client relies
-        // on the system clock..
-        let bound = get_bound(clock_parameters, clock_realtime_offset_and_rtt);
-        // Unwrap safety: sane error bound should be less than `i64::MAX`
-        let bound_nsec = i64::try_from(bound.as_nanos()).unwrap();
-        // TODO: we should normally grab the `as_of` timestamp from the `ClockParameters` themselves,
-        // e.g. use the `time` at which they were valid.
-        // However, the client implementation today reads from `CLOCK_MONOTONIC_COARSE`. The `ClockParameters`
-        // readings are not necessarily going to be monotonic nor aligned with `CLOCK_MONOTONIC_COARSE`.
-        // If we write an `as_of` that is ahead of `CLOCK_MONOTONIC_COARSE`, we could see `ShmError::CausalityBreach` for client.
-        // For the sake of backwards compatibility, we will have our initial/alpha release continue to work
-        // using `CLOCK_MONOTONIC_COARSE`.
-        let as_of = MonotonicCoarse.get_time();
-
-        // FIXME: revisit whether we want to add this to the max_drift_ppb, since that is not
-        // exactly the previous behavior. If not, this would simplify this block, avoiding to have
-        // the writer logic implement something that should be in the ff-sync one.
-        let software_skew =
-            Skew::from_period_and_error(clock_parameters.period, clock_parameters.period_max_error);
-        let Some(software_skew_ppb) = software_skew.to_ppb() else {
-            tracing::error!(
-                "Software skew is too large to be expressed as a ppb, skipping writing to SHM"
-            );
-            return;
-        };
-        let max_drift_ppb = self.max_drift_ppb + software_skew_ppb;
-        self.write_shm0(as_of, bound_nsec, clock_status, max_drift_ppb);
+        self.write_shm0(clock_parameters, clock_status);
     }
 
     /// Handle a clock disruption event
@@ -137,19 +117,9 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
         } = self;
         *disruption_marker = new_disruption_marker;
 
-        // Write shm1
+        // Write to the latest and greatest SHM segment first, older one(s) afterwards.
         self.write_shm1(clock_parameters, ClockStatus::Disrupted);
-
-        // Write to shm0
-        let as_of = MonotonicCoarse.get_time();
-        info!(
-            "Writing `ClockStatus::Disrupted` to SHM with 0 `bound_nsec` and `ClockStatus::Disrupted`"
-        );
-
-        // FIXME: the behavior when writing a V2 layout to shm0 is to only overwrite the clock
-        // status only. Comment on line below and code to be fixed.
-        // We're writing that we're disrupted anyways, so the `bound_nsec` value should be useless here, 0 is ok
-        self.write_shm0(as_of, 0, ClockStatus::Disrupted, 0);
+        self.write_shm0(clock_parameters, ClockStatus::Disrupted);
 
         tracing::info!("Handled clock disruption event");
     }
@@ -177,35 +147,44 @@ impl<T: ShmWrite> ClockStateWriter<T> {
     /// Write out to the ClockBound daemon shared memory segment shm0.
     ///
     /// Writes the latest supported layout version (V2) of the shared memory segment.
-    fn write_shm0(
-        &mut self,
-        as_of: Instant,
-        bound_nsec: i64,
-        clock_status: ClockStatus,
-        max_drift_ppb: u32,
-    ) {
+    fn write_shm0(&mut self, clock_parameters: &ClockParameters, clock_status: ClockStatus) {
+        // XXX: here as_of is the CLOCK_MONOTONIC_COARSE timestamp taken *before* the clock
+        // parameters were computed.
+        //
+        // Unwrap safety: unlikely to fail for any value for the distant future,
+        // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
+        let as_of = TimeSpec::try_from(clock_parameters.as_of_monotonic).unwrap();
+        let void_after = as_of + TimeSpec::new(1000, 0);
+
+        let bound_nsec = i64::try_from(clock_parameters.clock_error_bound.as_nanos()).unwrap();
+
+        // The shared memory segment layout V2 (for ClockBound 2.0 clients) does not have a field
+        // to distinguish between the growth of the CEB due to the hardware worse case, from the
+        // growth due to the fact our period estimate is ... an estimate, and carry some residual
+        // skew. Consequently, we squash the two notions into one, so that the clients can grow the
+        // CEB correctly, accounting for the duration between `as_of` and the instant they read the
+        // clock.
+        let software_skew =
+            Skew::from_period_and_error(clock_parameters.period, clock_parameters.period_max_error);
+        let Some(software_skew_ppb) = software_skew.to_ppb() else {
+            tracing::error!(
+                "Software skew is too large to be expressed as a ppb, skipping writing to SHM"
+            );
+            return;
+        };
+        let max_drift_ppb = self.max_drift_ppb + software_skew_ppb;
+
+        // Build the ClockErrorBound::V2 layout and write it out.
         let ceb = ClockErrorBoundGeneric::builder()
-            .as_of(
-                // Unwrap safety: unlikely to fail for any value for the distant future,
-                // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
-                TimeSpec::try_from(as_of).unwrap(),
-            )
-            .void_after(
-                // Unwrap safety: unlikely to fail for any value for the distant future,
-                // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
-                TimeSpec::try_from(as_of + Duration::from_secs(1000)).unwrap(),
-            )
+            .as_of(as_of)
+            .void_after(void_after)
             .bound_nsec(bound_nsec)
             .disruption_marker(self.disruption_marker)
-            .max_drift_ppb(
-                // TODO: It may be worthwhile to add to this max drift ppb base the following
-                // components:
-                // - any slew rate for phase correction, since kernel clocks are used on client side
-                max_drift_ppb,
-            )
+            .max_drift_ppb(max_drift_ppb)
             .clock_status(clock_status)
             .clock_disruption_support_enabled(self.clock_disruption_support_enabled)
             .build(ClockErrorBoundLayoutVersion::V2);
+
         self.shm_writer_0.write(&ceb);
     }
 
@@ -238,24 +217,6 @@ impl<T: ShmWrite> ClockStateWriter<T> {
     }
 }
 
-/// Calculate the `ClockErrorBound` `bound_nsec` value. This is used to calculate
-/// the `earliest` and `latest` readings from a `now` call.
-///
-/// # Arguments
-/// * `clock_parameters` - Clock Parameters of best clock chosen by `ClockBound`
-/// * `clock_realtime_offset_and_rtt` - offset and round trip time of a measurement of offset between `ClockBound` clock
-///   and `CLOCK_REALTIME`
-fn get_bound(
-    clock_parameters: &ClockParameters,
-    clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
-) -> Duration {
-    let realtime_to_clockbound_measured_offset = clock_realtime_offset_and_rtt.offset();
-    let measurement_rtt = clock_realtime_offset_and_rtt.rtt();
-    let bound_between_realtime_and_clockbound =
-        realtime_to_clockbound_measured_offset.abs() + measurement_rtt / 2;
-    clock_parameters.clock_error_bound + bound_between_realtime_and_clockbound
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,19 +244,8 @@ mod tests {
             clock_error_bound: Duration::from_nanos(clock_error_bound_nanos),
             period: Period::from_seconds(1e-9),
             period_max_error: Period::from_seconds(1e-11),
+            as_of_monotonic: Instant::from_nanos(time_nanos),
         }
-    }
-
-    /// Helper function to create a test ClockOffsetAndRtt
-    #[bon::builder]
-    fn create_test_clock_offset_and_rtt(
-        offset_nanos: i128,
-        rtt_nanos: i128,
-    ) -> ClockOffsetAndRtt<Utc> {
-        ClockOffsetAndRtt::new(
-            Duration::from_nanos(offset_nanos),
-            Duration::from_nanos(rtt_nanos),
-        )
     }
 
     #[rstest]
@@ -304,8 +254,8 @@ mod tests {
     #[case::free_running(ClockStatus::FreeRunning)]
     #[case::disrupted(ClockStatus::Disrupted)]
     fn test_write_shm(#[case] clock_status: ClockStatus) {
-        let as_of = MonotonicCoarse.get_time();
-        let bound_nsec = 1234;
+        let as_of = Instant::from_nanos(3_000_000_000);
+        let bound_nsec = 500;
         let max_drift_ppb = 15_000;
         let disruption_marker = 345;
         let clock_disruption_support_enabled = true;
@@ -314,7 +264,7 @@ mod tests {
             .void_after(TimeSpec::try_from(as_of + Duration::from_secs(1000)).unwrap())
             .bound_nsec(bound_nsec)
             .disruption_marker(disruption_marker)
-            .max_drift_ppb(max_drift_ppb)
+            .max_drift_ppb(max_drift_ppb + 10000000) // Clock params have 1% period error, in PPB
             .clock_status(clock_status)
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
             .build(ClockErrorBoundLayoutVersion::V2);
@@ -333,11 +283,8 @@ mod tests {
 
         let expected_ceb_v3 = ClockErrorBoundGeneric::builder()
             .as_of_tsc(1_000_000)
-            .as_of(TimeSpec::try_from(Instant::from_nanos(3_000_000_000)).unwrap())
-            .void_after(
-                TimeSpec::try_from(Instant::from_nanos(3_000_000_000) + Duration::from_secs(1000))
-                    .unwrap(),
-            )
+            .as_of(TimeSpec::try_from(as_of).unwrap())
+            .void_after(TimeSpec::try_from(as_of + Duration::from_secs(1000)).unwrap())
             .period(1e-9)
             .period_err(1e-11)
             .bound_nsec(500)
@@ -360,7 +307,7 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer.write_shm0(as_of, bound_nsec, clock_status, max_drift_ppb);
+        clock_state_writer.write_shm0(&clock_parameters, clock_status);
         clock_state_writer.write_shm1(&clock_parameters, clock_status);
     }
 
@@ -370,10 +317,6 @@ mod tests {
             .clock_error_bound_nanos(1000)
             .tsc_count(1000)
             .time_nanos(123_000)
-            .call();
-        let clock_realtime_offset_and_rtt = create_test_clock_offset_and_rtt()
-            .offset_nanos(1000)
-            .rtt_nanos(500)
             .call();
         let clock_disruption_support_enabled = false;
         let max_drift_ppb = 0;
@@ -386,7 +329,7 @@ mod tests {
             .withf(move |ceb: &ClockErrorBound| {
                 ceb.void_after()
                     == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
-                    && ceb.bound_nsec() == 2250
+                    && ceb.bound_nsec() == 1000
                     && ceb.disruption_marker() == disruption_marker
                     && ceb.clock_status() == clock_status
                     && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
@@ -415,11 +358,7 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer.handle_clock_parameters(
-            &clock_parameters,
-            clock_status,
-            clock_realtime_offset_and_rtt,
-        );
+        clock_state_writer.handle_clock_parameters(&clock_parameters, clock_status);
     }
 
     #[test]
@@ -429,10 +368,6 @@ mod tests {
             .clock_error_bound_nanos(i64::MAX as i128 + 1) // overflowing CEB
             .tsc_count(1000)
             .time_nanos(1_000_000_000)
-            .call();
-        let clock_realtime_offset_and_rtt = create_test_clock_offset_and_rtt()
-            .offset_nanos(1000)
-            .rtt_nanos(500)
             .call();
         let clock_disruption_support_enabled = false;
         let max_drift_ppb = 0;
@@ -448,51 +383,13 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer.handle_clock_parameters(
-            &clock_parameters,
-            ClockStatus::Synchronized,
-            clock_realtime_offset_and_rtt,
-        );
-    }
-
-    #[rstest]
-    #[case(
-        create_test_clock_parameters()
-            .clock_error_bound_nanos(0)
-            .tsc_count(1000)
-            .time_nanos(1_000_000_000)
-            .call(),
-        create_test_clock_offset_and_rtt()
-            .offset_nanos(0)
-            .rtt_nanos(0)
-            .call(),
-        Duration::from_nanos(0),
-    )]
-    #[case(
-        create_test_clock_parameters()
-            .clock_error_bound_nanos(1000)
-            .tsc_count(2000)
-            .time_nanos(1_000_000_000)
-            .call(),
-        create_test_clock_offset_and_rtt()
-            .offset_nanos(1000)
-            .rtt_nanos(500)
-            .call(),
-        Duration::from_nanos(2250),
-    )]
-    fn test_get_bound(
-        #[case] clock_parameters: ClockParameters,
-        #[case] clock_realtime_offset_and_rtt: ClockOffsetAndRtt<Utc>,
-        #[case] expected: Duration,
-    ) {
-        let bound_nsec = get_bound(&clock_parameters, clock_realtime_offset_and_rtt);
-        assert_eq!(bound_nsec, expected);
+        clock_state_writer.handle_clock_parameters(&clock_parameters, ClockStatus::Synchronized);
     }
 
     #[test]
-    fn initialize_ceb_v2_shm() {
+    fn test_initialize_ceb_v2_shm() {
         let clock_disruption_support_enabled = false;
-        let expected_max_drift_ppb = 0;
+        let expected_max_drift_ppb = 15_000;
         let expected_disruption_marker = 0;
         let mut shm_writer_0 = MockShmWriter::new();
         shm_writer_0
@@ -542,9 +439,9 @@ mod tests {
             .withf(move |ceb: &ClockErrorBound| {
                 ceb.void_after()
                     == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
-                    && ceb.bound_nsec() == 0
+                    && ceb.bound_nsec() == 1000
                     && ceb.disruption_marker() == final_disruption_marker
-                    && ceb.max_drift_ppb() == max_drift_ppb
+                    && ceb.max_drift_ppb() == 10000000  // Clock params have 1% period error, in PPB
                     && ceb.clock_status() == ClockStatus::Disrupted
                     && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
             })

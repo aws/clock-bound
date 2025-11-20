@@ -165,18 +165,18 @@ impl ClockState {
     fn handle_tick(&mut self, now: tokio::time::Instant) {
         if let Some(parameters) = &self.clock_parameters {
             self.clock_adjuster.handle_clock_parameters(now, parameters);
+
+            // FIXME: this is likely not right.
+            // The underlying assumption is that only the shm0 file was written to. But we now have
+            // two writers, and the status of the clock written to shm1 should NOT depend on
+            // whatever the system clock is doing.
             let clock_status = self.clock_adjuster.get_clock_realtime_status();
+
             // FIXME: Initializing behavior of ClockStateWriter should have us write
             // the initial clock status as unknown to SHM segment. Else, the clock might be adjusted
             // by ClockAdjuster on its initial state, while the SHM isn't updated with that info..
-            let clockbound_clock = ClockBound::new(parameters.clone(), ReadTscImpl);
-            // TODO: implement multiple attempts in case of latency increase
-            let clock_realtime_offset_and_rtt = clockbound_clock.get_offset_and_rtt(&RealTime);
-            self.state_writer.handle_clock_parameters(
-                parameters,
-                clock_status,
-                clock_realtime_offset_and_rtt,
-            );
+            self.state_writer
+                .handle_clock_parameters(parameters, clock_status);
         }
     }
 
@@ -246,6 +246,7 @@ mod tests {
             clock_error_bound: Duration::new(0),
             period: Period::from_seconds(0.0),
             period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::new(0),
         }
     }
 
@@ -288,6 +289,7 @@ mod tests {
             clock_error_bound: Duration::from_nanos(1000),
             period: Period::from_seconds(1e-9),
             period_max_error: Period::from_seconds(1e-11),
+            as_of_monotonic: Instant::from_nanos(1000),
         };
         let expected_clock_parameters = clock_parameters.clone();
         mock_clock_adjuster
@@ -371,12 +373,10 @@ mod tests {
         mock_clock_state_writer
             .expect_handle_clock_parameters()
             .once()
-            .withf(
-                move |actual_clock_params, actual_clock_status, _offset_and_rtt| {
-                    *actual_clock_params == expected_clock_params_clone
-                        && *actual_clock_status == expected_clock_status
-                },
-            )
+            .withf(move |actual_clock_params, actual_clock_status| {
+                *actual_clock_params == expected_clock_params_clone
+                    && *actual_clock_status == expected_clock_status
+            })
             .in_sequence(&mut sequence)
             .return_const(());
 

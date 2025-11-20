@@ -10,7 +10,8 @@ use crate::daemon::{
     clock_sync_algorithm::ring_buffer::Quarter,
     event::{self, TscRtt},
     time::{
-        Duration, TscDiff,
+        Clock, Duration, Instant, TscDiff,
+        clocks::MonotonicCoarse,
         tsc::{Period, Skew},
     },
 };
@@ -66,6 +67,32 @@ impl Ntp {
     ///
     /// Returns [`Some`] if the event has improved this source's [`ClockParameters`].
     pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
+        // FIXME: take a MONOTONIC_COARSE timestamp *before* computing the clock error bound.
+        //
+        // The only use of this timestamp is to support and maintain the behavior for clients built
+        // against ClockBound 2.0. These clients grow the CEB by calculating the time elapsed
+        // between the instant the ClockParameters were computed, and the instant they read the
+        // system clock. This needs to be a bit pessimistic, and the `as_of_monotonic` timestamp
+        // should be taken *before* the time at which the CEB is calculated.
+        //
+        // Here this should be *before* the TSC post read of event fed to the algorithm. That would
+        // require carrying this `as_of_monotonic` timestamp from the IO components. Instead, we
+        // are taking a short cut and placing this timestamp slightly in the past, by 10
+        // milliseconds to account for possible events where the daemon is scheduled out.
+        //
+        // The CEB is made worse by around 150 nanoseconds (assuming a 15PPM oscillator drift),
+        // which is negligible for ClockBound 2.0 clients. Moving this timestamp in the past may
+        // also help reduce the risk of causality breach errors seen when using the
+        // CLOCK_MONOTONIC_COARSE clock.
+        //
+        // This will be eliminated once we decide to stop supporting ClockBound 2.0 clients.
+        let as_of_monotonic = MonotonicCoarse.get_time();
+        let as_of_monotonic = if as_of_monotonic > Instant::from_millis(10) {
+            as_of_monotonic - Duration::from_millis(10)
+        } else {
+            Instant::from_millis(0)
+        };
+
         let tsc_midpoint = event.tsc_midpoint();
 
         // First update the internal local (current SKM) and estimate (long term)
@@ -134,6 +161,7 @@ impl Ntp {
             clock_error_bound,
             period: local_period.period_local,
             period_max_error: local_period.error,
+            as_of_monotonic,
         };
 
         match &mut self.clock_parameters {

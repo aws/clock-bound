@@ -10,7 +10,8 @@ use crate::daemon::{
     clock_sync_algorithm::ring_buffer::Quarter,
     event::{self, TscRtt},
     time::{
-        Duration, TscDiff,
+        Clock, Duration, TscDiff,
+        clocks::MonotonicCoarse,
         tsc::{Period, Skew},
     },
 };
@@ -79,6 +80,17 @@ impl Phc {
     ///
     /// Returns [`Some`] if the event has improved this source's [`ClockParameters`].
     pub fn feed(&mut self, event: event::Phc) -> Option<&ClockParameters> {
+        // FIXME: take a MONOTONIC_COARSE timestamp *before* computing the clock error bound.
+        //
+        // The only use of this timestamp is to support and maintain the behavior for clients built
+        // against ClockBound 2.0. These clients grow the CEB by calculating the time elapsed
+        // between the instant the ClockParameters were computed, and the instant they read the
+        // system clock. This needs to be a bit pessimistic, hence the as_of_monotonic timestamp is
+        // taken *before* computing the clock error bound.
+        //
+        // This could be eliminated once we decide to stop supporting ClockBound 2.0 clients.
+        let as_of_monotonic = MonotonicCoarse.get_time();
+
         let tsc_midpoint = event.tsc_midpoint();
 
         // First update the internal local (current SKM) and estimate (long term)
@@ -147,6 +159,7 @@ impl Phc {
             clock_error_bound,
             period: local_period.period_local,
             period_max_error: local_period.error,
+            as_of_monotonic,
         };
 
         match &mut self.clock_parameters {

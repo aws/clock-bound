@@ -162,12 +162,14 @@ mod tests {
         let time = initial_time;
         let clock_error_bound = Duration::new(0);
         let period_max_error = Period::from_seconds(0.0);
+        let as_of_monotonic = Instant::from_secs(2);
         let clock_parameters = ClockParameters {
             tsc_count,
             time,
             clock_error_bound,
             period,
             period_max_error,
+            as_of_monotonic,
         };
         let clockbound_clock = ClockBound::new(clock_parameters, mock_read_tsc);
         assert_eq!(clockbound_clock.get_time(), expected_time);

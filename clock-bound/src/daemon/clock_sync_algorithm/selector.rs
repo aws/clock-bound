@@ -108,6 +108,7 @@ mod tests {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1), // unused
         },
         // Second event (identical)
         event::Ntp::builder()
@@ -134,6 +135,7 @@ mod tests {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1), // unused
         },
         // Second event with worse RTT
         event::Ntp::builder()
@@ -160,6 +162,7 @@ mod tests {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1), // unused
         },
         // Second event (newer, 1 second later)
         event::Ntp::builder()
@@ -186,6 +189,7 @@ mod tests {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1), // unused
         },
         // Second event
         event::Ntp::builder()
@@ -212,6 +216,7 @@ mod tests {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1), // unused
         },
         // Second event
         event::Ntp::builder()
@@ -246,6 +251,7 @@ mod tests {
             clock_error_bound: second.calculate_clock_error_bound(period),
             period,
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1),        // unused
         };
         let mut selector = Selector {
             current: Some(SourceParams {
@@ -266,6 +272,7 @@ mod tests {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1), // unused
         };
         let mut selector = Selector::new(Skew::from_ppm(0.0));
         assert!(selector.current().is_none());
@@ -282,6 +289,7 @@ mod tests {
             clock_error_bound: Duration::from_nanos(10_500),
             period: Period::from_seconds(1e-9), // unused
             period_max_error: Period::from_seconds(1e-11), // unused
+            as_of_monotonic: Instant::from_days(1), // unused
         };
         let skew = Skew::from_ppm(1.0);
         let mut selector = Selector::new(skew);

@@ -83,7 +83,7 @@ impl<T: FemtoType + Copy, C: Clock<T>> ClockExt<T> for C {}
 ///
 /// This type is not usually used directly, but rather through the [`Instant`](super::Instant) and [`Tsc`](super::TscCount) types.
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
+    Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]

@@ -313,6 +313,9 @@ impl Skew {
     /// Equivalent to
     /// `Skew = error (in seconds) / period (in seconds`
     pub fn from_period_and_error(period: Period, error: Period) -> Self {
+        if period.get() == 0.0 {
+            return Self(0.0);
+        }
         let skew = error.get() / period.get();
         Self(skew)
     }
