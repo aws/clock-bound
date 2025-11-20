@@ -5,7 +5,12 @@ use tracing::info;
 use crate::{
     daemon::{
         clock_parameters::ClockParameters,
-        time::{Duration, Instant, TscCount, tsc::Period, tsc::Skew},
+        io::tsc::ReadTscImpl,
+        time::{
+            ClockExt, Duration, Instant, TscCount,
+            clocks::{ClockBound, RealTime},
+            tsc::{Period, Skew},
+        },
     },
     shm::{
         ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockStatus,
@@ -92,7 +97,21 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
         // Write to the shared memory segment shm1 first...and then write to the legacy shared
         // memory segment shm0, of which the client relies
         self.write_shm1(clock_parameters, clock_status);
-        self.write_shm0(clock_parameters, clock_status);
+
+        // The kernel system clock is used on `ClockErrorBoundV2` client reads, so the error between that and
+        // the `ClockBound` clock calculated from `ClockParameters` needs to be added in, thus we measure it here
+        let clockbound_clock = ClockBound::new(clock_parameters.clone(), ReadTscImpl);
+        let offset_and_rtt = clockbound_clock.get_offset_and_rtt(&RealTime);
+
+        let clock_error_bound = clock_parameters.clock_error_bound
+            + offset_and_rtt.offset().abs()
+            + (offset_and_rtt.rtt() / 2);
+
+        let shm0_clock_parameters = ClockParameters {
+            clock_error_bound,
+            ..clock_parameters.clone()
+        };
+        self.write_shm0(&shm0_clock_parameters, clock_status);
     }
 
     /// Handle a clock disruption event
@@ -329,7 +348,6 @@ mod tests {
             .withf(move |ceb: &ClockErrorBound| {
                 ceb.void_after()
                     == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
-                    && ceb.bound_nsec() == 1000
                     && ceb.disruption_marker() == disruption_marker
                     && ceb.clock_status() == clock_status
                     && ceb.clock_disruption_support_enabled() == clock_disruption_support_enabled
@@ -439,7 +457,6 @@ mod tests {
             .withf(move |ceb: &ClockErrorBound| {
                 ceb.void_after()
                     == ceb.as_of() + TimeSpec::from_duration(std::time::Duration::from_secs(1000))
-                    && ceb.bound_nsec() == 1000
                     && ceb.disruption_marker() == final_disruption_marker
                     && ceb.max_drift_ppb() == 10000000  // Clock params have 1% period error, in PPB
                     && ceb.clock_status() == ClockStatus::Disrupted
