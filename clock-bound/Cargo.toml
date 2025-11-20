@@ -98,3 +98,12 @@ default = ["client", "daemon"]
 [[bin]]
 name = "clockbound"
 required-features = ["daemon"]
+
+[package.metadata.generate-rpm]
+name = "clockbound"
+version = "3.0.0-alpha"
+assets = [
+  { source = "target/release/clockbound", dest = "/usr/bin/clockbound", mode = "755" },
+  { source = "assets/clockbound.service", dest = "/usr/lib/systemd/system/clockbound.service", mode = "644" },
+  { source = "assets/configure_phc",      dest = "/usr/sbin/configure_phc", mode = "755" },
+]

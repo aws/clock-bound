@@ -1,0 +1,13 @@
+[Unit]
+Description=Feed Forward Time Synchronization Client
+After=ntpdate.service sntp.service ntpd.service chronyd.service
+Conflicts=ntpd.service systemd-timesyncd.service chronyd.service
+
+[Service]
+Type=exec
+ExecStartPre=-/usr/sbin/configure_phc
+ExecStart=/usr/bin/clockbound
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

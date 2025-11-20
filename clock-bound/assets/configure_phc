@@ -1,0 +1,112 @@
+#!/bin/bash
+# Configure the PHC device to be used by time synchronization clients
+
+ena_conf_file="/etc/modprobe.d/ena.conf"
+
+usage() {
+  echo "Usage: $0 [-c]"
+  echo ""
+  echo "Set up the ENA PHC on the current machine"
+  echo "Run without any arguments to set up the PHC immediately"
+  echo "Run with -c to configure $ena_conf_file and enable the phc on next boot"
+  echo ""
+  echo "If running without parameters, this script will disable and re-enable the"
+  echo "ENA driver."
+  exit 1
+}
+
+config_only=0
+
+while getopts "hc" opt; do
+  case $opt in
+    h)
+      usage
+      ;;
+    c)
+      config_only=1
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG" >&2
+      usage
+      ;;
+  esac
+done
+
+# Function as used in -c path and regular path
+enable_phc() {
+  # Check if the configuration line already exists
+  if [[ -f "$ena_conf_file" ]] && grep -q "^options ena phc_enable=1" "$ena_conf_file"; then
+    echo "PHC option already enabled in $ena_conf_file"
+    return 0
+  fi
+
+  # Remove phc_enable=0 to avoid conflicts
+  if [[ -f "$ena_conf_file" ]] && grep -q "^options ena phc_enable=0" "$confena_conf_file_file"; then
+    echo "Removing existing phc_enable=0 configuration..."
+    sed -i '/^options ena phc_enable=0/d' "$ena_conf_file"
+  fi
+
+  # Add PHC configuration
+  echo -n "Adding 'phc_enable=1' to $ena_conf_file..."
+  if echo "options ena phc_enable=1" >> "$ena_conf_file"; then
+    echo "Success"
+  else
+    echo "ERROR: Failed to write configuration to $ena_conf_file"
+    return 1
+  fi
+}
+
+# If -c passed, only do config file modification and exit
+if [[ $config_only -eq 1 ]]; then
+  echo "-c flag passed in. Only configuring $ena_conf_file"
+  enable_phc
+  exit 0
+fi
+
+# Normal path
+# First check if the driver has been enabled with phc_enable
+param_file="/sys/module/ena/parameters/phc_enable"
+if [[ ! -f "$param_file" ]]; then
+  echo "ERROR: ENA driver parameter file not found at $param_file"
+  exit 1
+fi
+phc_value=$(cat "$param_file")
+if [[ "$phc_value" == "1" ]]; then
+  echo "PHC is already enabled for the ENA driver (phc_enable=1). Exiting."
+  exit 0
+else
+  echo "PHC is not enabled for the ENA driver (phc_enable=0). Continuing."
+fi
+
+# Check if the kernel supports this option and bail out if not
+# NOTE: Not doing this check for "-c", because there is no immediate impact.
+echo -n "Checking if ENA driver supports PTP 1588 clock..."
+grep -w '^CONFIG_PTP_1588_CLOCK=[ym]' /boot/config-`uname -r` || {
+  echo "ENA driver does not support PTP 1588 clock. Exiting."
+  exit 0
+}
+echo "Success"
+
+# Write the ena config
+enable_phc || exit 1
+
+echo -n "Restarting ENA driver..."
+modprobe -r ena
+modprobe ena
+echo "Success"
+
+echo -n "checking for ptp device..."
+attempts=0
+ptp_dir="/sys/class/ptp"
+while [[ $attempts -lt 10 ]]; do
+  if [[ -d "$ptp_dir" ]] && [[ -n "$(ls -A "$ptp_dir")" ]]; then
+    echo "ptp device found"
+    ls -A "$ptp_dir"
+    echo "Success"
+    exit 0
+  fi
+  sleep 0.2
+  attempts=$((attempts+1))
+done
+echo "ERROR: ptp device not found"
+exit 1
