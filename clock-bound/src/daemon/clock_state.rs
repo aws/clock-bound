@@ -18,12 +18,14 @@ use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
 use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::subscriber::CLOCK_METRICS_TARGET;
-use crate::daemon::time::ClockExt;
-use crate::daemon::time::clocks::{ClockBound, MonotonicRaw, RealTime};
+use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse, MonotonicRaw, RealTime};
+use crate::daemon::time::{Clock, ClockExt, Duration};
 use crate::shm::{
     CLOCKBOUND_SHM_DEFAULT_PATH_V0, CLOCKBOUND_SHM_DEFAULT_PATH_V1, ClockErrorBoundLayoutVersion,
-    ShmWriter,
+    ClockStatus, ShmWriter,
 };
+
+const FREE_RUNNING_GRACE_PERIOD: Duration = Duration::from_secs(60);
 
 /// The whole `ClockState` component struct.
 /// This encompasses both `ClockAdjust` component which interfaces
@@ -162,21 +164,55 @@ impl ClockState {
         }
     }
 
+    /// Determines the `ClockStatus` to write to the SHM for `ClockErrorBoundV2`, which depends on the system
+    /// clock underneath the hood.
+    fn determine_clock_error_bound_v2_status(&self, parameters: &ClockParameters) -> ClockStatus {
+        let mut clock_status = self.clock_adjuster.get_clock_realtime_status();
+        // Check if the clock parameters have been stale for an extended time, if so then update to status `ClockStatus::FreeRunning`
+        let time_since_parameters_updated = MonotonicCoarse.get_time() - parameters.as_of_monotonic;
+        if clock_status == ClockStatus::Synchronized
+            && time_since_parameters_updated >= FREE_RUNNING_GRACE_PERIOD
+        {
+            clock_status = ClockStatus::FreeRunning;
+        }
+        clock_status
+    }
+
+    /// Determines the `ClockStatus` to write to the SHM for `ClockErrorBoundV3`.
+    /// The `ClockErrorBoundV3` does not directly rely on the kernel system clock.
+    /// After a disruption, `ClockState` should have no `ClockParameters`, so we don't expect
+    /// to have to return `ClockState::Disrupted` at all. Similar reasoning also applies for `ClockState::Unknown`
+    /// not being covered here.
+    ///
+    /// If we have received any `ClockParameters` in the caller, we have some notion of a clock, and can say we're `Synchronized`, or
+    /// if the `ClockParameters` are stale for `FREE_RUNNING_GRACE_PERIOD`, we may declare ourselves `FreeRunning`.
+    fn determine_clock_error_bound_v3_status(clock_params_age: Duration) -> ClockStatus {
+        if clock_params_age < FREE_RUNNING_GRACE_PERIOD {
+            ClockStatus::Synchronized
+        } else {
+            ClockStatus::FreeRunning
+        }
+    }
+
     fn handle_tick(&mut self, now: tokio::time::Instant) {
         if let Some(parameters) = &self.clock_parameters {
             self.clock_adjuster.handle_clock_parameters(now, parameters);
 
-            // FIXME: this is likely not right.
-            // The underlying assumption is that only the shm0 file was written to. But we now have
-            // two writers, and the status of the clock written to shm1 should NOT depend on
-            // whatever the system clock is doing.
-            let clock_status = self.clock_adjuster.get_clock_realtime_status();
+            // Handle SHM1 (`ClockErrorboundV3`) first
+            let clockbound_clock = ClockBound::new(parameters.clone(), ReadTscImpl);
+            // Get the age of the `ClockParameters`, to determine if we're Synchronized or FreeRunning.
+            // Inherently, we can't be `Unknown` or `Disrupted` anymore if we've gotten any `ClockParameters`.
+            let clock_params_age_v3 = clockbound_clock.get_time() - parameters.time;
+            let clock_status_v3 =
+                ClockState::determine_clock_error_bound_v3_status(clock_params_age_v3);
 
-            // FIXME: Initializing behavior of ClockStateWriter should have us write
-            // the initial clock status as unknown to SHM segment. Else, the clock might be adjusted
-            // by ClockAdjuster on its initial state, while the SHM isn't updated with that info..
             self.state_writer
-                .handle_clock_parameters(parameters, clock_status);
+                .handle_clock_parameters_shm1(parameters, clock_status_v3);
+
+            // Handle SHM0 (`ClockErrorboundV2`) after SHM1.
+            let clock_status_v2 = self.determine_clock_error_bound_v2_status(parameters);
+            self.state_writer
+                .handle_clock_parameters_shm0(parameters, clock_status_v2);
         }
     }
 
@@ -227,6 +263,7 @@ impl ClockState {
 #[cfg(test)]
 mod tests {
     use mockall::predicate::eq;
+    use rstest::rstest;
 
     use crate::{
         daemon::{
@@ -262,9 +299,8 @@ mod tests {
 
         let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         mock_clock_state_writer
-            .expect_handle_clock_parameters()
-            .never()
-            .return_const(());
+            .expect_handle_clock_parameters_shm0()
+            .never();
 
         let (_tx, rx) = async_ring_buffer::create(1);
         let mut clock_state = ClockState::new(
@@ -328,9 +364,12 @@ mod tests {
 
         let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         mock_clock_state_writer
-            .expect_handle_clock_parameters()
-            .never()
-            .return_const(());
+            .expect_handle_clock_parameters_shm0()
+            .never();
+
+        mock_clock_state_writer
+            .expect_handle_clock_parameters_shm1()
+            .never();
 
         let (_tx, rx) = async_ring_buffer::create(1);
         let mut clock_state = ClockState::new(
@@ -346,8 +385,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn handle_tick_with_parameters() {
         let mut sequence = mockall::Sequence::new();
-        let expected_clock_status = ClockStatus::Synchronized;
-        let expected_clock_params = get_sample_clock_parameters();
+        let expected_clock_error_bound_v2_status = ClockStatus::Synchronized;
+        let expected_clock_error_bound_v3_status = ClockStatus::Synchronized;
+        let mut expected_clock_params = get_sample_clock_parameters();
+        // If we don't overwrite `as_of_monotonic`, the default from `get_sample_clock_parameters`
+        // has it at `Instant::new(0)` which would cause us to declare the clock as `FreeRunning`
+        // since it's likely far in the past.
+        expected_clock_params.as_of_monotonic = MonotonicCoarse.get_time();
+
         let expected_instant = tokio::time::Instant::now();
         let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
@@ -362,20 +407,32 @@ mod tests {
             })
             .in_sequence(&mut sequence)
             .return_const(());
-        mock_clock_adjuster
-            .expect_get_clock_realtime_status()
-            .once()
-            .in_sequence(&mut sequence)
-            .return_const(expected_clock_status);
 
         let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         let expected_clock_params_clone = expected_clock_params.clone();
         mock_clock_state_writer
-            .expect_handle_clock_parameters()
+            .expect_handle_clock_parameters_shm1()
             .once()
             .withf(move |actual_clock_params, actual_clock_status| {
                 *actual_clock_params == expected_clock_params_clone
-                    && *actual_clock_status == expected_clock_status
+                    && *actual_clock_status == expected_clock_error_bound_v3_status
+            })
+            .in_sequence(&mut sequence)
+            .return_const(());
+        mock_clock_adjuster
+            .expect_get_clock_realtime_status()
+            .once()
+            .in_sequence(&mut sequence)
+            // Return synchronized state from `ClockAdjuster` so that
+            // we may test aging the clock params to get `ClockStatus::FreeRunning`
+            .return_const(ClockStatus::Synchronized);
+        let expected_clock_params_clone = expected_clock_params.clone();
+        mock_clock_state_writer
+            .expect_handle_clock_parameters_shm0()
+            .once()
+            .withf(move |actual_clock_params, actual_clock_status| {
+                *actual_clock_params == expected_clock_params_clone
+                    && *actual_clock_status == expected_clock_error_bound_v2_status
             })
             .in_sequence(&mut sequence)
             .return_const(());
@@ -389,5 +446,88 @@ mod tests {
         );
         clock_state.clock_parameters = Some(expected_clock_params);
         clock_state.handle_tick(expected_instant);
+    }
+
+    #[rstest]
+    #[case::synchronized_stays_synchronized_params_0sec_old(
+        Duration::from_secs(0),
+        ClockStatus::Synchronized,
+        ClockStatus::Synchronized
+    )]
+    #[case::synchronized_stays_synchronized_params_30sec_old(
+        Duration::from_secs(30),
+        ClockStatus::Synchronized,
+        ClockStatus::Synchronized
+    )]
+    #[case::synchronized_goes_freerunning_params_60sec_old(
+        Duration::from_secs(60),
+        ClockStatus::Synchronized,
+        ClockStatus::FreeRunning
+    )]
+    #[case::synchronized_goes_freerunning_params_90sec_old(
+        Duration::from_secs(90),
+        ClockStatus::Synchronized,
+        ClockStatus::FreeRunning
+    )]
+    #[case::unknown_stays_unknown_params_0sec_old(
+        Duration::from_secs(0),
+        ClockStatus::Unknown,
+        ClockStatus::Unknown
+    )]
+    #[case::unknown_stays_unknown_params_90sec_old(
+        Duration::from_secs(90),
+        ClockStatus::Unknown,
+        ClockStatus::Unknown
+    )]
+    #[case::disrupted_stays_disrupted_params_0sec_old(
+        Duration::from_secs(0),
+        ClockStatus::Disrupted,
+        ClockStatus::Disrupted
+    )]
+    #[case::disrupted_stays_disrupted_params_90sec_old(
+        Duration::from_secs(90),
+        ClockStatus::Disrupted,
+        ClockStatus::Disrupted
+    )]
+    #[tokio::test]
+    async fn determine_clock_error_bound_v2_status(
+        #[case] clock_params_age: Duration,
+        #[case] clock_adjust_status: ClockStatus,
+        #[case] expected_clock_error_bound_v2_status: ClockStatus,
+    ) {
+        let cancellation_token = CancellationToken::new();
+        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
+        mock_clock_adjuster
+            .expect_get_clock_realtime_status()
+            .once()
+            .return_const(clock_adjust_status);
+        let clock_state = ClockState::new(
+            Box::new(MockClockStateWrite::new()),
+            Box::new(mock_clock_adjuster),
+            async_ring_buffer::create(1).1,
+            cancellation_token,
+        );
+
+        let mut clock_parameters = get_sample_clock_parameters();
+        // Adjust the time reported on clock params to be `clock_params_age` old
+        // For v2, we age clock params based on `CLOCK_MONOTONIC_COARSE`, so use that here
+        clock_parameters.as_of_monotonic = MonotonicCoarse.get_time() - clock_params_age;
+        let res = clock_state.determine_clock_error_bound_v2_status(&clock_parameters);
+        assert_eq!(res, expected_clock_error_bound_v2_status);
+    }
+
+    #[rstest]
+    #[case::synchronized_params_0sec_old(Duration::from_secs(0), ClockStatus::Synchronized)]
+    #[case::synchronized_params_30sec_old(Duration::from_secs(30), ClockStatus::Synchronized)]
+    #[case::freerunning_params_60sec_old(Duration::from_secs(60), ClockStatus::FreeRunning)]
+    #[case::freerunning_params_90sec_old(Duration::from_secs(90), ClockStatus::FreeRunning)]
+    fn determine_clock_error_bound_v3_status(
+        #[case] clock_params_age: Duration,
+        #[case] expected_clock_error_bound_v3_status: ClockStatus,
+    ) {
+        assert_eq!(
+            ClockState::determine_clock_error_bound_v3_status(clock_params_age),
+            expected_clock_error_bound_v3_status
+        );
     }
 }

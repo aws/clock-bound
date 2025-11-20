@@ -50,7 +50,12 @@ pub struct ClockStateWriter<T> {
 #[cfg_attr(test, mockall::automock)]
 pub trait ClockStateWrite: Send + Sync {
     fn initialize_ceb_v2_shm(&mut self);
-    fn handle_clock_parameters(
+    fn handle_clock_parameters_shm1(
+        &mut self,
+        clock_parameters: &ClockParameters,
+        clock_status: ClockStatus,
+    );
+    fn handle_clock_parameters_shm0(
         &mut self,
         clock_parameters: &ClockParameters,
         clock_status: ClockStatus,
@@ -85,19 +90,24 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
         self.write_shm0(&clock_parameters, ClockStatus::Unknown);
     }
 
-    /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector.
-    ///
-    /// # Panics
-    /// Panics if error bound calculated exceeds `i64::MAX`
-    fn handle_clock_parameters(
+    /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector for SHM1 (`ClockErrorBoundV3`)
+    fn handle_clock_parameters_shm1(
         &mut self,
         clock_parameters: &ClockParameters,
         clock_status: ClockStatus,
     ) {
-        // Write to the shared memory segment shm1 first...and then write to the legacy shared
-        // memory segment shm0, of which the client relies
         self.write_shm1(clock_parameters, clock_status);
+    }
 
+    /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector for SHM0 (`ClockErrorBoundV2`)
+    ///
+    /// # Panics
+    /// Panics if error bound calculated exceeds `i64::MAX`
+    fn handle_clock_parameters_shm0(
+        &mut self,
+        clock_parameters: &ClockParameters,
+        clock_status: ClockStatus,
+    ) {
         // The kernel system clock is used on `ClockErrorBoundV2` client reads, so the error between that and
         // the `ClockBound` clock calculated from `ClockParameters` needs to be added in, thus we measure it here
         let clockbound_clock = ClockBound::new(clock_parameters.clone(), ReadTscImpl);
@@ -331,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_clock_parameters() {
+    fn handle_clock_parameters_shm0() {
         let clock_parameters = create_test_clock_parameters()
             .clock_error_bound_nanos(1000)
             .tsc_count(1000)
@@ -356,6 +366,60 @@ mod tests {
             .return_const(());
 
         let mut shm_writer_1 = MockShmWriter::new();
+        shm_writer_1.expect_write().never();
+
+        let mut clock_state_writer = ClockStateWriter::builder()
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
+            .shm_writer_0(shm_writer_0)
+            .shm_writer_1(shm_writer_1)
+            .max_drift_ppb(max_drift_ppb)
+            .disruption_marker(disruption_marker)
+            .build();
+        clock_state_writer.handle_clock_parameters_shm0(&clock_parameters, clock_status);
+    }
+
+    #[test]
+    #[should_panic]
+    fn handle_clock_parameters_shm0_panic_on_overflow_error_bound() {
+        let clock_parameters = create_test_clock_parameters()
+            .clock_error_bound_nanos(i64::MAX as i128 + 1) // overflowing CEB
+            .tsc_count(1000)
+            .time_nanos(1_000_000_000)
+            .call();
+        let clock_disruption_support_enabled = false;
+        let max_drift_ppb = 0;
+        let disruption_marker = 0;
+        let mut shm_writer_0 = MockShmWriter::new();
+        shm_writer_0.expect_write().never();
+        let mut shm_writer_1 = MockShmWriter::new();
+        shm_writer_1.expect_write().never();
+        let mut clock_state_writer = ClockStateWriter::builder()
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
+            .shm_writer_0(shm_writer_0)
+            .shm_writer_1(shm_writer_1)
+            .max_drift_ppb(max_drift_ppb)
+            .disruption_marker(disruption_marker)
+            .build();
+        clock_state_writer
+            .handle_clock_parameters_shm0(&clock_parameters, ClockStatus::Synchronized);
+    }
+
+    #[test]
+    fn handle_clock_parameters_shm1() {
+        let clock_parameters = create_test_clock_parameters()
+            .clock_error_bound_nanos(1000)
+            .tsc_count(1000)
+            .time_nanos(123_000)
+            .call();
+        let clock_disruption_support_enabled = false;
+        let max_drift_ppb = 0;
+        let disruption_marker = 0;
+        let clock_status = ClockStatus::Synchronized;
+
+        let mut shm_writer_0 = MockShmWriter::new();
+        shm_writer_0.expect_write().never();
+
+        let mut shm_writer_1 = MockShmWriter::new();
         shm_writer_1
             .expect_write()
             .withf(move |ceb: &ClockErrorBound| {
@@ -376,32 +440,7 @@ mod tests {
             .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
-        clock_state_writer.handle_clock_parameters(&clock_parameters, clock_status);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_handle_clock_parameters_panic_on_overflow_error_bound() {
-        let clock_parameters = create_test_clock_parameters()
-            .clock_error_bound_nanos(i64::MAX as i128 + 1) // overflowing CEB
-            .tsc_count(1000)
-            .time_nanos(1_000_000_000)
-            .call();
-        let clock_disruption_support_enabled = false;
-        let max_drift_ppb = 0;
-        let disruption_marker = 0;
-        let mut shm_writer_0 = MockShmWriter::new();
-        shm_writer_0.expect_write().never();
-        let mut shm_writer_1 = MockShmWriter::new();
-        shm_writer_1.expect_write().never();
-        let mut clock_state_writer = ClockStateWriter::builder()
-            .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .shm_writer_0(shm_writer_0)
-            .shm_writer_1(shm_writer_1)
-            .max_drift_ppb(max_drift_ppb)
-            .disruption_marker(disruption_marker)
-            .build();
-        clock_state_writer.handle_clock_parameters(&clock_parameters, ClockStatus::Synchronized);
+        clock_state_writer.handle_clock_parameters_shm1(&clock_parameters, clock_status);
     }
 
     #[test]
