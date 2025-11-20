@@ -1,0 +1,32 @@
+[package]
+name = "clock-bound-phc-offset"
+description = "A test program that compares specified clocks to PHC timestamp reads."
+license = "Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "clock-bound-phc-offset"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+clock-bound = { version = "2.0", path = "../../clock-bound", features = [
+  "daemon",
+  "client",
+] }
+libc = { version = "0.2", default-features = false, features = [
+  "extra_traits",
+] }
+nix = { version = "0.26" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["std"] }
+thiserror = "2.0"
+clap = { version = "4.5.31", features = ["derive"] }
