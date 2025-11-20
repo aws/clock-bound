@@ -1,2 +1,4 @@
 mod phc;
-pub use phc::{OffsetRttAndCeb, PhcReader, autoconfigure_phc_reader};
+pub use phc::{
+    ClockBoundClientClock, ClockBoundClientRefComparison, PhcReader, autoconfigure_phc_reader,
+};

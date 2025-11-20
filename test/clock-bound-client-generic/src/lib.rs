@@ -5,6 +5,8 @@
 
 use anyhow::{Result, anyhow};
 use clap::ValueEnum;
+use clock_bound::daemon::time::Duration;
+use clock_bound::daemon::time::Instant;
 use nix::sys::time::TimeSpec;
 
 use clock_bound::client as clock_bound_client_v3;
@@ -14,7 +16,7 @@ use clock_bound_client as clock_bound_client_v2;
 const NSECS_PER_SEC: i64 = 1_000_000_000;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, serde::Serialize)]
 pub enum ClockStatus {
     Unknown = 0,
     Synchronized = 1,
@@ -108,7 +110,7 @@ impl ClockBoundClient {
     ///
     /// # Errors
     /// Returns an error if the clock bound time retrieval fails.
-    pub fn now(&mut self) -> Result<ClockBoundNowResult> {
+    fn now(&mut self) -> Result<ClockBoundNowResult> {
         match self {
             Self::ClientV2(client) => match client.now() {
                 Ok(now) => Ok(ClockBoundNowResult::from(now)),
@@ -119,5 +121,37 @@ impl ClockBoundClient {
                 Err(e) => Err(anyhow!("{e:?}")),
             },
         }
+    }
+}
+
+/// Convenience struct holding timestamp, error bound, and status.
+/// Encapsulates the output of interest from a clock bound client read.
+#[derive(Debug, serde::Serialize)]
+pub struct TimeAndBoundAndStatus {
+    pub time: Instant,
+    pub ceb: Duration,
+    pub status: ClockStatus,
+}
+impl From<ClockBoundNowResult> for TimeAndBoundAndStatus {
+    fn from(value: ClockBoundNowResult) -> Self {
+        let time = Instant::from_nanos(value.timestamp.into());
+        let ceb = Duration::from_nanos(value.ceb.into());
+        let status = value.clock_status;
+
+        TimeAndBoundAndStatus { time, ceb, status }
+    }
+}
+
+pub trait ClockBoundClientClock {
+    /// Retrieves timestamp, error bound, and status from a clock bound client clock.
+    ///
+    /// # Errors
+    /// Returns an error if clock read fails.
+    fn get_time_and_bound_and_status(&mut self) -> Result<TimeAndBoundAndStatus>;
+}
+
+impl ClockBoundClientClock for ClockBoundClient {
+    fn get_time_and_bound_and_status(&mut self) -> Result<TimeAndBoundAndStatus> {
+        Ok(TimeAndBoundAndStatus::from(self.now()?))
     }
 }

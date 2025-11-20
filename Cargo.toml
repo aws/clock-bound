@@ -12,6 +12,7 @@ members = [
   "test/clock-bound-adjust-clock",
   "test/clock-bound-adjust-clock-test",
   "test/vmclock",
+  "test/clock-bound-client-generic",
   "test/clock-bound-now",
   "test/clock-bound-phc-offset",
 ]
