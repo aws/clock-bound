@@ -95,20 +95,36 @@ impl Phc {
     ///
     /// However, after a disruption event the effects from the clock error bound and RTT can become more pronounced.
     /// This calculation stays honest with that.
+    ///
+    /// # Panics
+    /// Panics if the two events are equal
     pub fn calculate_period_with_error(&self, other: &Self) -> LocalPeriodAndError {
-        let period_bound_one = ((self.data.time - self.data.clock_error_bound)
-            - (other.data.time + other.data.clock_error_bound))
-            / (self.tsc_post - other.tsc_pre);
-        let period_bound_two = ((self.data.time + self.data.clock_error_bound)
-            - (other.data.time - other.data.clock_error_bound))
-            / (self.tsc_pre - other.tsc_post);
+        let (old, new) = if self.tsc_pre < other.tsc_pre {
+            (self, other)
+        } else {
+            (other, self)
+        };
+
+        // Unit-less error values
+        let period_error_from_ceb = (old.data.clock_error_bound + new.data.clock_error_bound)
+            .as_seconds_f64()
+            / (new.data.time - old.data.time).as_seconds_f64();
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "Durations will be a max of 2 weeks. Precision loss is minimized"
+        )]
+        let period_error_from_rtt = (old.rtt() + new.rtt()).get() as f64
+            / (2.0 * (new.tsc_midpoint() - old.tsc_midpoint()).get() as f64);
 
         let period = self.calculate_period(other);
 
-        let period_error_one = (period_bound_one.get() - period.get()).abs();
-        let period_error_two = (period_bound_two.get() - period.get()).abs();
+        // Calculates the "steepest" possible slope based off of the error bounding boxes
+        let period_shrink =
+            period.get() * ((1.0 + period_error_from_ceb) / (1.0 - period_error_from_rtt));
 
-        let error = Period::from_seconds(period_error_one.max(period_error_two));
+        // Error is the difference of the two slopes
+        let error = (period.get() - period_shrink).abs();
+        let error = Period::from_seconds(error);
 
         LocalPeriodAndError {
             period_local: period,

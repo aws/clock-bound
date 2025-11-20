@@ -113,32 +113,44 @@ impl Ntp {
     /// However, after a disruption event the effects from the clock error bound and RTT can become more pronounced.
     /// This calculation stays honest with that.
     pub fn calculate_period_with_error(&self, other: &Self) -> LocalPeriodAndError {
+        let (old, new) = if self.tsc_pre < other.tsc_pre {
+            (self, other)
+        } else {
+            (other, self)
+        };
+
         // This is the server reported clock error bound. Includes neither peer delay nor local dispersion
-        let other_server_ceb = other.data().root_dispersion + other.data().root_delay / 2;
-        let self_server_ceb = self.data().root_dispersion + self.data().root_delay / 2;
+        let old_server_ceb = old.data.root_dispersion + old.data.root_delay / 2;
+        let new_server_ceb = new.data.root_dispersion + new.data.root_delay / 2;
 
-        let self_server_midpoint = self
-            .data()
+        let old_server_midpoint = old
+            .data
             .server_recv_time
-            .midpoint(self.data().server_send_time);
-        let other_server_midpoint = other
-            .data()
+            .midpoint(old.data.server_send_time);
+        let new_server_midpoint = new
+            .data
             .server_recv_time
-            .midpoint(other.data().server_send_time);
+            .midpoint(new.data.server_send_time);
 
-        let period_bound_one = ((self_server_midpoint - self_server_ceb)
-            - (other_server_midpoint + other_server_ceb))
-            / (self.tsc_post - other.tsc_pre);
-        let period_bound_two = ((self_server_midpoint + self_server_ceb)
-            - (other_server_midpoint - other_server_ceb))
-            / (self.tsc_pre - other.tsc_post);
+        // Unit-less error values
+        let period_error_from_ceb = (old_server_ceb + new_server_ceb).as_seconds_f64()
+            / (new_server_midpoint - old_server_midpoint).as_seconds_f64();
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "Durations will be a max of 2 weeks. Precision loss is minimized"
+        )]
+        let period_error_from_rtt = (old.rtt() + new.rtt()).get() as f64
+            / (2.0 * (new.tsc_midpoint() - old.tsc_midpoint()).get() as f64);
 
         let period = self.calculate_period(other);
 
-        let period_error_one = (period_bound_one.get() - period.get()).abs();
-        let period_error_two = (period_bound_two.get() - period.get()).abs();
+        // Calculates the "steepest" possible slope based off of the error bounding boxes
+        let period_shrink =
+            period.get() * ((1.0 + period_error_from_ceb) / (1.0 - period_error_from_rtt));
 
-        let error = Period::from_seconds(period_error_one.max(period_error_two));
+        // Error is the difference of the two slopes
+        let error = (period.get() - period_shrink).abs();
+        let error = Period::from_seconds(error);
 
         LocalPeriodAndError {
             period_local: period,
