@@ -18,8 +18,15 @@ use crate::daemon::{
 /// Feed forward time synchronization algorithm for a single PHC source
 #[derive(Debug, Clone, PartialEq)]
 pub struct Phc {
-    /// Events within the current SKM (within 1024 seconds)
+    /// Events within 100 seconds.
+    ///
+    /// Used for calculation of `period_local` and `theta`
     local: event_buffer::Local<event::Phc>,
+    /// Staging data over the last 1024 seconds.
+    ///
+    /// This data is used solely to stage data before feeding
+    /// into the estimate buffer
+    staging: event_buffer::Local<event::Phc>,
     /// Best RTT values of each SKM over the last week
     estimate: event_buffer::Estimate<event::Phc>,
     /// Current calculation of [`ClockParameters`]
@@ -43,19 +50,24 @@ impl Phc {
     /// # Panics
     /// Panics if poll duration is zero or greater than or equal to 512 seconds
     pub fn new(poll_period: Duration, max_dispersion: Skew) -> Self {
+        const WINDOW: Duration = Duration::from_secs(100);
         assert!(poll_period > Duration::ZERO, "poll period must be positive");
         assert!(
-            poll_period < event_buffer::Local::<event::Phc>::SKM_WINDOW / 2,
+            poll_period < WINDOW / 2,
             "Must be able to get at least 2 samples in local buffer"
         );
-        let local_capacity =
-            event_buffer::Local::<event::Phc>::SKM_WINDOW.get() / poll_period.get();
+        let local_capacity = WINDOW.get() / poll_period.get();
 
         // unwrap: input is bound and numerator is never 0
         let local_capacity = NonZeroUsize::new(local_capacity.try_into().unwrap()).unwrap();
 
+        // unwrap: input is bound and numerator is never 0
+        let staging_capacity = event_buffer::Local::<Phc>::SKM_WINDOW.get() / poll_period.get();
+        let staging_capacity = NonZeroUsize::new(staging_capacity.try_into().unwrap()).unwrap();
+
         Self {
-            local: event_buffer::Local::new(local_capacity),
+            local: event_buffer::Local::with_window(local_capacity, WINDOW),
+            staging: event_buffer::Local::new(staging_capacity),
             estimate: event_buffer::Estimate::new(),
             clock_parameters: None,
             uncorrected_clock: None,
@@ -180,11 +192,13 @@ impl Phc {
     )]
     fn feed_internal_buffers(&mut self, event: event::Phc) -> Result<bool, FeedError<event::Phc>> {
         let event_rtt = event.rtt();
-        self.local.feed(event)?;
+        self.local.feed(event.clone())?;
+        self.staging.feed(event)?;
 
         if let Some(uc) = self.uncorrected_clock {
             self.local.expunge_old_events(uc.p_estimate);
-            if let Some(new_estimate) = self.estimate.feed(&self.local, uc.p_estimate) {
+            self.staging.expunge_old_events(uc.p_estimate);
+            if let Some(new_estimate) = self.estimate.feed(&self.staging, uc.p_estimate) {
                 tracing::info!(?new_estimate, "New value added to estimate buffer");
             }
         }
@@ -202,6 +216,7 @@ impl Phc {
         // Destructure pattern makes handling new fields mandatory
         let Self {
             local,
+            staging,
             estimate,
             clock_parameters,
             uncorrected_clock,
@@ -209,6 +224,7 @@ impl Phc {
         } = self;
 
         local.handle_disruption();
+        staging.handle_disruption();
         estimate.handle_disruption();
         *clock_parameters = None;
         *uncorrected_clock = None;
@@ -711,7 +727,7 @@ mod tests {
 
     #[test]
     fn feed_two_events() {
-        let mut ff = Phc::new(Duration::from_secs(50), Skew::from_ppm(15.0));
+        let mut ff = Phc::new(Duration::from_secs(20), Skew::from_ppm(15.0));
 
         let event1 = event::Phc::builder()
             .tsc_pre(TscCount::new(1_000_000_000))

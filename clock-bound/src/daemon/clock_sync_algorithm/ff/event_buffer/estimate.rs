@@ -145,7 +145,7 @@ impl<T: TscRtt + Clone> Estimate<T> {
         let diff = now_event_tsc_post - last_tsc_post;
         let duration = diff * period_estimate;
 
-        if duration < super::Local::<T>::SKM_WINDOW {
+        if duration < local.window() {
             // SKM window hasn't expired yet. Bail out
             None
         } else {

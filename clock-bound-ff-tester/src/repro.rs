@@ -10,7 +10,10 @@ use std::{
 use crate::events::{Scenario, v1};
 use crate::time::CbBridge;
 use clock_bound::daemon::{
-    clock_parameters::ClockParameters, event, receiver_stream::RoutableEvent,
+    clock_parameters::ClockParameters,
+    event,
+    receiver_stream::RoutableEvent,
+    time::{Duration, Instant},
 };
 
 /// Read a logfile and return all inputs and outputs from the `ClockSyncAlgorithm`
@@ -135,6 +138,40 @@ fn tester_event_from_routable(event: &RoutableEvent) -> v1::Event {
         }
         RoutableEvent::NtpSource(addr, event) => tester_event_from_cb_ntp(event, addr.to_string()),
         RoutableEvent::Phc(event) => tester_event_from_cb_phc(event, String::from("ptp_ena")),
+    }
+}
+
+#[expect(clippy::missing_panics_doc, reason = "malformed input otherwise")]
+pub fn routable_from_tester_event(event: v1::Event) -> RoutableEvent {
+    match event.variants {
+        v1::EventKind::Ntp(ntp) => {
+            let event = event::Ntp::builder()
+                .ntp_data(clock_bound::daemon::event::NtpData {
+                    server_recv_time: Instant::from_estimate(ntp.server_system_recv_time),
+                    server_send_time: Instant::from_estimate(ntp.server_system_send_time),
+                    root_delay: Duration::from_estimate(ntp.root_delay),
+                    root_dispersion: Duration::from_estimate(ntp.root_dispersion),
+                    stratum: clock_bound::daemon::event::Stratum::TWO,
+                })
+                .tsc_pre(event.client_tsc_pre_time)
+                .tsc_post(event.client_tsc_post_time)
+                .build()
+                .unwrap();
+            RoutableEvent::LinkLocal(event)
+        }
+        v1::EventKind::Phc(phc) => {
+            let event = event::Phc::builder()
+                .data(clock_bound::daemon::event::PhcData {
+                    time: Instant::from_estimate(phc.phc_time),
+                    clock_error_bound: Duration::from_estimate(phc.clock_error_bound.unwrap()),
+                })
+                .tsc_pre(event.client_tsc_pre_time)
+                .tsc_post(event.client_tsc_post_time)
+                .build()
+                .unwrap();
+            RoutableEvent::Phc(event)
+        }
+        v1::EventKind::VMClock(_) => panic!("unsupported"),
     }
 }
 

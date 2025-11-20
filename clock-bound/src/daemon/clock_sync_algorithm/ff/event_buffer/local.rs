@@ -37,6 +37,8 @@ pub struct Local<T> {
     /// If a value is less than the `min_rtt * rtt_threshold_multiplier`,
     /// then we don't add it
     rtt_threshold_multiplier: usize,
+
+    window: Duration,
 }
 
 impl<T> Local<T> {
@@ -51,6 +53,15 @@ impl<T> Local<T> {
         Self {
             inner: RingBuffer::new(capacity),
             rtt_threshold_multiplier: 5,
+            window: Self::SKM_WINDOW,
+        }
+    }
+
+    pub fn with_window(capacity: NonZeroUsize, window: Duration) -> Self {
+        Self {
+            inner: RingBuffer::new(capacity),
+            rtt_threshold_multiplier: 5,
+            window,
         }
     }
 
@@ -62,7 +73,12 @@ impl<T> Local<T> {
         Self {
             inner: RingBuffer::new(capacity),
             rtt_threshold_multiplier,
+            window: Self::SKM_WINDOW,
         }
+    }
+
+    pub fn window(&self) -> Duration {
+        self.window
     }
 
     /// Returns an iterator of events from oldest to newest
@@ -80,6 +96,7 @@ impl<T> Local<T> {
         let Self {
             inner,
             rtt_threshold_multiplier: _rtt,
+            window: _,
         } = self;
         inner.clear();
     }
@@ -129,7 +146,7 @@ impl<T: TscRtt + Debug> Local<T> {
         let now_post_tsc = head.tsc_post();
 
         // We need to calculate the corresponding TSC for an SKM window ago
-        let cutoff_tsc = now_post_tsc - (Self::SKM_WINDOW / period);
+        let cutoff_tsc = now_post_tsc - (self.window / period);
 
         // If cutoff tsc is negative, that means we booted within an SKM window seconds.
         // Log and bail
