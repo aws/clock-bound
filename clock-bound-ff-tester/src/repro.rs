@@ -1,13 +1,12 @@
 //! Convert logs into `ff-tester` types in a Scenario
 
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufRead, Read},
     path::Path,
 };
 
-use crate::events::{Scenario, v1};
+use crate::events::v1;
 use crate::time::CbBridge;
 use clock_bound::daemon::{
     clock_parameters::ClockParameters,
@@ -16,16 +15,25 @@ use clock_bound::daemon::{
     time::{Duration, Instant},
 };
 
+/// Events fed into the `ClockSyncAlgorithm`
+#[expect(clippy::large_enum_variant)]
+pub enum ReproEvent {
+    /// Feed a routable event into the clock sync algorithm
+    Feed(RoutableEvent, Option<ClockParameters>),
+    /// The application initialized.
+    Init,
+    /// A disruption event came in. Call `handle_disruption`
+    Disruption,
+}
+
 /// Read a logfile and return all inputs and outputs from the `ClockSyncAlgorithm`
 ///
 /// # Errors
 /// - Returns an error if unable to open the file.
 /// - Returns and error if unable to read values from the logfile
-pub fn scenario_from_log_file(
-    file_path: impl AsRef<Path>,
-) -> anyhow::Result<(Scenario, Vec<Option<ClockParameters>>)> {
+pub fn repro_events_from_log_file(file_path: impl AsRef<Path>) -> anyhow::Result<Vec<ReproEvent>> {
     let file = File::open(file_path)?;
-    scenario_from_reader(file)
+    repro_events_from_reader(file)
 }
 
 /// Convert a log file at `file_path` into a `ff-tester` scenario
@@ -36,13 +44,10 @@ pub fn scenario_from_log_file(
 ///
 /// # Errors
 /// Returns errors if the logfile is corrupted
-pub fn scenario_from_reader(
-    input: impl Read,
-) -> anyhow::Result<(Scenario, Vec<Option<ClockParameters>>)> {
+pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEvent>> {
     let reader = std::io::BufReader::new(input);
 
     let mut events = Vec::new();
-    let mut clock_parameters = Vec::new();
 
     for line in reader.lines() {
         let Ok(line) = line else {
@@ -57,53 +62,41 @@ pub fn scenario_from_reader(
             }
         };
 
-        let event = match line.fields.parse_event() {
-            Ok(event) => event,
-            Err(e) => {
-                tracing::warn!(line = ?line, "Could not parse event: {e}");
-                continue;
-            }
-        };
+        match &line.fields {
+            FieldEnum::Init(_init) => events.push(ReproEvent::Init),
 
-        let output = match line.fields.parse_output() {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::warn!(line = ?line, "Could not parse output: {e}");
-                continue;
-            }
-        };
+            FieldEnum::Disruption(_disruption) => events.push(ReproEvent::Disruption),
 
-        events.push(event);
-        clock_parameters.push(output);
+            FieldEnum::FeedEvent(fields) => {
+                let event = match fields.parse_event() {
+                    Ok(event) => event,
+                    Err(e) => {
+                        tracing::warn!(line = ?line, "Could not parse event: {e}");
+                        continue;
+                    }
+                };
+
+                let output = match fields.parse_output() {
+                    Ok(output) => output,
+                    Err(e) => {
+                        tracing::warn!(line = ?line, "Could not parse output: {e}");
+                        continue;
+                    }
+                };
+
+                events.push(ReproEvent::Feed(event, output));
+            }
+        }
     }
 
     if events.is_empty() {
         anyhow::bail!("No events found in log file");
     }
 
-    if clock_parameters.is_empty() {
-        anyhow::bail!("No clock parameters found in log file");
-    }
-
-    if events.len() != clock_parameters.len() {
-        anyhow::bail!("Number of events and clock parameters do not match");
-    }
-
-    let events: Vec<_> = events
-        .into_iter()
-        .map(|event| tester_event_from_routable(&event))
-        .collect();
-
-    let scenario = Scenario::V1(v1::Scenario {
-        events,
-        oscillator: None,
-        metadata: HashMap::new(),
-    });
-
-    Ok((scenario, clock_parameters))
+    Ok(events)
 }
 
-fn tester_event_from_cb_ntp(event: &event::Ntp, source_id: String) -> v1::Event {
+pub fn tester_event_from_cb_ntp(event: &event::Ntp, source_id: String) -> v1::Event {
     v1::Event {
         variants: v1::EventKind::Ntp(v1::Ntp {
             server_system_recv_time: event.data().server_recv_time.into_estimate(),
@@ -118,7 +111,7 @@ fn tester_event_from_cb_ntp(event: &event::Ntp, source_id: String) -> v1::Event 
     }
 }
 
-fn tester_event_from_cb_phc(event: &event::Phc, source_id: String) -> v1::Event {
+pub fn tester_event_from_cb_phc(event: &event::Phc, source_id: String) -> v1::Event {
     v1::Event {
         variants: v1::EventKind::Phc(v1::Phc {
             phc_time: event.data().time.into_estimate(),
@@ -131,7 +124,7 @@ fn tester_event_from_cb_phc(event: &event::Phc, source_id: String) -> v1::Event 
     }
 }
 
-fn tester_event_from_routable(event: &RoutableEvent) -> v1::Event {
+pub fn tester_event_from_routable(event: &RoutableEvent) -> v1::Event {
     match event {
         RoutableEvent::LinkLocal(event) => {
             tester_event_from_cb_ntp(event, String::from("link_local"))
@@ -181,7 +174,27 @@ pub fn routable_from_tester_event(event: v1::Event) -> RoutableEvent {
 /// to get the [`NTP event`](clock_bound::daemon::event::Ntp) and [`ClockParameters`]
 #[derive(Debug, Clone, serde::Deserialize)]
 struct Line {
-    fields: Fields,
+    fields: FieldEnum,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)] // load bearing untagged
+enum FieldEnum {
+    FeedEvent(Fields),
+    Init(Init),
+    Disruption(Disruption),
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[expect(unused, reason = "key used for deserialization")]
+struct Init {
+    init: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[expect(unused, reason = "key used for deserialization")]
+struct Disruption {
+    disruption: String,
 }
 
 /// Workaround for tracing escapes
@@ -281,16 +294,16 @@ mod tests {
     fn scenario_from_logs() {
         let example_log = include_str!("repro/test_11_06_2025.log");
 
-        let (scenario, clock_parameters) = scenario_from_reader(example_log.as_bytes()).unwrap();
+        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
 
-        assert_eq!(clock_parameters.len(), 13);
-        let Scenario::V1(scenario) = scenario;
-        assert_eq!(scenario.events.len(), 13);
-        assert!(scenario.oscillator.is_none());
-
-        let param_count = clock_parameters
+        let param_count = events
             .iter()
-            .filter_map(|params| params.as_ref())
+            .filter_map(|event| {
+                let ReproEvent::Feed(_, params) = event else {
+                    return None;
+                };
+                params.as_ref()
+            })
             .count();
         assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
     }

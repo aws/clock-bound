@@ -54,6 +54,17 @@ pub struct ClockSyncAlgorithm {
 }
 
 impl ClockSyncAlgorithm {
+    /// Logs into the reproducibility logs that the app has started
+    ///
+    /// Can be used to break-up application restarts when scanning logs
+    pub fn init_repro(&self) {
+        tracing::info!(
+            target: PRIMER_TARGET,
+            init = "CSA initialized",
+            "Clock Sync Alg started"
+        );
+    }
+
     /// Feed the clock sync algorithm with a time synchronization event
     pub fn feed(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
         #[cfg(not(test))]
@@ -208,6 +219,11 @@ impl ClockSyncAlgorithm {
         }
         selector.handle_disruption();
         tracing::info!("Handled clock disruption event");
+        tracing::info!(
+            target: PRIMER_TARGET,
+            disruption = "Disruption occurred",
+            "handled disruption"
+        );
     }
 }
 

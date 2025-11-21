@@ -175,6 +175,7 @@ impl Daemon {
 
     /// Run the daemon
     pub async fn run(mut self: Box<Self>) {
+        self.clock_sync_algorithm.init_repro();
         // Start IO polling
         self.io_front_end.spawn_all();
         self.clock_state_handle.task_tracker.spawn({

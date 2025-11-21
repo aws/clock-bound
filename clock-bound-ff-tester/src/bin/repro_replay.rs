@@ -11,8 +11,7 @@ use clock_bound::daemon::{
     selected_clock::SelectedClockSource,
 };
 use clock_bound_ff_tester::{
-    events::Scenario,
-    repro::{self, routable_from_tester_event},
+    repro::{self, ReproEvent},
     time::Skew,
 };
 
@@ -42,16 +41,23 @@ fn main() -> anyhow::Result<()> {
         .selector(Selector::new(max_dispersion))
         .build();
 
-    let scenario = repro::scenario_from_log_file(&args.logfile)?;
+    let repro_events = repro::repro_events_from_log_file(&args.logfile)?;
 
+    // needed to output new clock parameters
     daemon::subscriber::init(args.output_dir);
 
-    let Scenario::V1(scenario) = scenario.0;
-    let events = scenario.events;
-
-    for event in events {
-        let routable = routable_from_tester_event(event);
-        alg.feed(routable);
+    for event in repro_events {
+        match event {
+            ReproEvent::Init => tracing::warn!("Received init."), // TODO: Better breakdown into scenarios
+            ReproEvent::Disruption => {
+                tracing::warn!("Received disruption.");
+                alg.handle_disruption();
+            }
+            ReproEvent::Feed(event, _) => {
+                // unused result since output log directory will contain this
+                let _ = alg.feed(event);
+            }
+        }
     }
 
     Ok(())
