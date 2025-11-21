@@ -146,6 +146,7 @@ impl Daemon {
             let (tx, rx) = async_ring_buffer::create(1);
             let clock_state = ClockState::construct(
                 rx,
+                clock_disruption_receiver.clone(),
                 clock_state_cancellation_token.clone(),
                 disruption_marker,
                 clock_disruption_support_enabled,
@@ -250,17 +251,14 @@ impl Daemon {
         } = self;
 
         let ClockStateHandle {
-            clock_state, // TODO clear the buffer when the actor pattern comes in
+            clock_state: _,
             tx,
             cancellation_token: _,
             task_tracker: _,
         } = clock_state_handle;
 
         let val = clock_disruption_receiver.borrow_and_update().clone();
-        if let Some(disruption_marker) = val.disruption_marker {
-            if let Some(clock_state) = clock_state {
-                clock_state.handle_disruption(disruption_marker);
-            }
+        if val.disruption_marker.is_some() {
             tx.handle_disruption();
             clock_sync_algorithm.handle_disruption();
             receiver_stream.handle_disruption();

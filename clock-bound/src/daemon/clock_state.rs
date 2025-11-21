@@ -3,6 +3,7 @@ pub mod clock_adjust;
 pub mod clock_state_writer;
 
 use std::path::Path;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -16,6 +17,7 @@ use crate::daemon::clock_state::clock_adjust::NoopClockAdjuster;
 use crate::daemon::clock_state::clock_adjust::{ClockAdjust, ClockAdjuster};
 use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
 use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
+use crate::daemon::io::ClockDisruptionEvent;
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::subscriber::CLOCK_METRICS_TARGET;
 use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse, MonotonicRaw, RealTime};
@@ -37,6 +39,7 @@ pub(crate) struct ClockState {
     clock_adjuster: Box<dyn ClockAdjust>,
     clock_parameters: Option<ClockParameters>,
     interval: tokio::time::Interval,
+    clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     clock_params_receiver: Receiver<ClockParameters>,
     cancellation_token: CancellationToken,
 }
@@ -46,6 +49,7 @@ impl ClockState {
         clock_state_writer: Box<dyn ClockStateWrite>,
         clock_adjuster: Box<dyn ClockAdjust>,
         clock_params_receiver: Receiver<ClockParameters>,
+        clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         cancellation_token: CancellationToken,
     ) -> Self {
         let interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
@@ -54,6 +58,7 @@ impl ClockState {
             clock_adjuster,
             interval,
             clock_params_receiver,
+            clock_disruption_receiver,
             clock_parameters: None,
             cancellation_token,
         }
@@ -61,6 +66,7 @@ impl ClockState {
 
     pub fn construct(
         clock_params_receiver: Receiver<ClockParameters>,
+        clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         cancellation_token: CancellationToken,
         disruption_marker: u64,
         clock_disruption_support_enabled: bool,
@@ -104,6 +110,7 @@ impl ClockState {
             Box::new(clock_state_writer),
             Box::new(clock_adjuster),
             clock_params_receiver,
+            clock_disruption_receiver,
             cancellation_token,
         )
     }
@@ -121,14 +128,18 @@ impl ClockState {
         self.state_writer.initialize_ceb_v2_shm();
         loop {
             tokio::select! {
+                biased; // biased to ensure disruption is handled first when this happens
+                Ok(()) = self.clock_disruption_receiver.changed() => {
+                    self.handle_disruption();
+                }
+                params = self.clock_params_receiver.recv() => {
+                    self.handle_clock_parameters(params.unwrap()); // todo fixme
+                },
                 _ = clock_offset_metric_interval.tick() => {
                     self.emit_clock_offsets();
                 },
                 now = self.interval.tick() => {
                     self.handle_tick(now);
-                },
-                params = self.clock_params_receiver.recv() => {
-                    self.handle_clock_parameters(params.unwrap()); // todo fixme
                 },
                 () = self.cancellation_token.cancelled() => {
                     // nothing fancy for now. just exit
@@ -235,7 +246,7 @@ impl ClockState {
     /// Call this function after the system detects a VMClock disruption event.
     ///
     /// It will go through and clear the state (like startup).
-    pub fn handle_disruption(&mut self, new_disruption_marker: u64) {
+    pub fn handle_disruption(&mut self) {
         // Use the destructure pattern to get a mutable reference to each item.
         //
         // This makes it a compilation error if we add a new field this Self without handling it here
@@ -243,21 +254,25 @@ impl ClockState {
             clock_adjuster,
             state_writer: clock_state_writer,
             clock_params_receiver,
+            clock_disruption_receiver,
             interval: _,
             clock_parameters,
             cancellation_token: _,
         } = self;
 
-        // Update the clock status on the shared memory segments
-        if let Some(params) = clock_parameters {
-            clock_state_writer.handle_disruption(params, new_disruption_marker);
+        let val = clock_disruption_receiver.borrow_and_update().clone();
+        if let Some(disruption_marker) = val.disruption_marker {
+            // Update the clock status on the shared memory segments
+            if let Some(params) = clock_parameters {
+                clock_state_writer.handle_disruption(params, disruption_marker);
+            }
+
+            *clock_parameters = None;
+            clock_params_receiver.handle_disruption();
+            clock_adjuster.handle_disruption(disruption_marker);
+
+            tracing::info!("Handled clock disruption event");
         }
-
-        *clock_parameters = None;
-        clock_params_receiver.handle_disruption();
-        clock_adjuster.handle_disruption(new_disruption_marker);
-
-        tracing::info!("Handled clock disruption event");
     }
 }
 
@@ -304,10 +319,14 @@ mod tests {
             .never();
 
         let (_tx, rx) = async_ring_buffer::create(1);
+        let (_, clock_disruption_receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
+
         let mut clock_state = ClockState::new(
             Box::new(mock_clock_state_writer),
             Box::new(mock_clock_adjuster),
             rx,
+            clock_disruption_receiver,
             cancellation_token,
         );
         assert_eq!(clock_state.clock_parameters, None);
@@ -343,15 +362,23 @@ mod tests {
             })
             .return_const(());
         let (_tx, rx) = async_ring_buffer::create(1);
+        let (clock_disruption_sender, clock_disruption_receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         let mut clock_state = ClockState::new(
             Box::new(mock_clock_state_writer),
             Box::new(mock_clock_adjuster),
             rx,
+            clock_disruption_receiver,
             cancellation_token,
         );
         clock_state.clock_parameters = Some(clock_parameters);
 
-        clock_state.handle_disruption(disruption_marker);
+        clock_disruption_sender
+            .send(ClockDisruptionEvent {
+                disruption_marker: Some(disruption_marker),
+            })
+            .unwrap();
+        clock_state.handle_disruption();
     }
 
     #[tokio::test]
@@ -373,10 +400,13 @@ mod tests {
             .never();
 
         let (_tx, rx) = async_ring_buffer::create(1);
+        let (_, clock_disruption_receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         let mut clock_state = ClockState::new(
             Box::new(mock_clock_state_writer),
             Box::new(mock_clock_adjuster),
             rx,
+            clock_disruption_receiver,
             cancellation_token,
         );
         clock_state.clock_parameters = None;
@@ -439,10 +469,13 @@ mod tests {
             .return_const(());
 
         let (_tx, rx) = async_ring_buffer::create(1);
+        let (_, clock_disruption_receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         let mut clock_state = ClockState::new(
             Box::new(mock_clock_state_writer),
             Box::new(mock_clock_adjuster),
             rx,
+            clock_disruption_receiver,
             cancellation_token,
         );
         clock_state.clock_parameters = Some(expected_clock_params);
@@ -498,6 +531,8 @@ mod tests {
     ) {
         let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
+        let (_, clock_disruption_receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         mock_clock_adjuster
             .expect_get_clock_realtime_status()
             .once()
@@ -506,6 +541,7 @@ mod tests {
             Box::new(MockClockStateWrite::new()),
             Box::new(mock_clock_adjuster),
             async_ring_buffer::create(1).1,
+            clock_disruption_receiver,
             cancellation_token,
         );
 
