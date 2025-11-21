@@ -1,12 +1,18 @@
 //! Struct holding instance type meta data
+use bytes::Bytes;
 use core::str;
-
+use reqwest::{Client, Response};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::time::timeout;
+use tokio_retry::{
+    Retry,
+    strategy::{ExponentialBackoff, jitter},
+};
+use tracing::warn;
 
 #[derive(Debug, Error)]
-pub enum InstanceTypeError {
+pub enum IMDSError {
     #[error("Failed to parse into json.")]
     Serde(#[from] serde_json::Error),
     #[error("Reqwest error")]
@@ -30,37 +36,75 @@ impl InstanceType {
     const IMDS_ORIGIN: &'static str = "http://169.254.169.254";
     const IMDS_TIMEOUT_DURATION: Duration = Duration::from_secs(1);
 
-    #[cfg(test)]
-    pub async fn get_from_imds() -> Result<Self, InstanceTypeError> {
-        // Setting InstanceType explicitly to prevent unit tests from attempting to reach out to
-        // imds.
-        Ok(InstanceType("m7i.xlarge".to_string()))
-    }
-
     /// Request and parse info using the [IMDSv2 API]
     ///
     /// [IMDSv2 API]: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
-    #[cfg(not(test))]
-    pub async fn get_from_imds() -> Result<Self, InstanceTypeError> {
+    pub async fn get_from_imds() -> Result<Self, IMDSError> {
+        const MAX_REQUESTS: usize = 4;
         let client = reqwest::Client::new();
 
+        let retry_strategy = ExponentialBackoff::from_millis(10)
+            .map(jitter)
+            .take(MAX_REQUESTS);
+
         // get session token
-        let response = timeout(
+        let token_response = Retry::spawn(retry_strategy.clone(), || {
+            Self::execute_imds_token_request(&client)
+        })
+        .await?;
+
+        let token = token_response.bytes().await?;
+
+        // // get actual metadata
+        let instance_type_response = Retry::spawn(retry_strategy.clone(), || {
+            Self::execute_imds_instance_type_request(&client, token.clone())
+        })
+        .await?;
+
+        let instance_type_bytes = instance_type_response.bytes().await?;
+        let instance_type = str::from_utf8(&instance_type_bytes)?;
+
+        Ok(Self(instance_type.to_string()))
+    }
+
+    // Uses instance metadata to determine if instance is bare metal.
+    pub fn is_metal(&self) -> bool {
+        self.0.contains("metal")
+    }
+
+    /// Executes an IMDS request for an authentication token and returns the result
+    async fn execute_imds_token_request(client: &Client) -> Result<Response, IMDSError> {
+        let response_result = match timeout(
             Self::IMDS_TIMEOUT_DURATION,
             client
                 .put(format!("{}/latest/api/token", Self::IMDS_ORIGIN))
                 .header("X-aws-ec2-metadata-token-ttl-seconds", "21600")
                 .send(),
         )
-        .await??;
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                warn!("Timeout for IMDS request breached. Retrying.");
+                Err(IMDSError::Timeout(e))?
+            }
+        };
 
-        if !response.status().is_success() {
-            return Err(InstanceTypeError::ReceiveToken);
+        match response_result {
+            Ok(response) => Ok(response),
+            Err(e) => {
+                warn!("Error returned by IMDS request: {}. Retrying.", e);
+                Err(IMDSError::ReceiveToken)
+            }
         }
-        let token = response.bytes().await?;
+    }
 
-        // get actual metadata
-        let response = timeout(
+    /// Executes an IMDS request for instance type metadata and returns the result
+    async fn execute_imds_instance_type_request(
+        client: &Client,
+        token: Bytes,
+    ) -> Result<Response, IMDSError> {
+        let response_result = match timeout(
             Self::IMDS_TIMEOUT_DURATION,
             client
                 .get(format!(
@@ -70,35 +114,28 @@ impl InstanceType {
                 .header("X-aws-ec2-metadata-token", &*token)
                 .send(),
         )
-        .await??;
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                warn!("Timeout for IMDS request breached. Retrying.");
+                Err(IMDSError::Timeout(e))?
+            }
+        };
 
-        if !response.status().is_success() {
-            return Err(InstanceTypeError::ReceiveImds);
+        match response_result {
+            Ok(response) => Ok(response),
+            Err(e) => {
+                warn!("Error returned by IMDS request: {}. Retrying.", e);
+                Err(IMDSError::ReceiveToken)
+            }
         }
-        let bytes = response.bytes().await?;
-
-        let contents = str::from_utf8(&bytes)?;
-
-        Ok(Self(contents.to_string()))
-    }
-
-    // Uses instance metadata to determine if instance is bare metal.
-    pub fn is_metal(&self) -> bool {
-        self.0.contains("metal")
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-
-    // This tests does NOT reach out to IMDS. Instead it uses `get_from_imds` specific to the test
-    // binary which returns a hard coded value, `m7i.xlarge`.
-    #[tokio::test]
-    async fn from_imds() {
-        let instance_type = InstanceType::get_from_imds().await.unwrap();
-        println!("{:?}", instance_type);
-    }
 
     #[test]
     fn metal_instance() {
