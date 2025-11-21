@@ -343,6 +343,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "thiserror 2.0.17",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -404,7 +405,6 @@ dependencies = [
 name = "clock-bound-phc-offset"
 version = "2.0.3"
 dependencies = [
- "anyhow",
  "clap",
  "clock-bound",
  "clock-bound-client-generic",

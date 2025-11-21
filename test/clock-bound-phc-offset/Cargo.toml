@@ -17,7 +17,6 @@ name = "clock-bound-phc-offset"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.100"
 clock-bound-client-generic = { version = "2.0", path = "../clock-bound-client-generic" }
 clock-bound = { version = "2.0", path = "../../clock-bound", features = [
   "daemon",

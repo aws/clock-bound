@@ -2,7 +2,6 @@
 //!
 //! This executable compares specific clocks against timestamps read from the PHC.
 
-use anyhow::Result;
 use clap::{Parser, ValueEnum};
 
 use clock_bound::daemon::time::clocks::{MonotonicRaw, RealTime};
@@ -24,13 +23,8 @@ struct Args {
     clock: ClockToCompare,
 }
 
-fn emit_logs<T: serde::Serialize>(clock: ClockToCompare, result: Result<T>) {
-    match result {
-        Ok(data) => println!("{}", serde_json::to_string(&data).unwrap()),
-        Err(e) => tracing::error!(
-            "Failed to retrieve data from {clock:?} Clock <-> PHC comparison: {e:?}"
-        ),
-    }
+fn emit_logs<T: serde::Serialize>(data: T) {
+    println!("{}", serde_json::to_string(&data).unwrap());
 }
 
 fn main() {
@@ -42,27 +36,17 @@ fn main() {
         autoconfigure_phc_reader().expect("failed to create PHC reader via autoconfiguration");
 
     match clock {
-        ClockToCompare::RealTime => emit_logs(
-            ClockToCompare::RealTime,
-            phc_reader.get_offset_from_utc_clock(&RealTime),
-        ),
-        ClockToCompare::MonotonicRaw => emit_logs(
-            ClockToCompare::MonotonicRaw,
-            phc_reader.get_offset_from_utc_clock(&MonotonicRaw),
-        ),
+        ClockToCompare::RealTime => emit_logs(phc_reader.get_offset_from_utc_clock(&RealTime)),
+        ClockToCompare::MonotonicRaw => {
+            emit_logs(phc_reader.get_offset_from_utc_clock(&MonotonicRaw));
+        }
         ClockToCompare::ClockBoundClientV2 => {
             let mut client = ClockBoundClient::new(ClockBoundClientVersion::V2);
-            emit_logs(
-                ClockToCompare::ClockBoundClientV2,
-                phc_reader.compare_to_clock_bound_client_clock(&mut client),
-            );
+            emit_logs(phc_reader.compare_to_clock_bound_client_clock(&mut client));
         }
         ClockToCompare::ClockBoundClientV3 => {
             let mut client = ClockBoundClient::new(ClockBoundClientVersion::V3);
-            emit_logs(
-                ClockToCompare::ClockBoundClientV2,
-                phc_reader.compare_to_clock_bound_client_clock(&mut client),
-            );
+            emit_logs(phc_reader.compare_to_clock_bound_client_clock(&mut client));
         }
     }
 }

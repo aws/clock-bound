@@ -1,6 +1,15 @@
-use anyhow::{Context, Result};
 use clock_bound::daemon::time::Duration;
 use std::path::PathBuf;
+
+use thiserror::Error;
+
+#[derive(Error, Debug, Clone, serde::Serialize)]
+pub enum CebReadError {
+    #[error("failed to read phc errror bound path to string: `{0}`")]
+    Io(String),
+    #[error("failed to parse PHC error bound value to i64: `{0}`")]
+    ParseInt(String),
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct PhcClockErrorBoundReader {
@@ -14,13 +23,13 @@ impl PhcClockErrorBoundReader {
         }
     }
 
-    pub fn read(&self) -> Result<Duration> {
+    pub fn read(&self) -> Result<Duration, CebReadError> {
         let contents = std::fs::read_to_string(&self.sysfs_phc_error_bound_path)
-            .context("failed to read phc errror bound path to string")?;
+            .map_err(|e| CebReadError::Io(e.to_string()))?;
         let nanos = contents
             .trim()
             .parse::<i64>()
-            .context("failed to parse PHC error bound value to i64")?;
+            .map_err(|e| CebReadError::ParseInt(e.to_string()))?;
         Ok(Duration::from_nanos(nanos.into()))
     }
 }

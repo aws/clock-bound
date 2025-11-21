@@ -3,7 +3,6 @@
 //! This library intentionally imports the `clock_bound_client` v2.0 crate to fully simulate/validate backward compatibility
 //! between v2.0 clients and v3.0 daemon.
 
-use anyhow::{Result, anyhow};
 use clap::ValueEnum;
 use clock_bound::daemon::time::Duration;
 use clock_bound::daemon::time::Instant;
@@ -14,6 +13,16 @@ use clock_bound::shm as clockbound_shm_v3;
 use clock_bound_client as clock_bound_client_v2;
 
 const NSECS_PER_SEC: i64 = 1_000_000_000;
+
+use thiserror::Error;
+
+#[derive(Error, Clone, Debug, serde::Serialize)]
+pub enum ClockBoundClientError {
+    #[error("clockbound client v2 read failed.")]
+    V2Error,
+    #[error("clockbound client v3 read failed.")]
+    V3Error,
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, serde::Serialize)]
@@ -110,23 +119,21 @@ impl ClockBoundClient {
     ///
     /// # Errors
     /// Returns an error if the clock bound time retrieval fails.
-    fn now(&mut self) -> Result<ClockBoundNowResult> {
+    fn now(&mut self) -> Result<ClockBoundNowResult, ClockBoundClientError> {
         match self {
-            Self::ClientV2(client) => match client.now() {
-                Ok(now) => Ok(ClockBoundNowResult::from(now)),
-                Err(e) => Err(anyhow!("{e:?}")),
-            },
-            Self::ClientV3(client) => match client.now() {
-                Ok(now) => Ok(ClockBoundNowResult::from(now)),
-                Err(e) => Err(anyhow!("{e:?}")),
-            },
+            Self::ClientV2(client) => Ok(ClockBoundNowResult::from(
+                client.now().map_err(|_| ClockBoundClientError::V2Error)?,
+            )),
+            Self::ClientV3(client) => Ok(ClockBoundNowResult::from(
+                client.now().map_err(|_| ClockBoundClientError::V3Error)?,
+            )),
         }
     }
 }
 
 /// Convenience struct holding timestamp, error bound, and status.
 /// Encapsulates the output of interest from a clock bound client read.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TimeAndBoundAndStatus {
     pub time: Instant,
     pub ceb: Duration,
@@ -147,11 +154,15 @@ pub trait ClockBoundClientClock {
     ///
     /// # Errors
     /// Returns an error if clock read fails.
-    fn get_time_and_bound_and_status(&mut self) -> Result<TimeAndBoundAndStatus>;
+    fn get_time_and_bound_and_status(
+        &mut self,
+    ) -> Result<TimeAndBoundAndStatus, ClockBoundClientError>;
 }
 
 impl ClockBoundClientClock for ClockBoundClient {
-    fn get_time_and_bound_and_status(&mut self) -> Result<TimeAndBoundAndStatus> {
+    fn get_time_and_bound_and_status(
+        &mut self,
+    ) -> Result<TimeAndBoundAndStatus, ClockBoundClientError> {
         Ok(TimeAndBoundAndStatus::from(self.now()?))
     }
 }
