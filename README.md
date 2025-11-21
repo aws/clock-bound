@@ -2,13 +2,52 @@
 
 ## Summary
 
-ClockBound allows you to generate and compare bounded timestamps that include accumulated error as reported from the local chronyd process. On every request, ClockBound uses two pieces of information: the current time and the associated absolute error range, which is also known as the clock error bound. This means that the “true” time of a ClockBound timestamp is within a set range.
+ClockBound is a solution to synchronize your Operating System clock and determine a consistent order of events across
+distributed nodes.
 
-Using ClockBound with a consistent, trusted time service will allow you to compare timestamps to determine order and consistency for events and transactions, independent from the instances’ respective geographic locations. We recommend you use the Amazon Time Sync Service,  a highly accurate and reliable time reference that is natively accessible from Amazon EC2 instances, to get the most out of ClockBound on your AWS infrastructure. For more information on the Amazon Time Sync Service and configuration with PTP Hardware Clocks or the NTP endpoints, see the [EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/set-time.html).
+Most users will be interested in the ClockBound daemon and library as a cohesive system:
 
-## Calculations
+- The clockbound daemon that keeps the system clock synchronized by accessing local PTP Hardware Clock (PHC) device or
+  NTP sources, and offers extra information over a shared memory segment.
+- The libclockbound library that offers a clockbound client to timestamp events with rich information, reading from the clockbound daemon.
 
-Clock accuracy is a measure of clock error, typically defined as the offset to UTC. This clock error is the difference between the observed time on the computer and reference time (also known as true time). In NTP architecture, this error can be bounded using three measurements that are defined by the protocol:
+Optionally, the clockbound-ff-tester let's you simulate or replay previous runs of the daemons to assess its correctness.
+
+To determine a consistent order of events across nodes, applications must use the client offered by libclockbound. For
+every event of interest the client reports a window of uncertainty and the status of the clockbound daemon:
+
+- The window of uncertainty (the Clock Error Bound) is defined by two timestamps (earliest, latest) within which true time exists.
+- The status is a code indicated whether the daemon is synchronized, free running, etc.
+
+Using ClockBound with a consistent, trusted time service will allow you to compare timestamps to determine order and
+consistency for events and transactions, independent from the nodes respective geographic locations.
+
+We recommend you use the Amazon Time Sync Service, a highly accurate and reliable time reference that is natively
+accessible from Amazon EC2 instances, to get the most out of ClockBound on your AWS infrastructure. For more information
+on the Amazon Time Sync Service and configuration with PTP Hardware Clocks or the NTP endpoints, see the
+[EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/set-time.html).
+
+Note that the clockbound daemon automatically detects and configure the reference time sources available.
+
+## Reasons to use ClockBound
+
+- Distributed System Consistency: Make reliable ordering decisions for events across geographically distributed systems
+- Bounded Uncertainty: Get timestamps with error bounds to support your application business logic
+- High Performance: Access time information through efficient shared memory without system calls
+- Multiple Time Sources: Leverage NTP, PHC, and VMClock sources for robust time synchronization
+- AWS Integration: Optimized for use with Amazon Time Sync Service on EC2 instances
+
+## The Clock Error Bound
+
+The Clock Error Bound is a measure of clock accuracy. It is defined against reference time (UTC time, an idealized "true
+time"), and represents the maximum difference between the local time on your computer and the reference time.
+
+The ClockBound daemon and client implement the calculation of this bound, which accounts for the clock error that
+accumulates between reliable reference clocks and your computer. Reference clocks currently supported include Network
+Time Protocol (NTP) servers, a local PTP Hardware Clock (PHC) device, or a VMClock device if available.
+
+ClockBound implements a calculation that is specific to each type of reference clock. For NTP sources, for example, the
+clock error bound relies on three measurements defined by the protocol:
 
 - Local offset (the system time): The residual adjustment to be applied to the operating system clock.
 - Root dispersion: The accumulation of clock drift at each NTP server on the path to the reference clock.
@@ -18,31 +57,93 @@ The clock error bound is calculated using the formula below:
 
 > Clock Error Bound = |Local Offset| + Root Dispersion + (Root Delay / 2)
 
+The window of uncertainty is defined as the time reported by the clockbound daemon +/- the clock error bound.
+
+The figure below illustrates how the clock error bound grows in between clock updates. At any point, a clockbound client
+can read a pair of timestamps that bound the clock error.
+
 ![Clock Error Bound Image](docs/assets/ClockErrorBound.png)
 
-Figure 1: The Clock Error Bound provides a bound on the worst case offset of a clock with regard to “true time”.
+Figure 1: The Clock Error Bound provides a bound on the local clock error with regard to “true time”.
 
-The combination of local offset, root dispersion, and root delay provides us with a clock error bound. For a given reading of the clock C(t) at true time t, this bound makes sure that true time exists within the clock error bound. The clock error bound is used as a proxy for clock accuracy and measures the worst case scenario (see Figure 1). Therefore, clock error bound is the main metric used to determine the accuracy of a NTP service.
+Note that ClockBound reports on clock accuracy is not a clock offset against the sources it tracks to keep your local
+clock synchronized. Instead, it reports on the worse case scenario: the sum of all errors from reference time to your
+computer. Therefore, the clock error bound is a general metric to compare timestamps across nodes, independent from
+their location or the synchronization protocol they use.
 
-ClockBound uses this clock error bound to return a bounded range of timestamps. This is calculated by adding and subtracting the clock error bound from the timestamp provided by a system's clock. It also contains functionality to check if a given timestamp is in the past or future. This allows users to have consistency when dealing with time sensitive transactions.
+## Getting Started
 
-## Usage
+To use ClockBound, you must run the ClockBound daemon and make use of a ClockBound client to communicate with
+the daemon. ClockBound clients are provided as a Rust crate and C library.
 
-To be able to use ClockBound, you must run the ClockBound daemon and make use of a ClockBound client to communicate with the daemon. ClockBound clients are provided as a C library and as a Rust library.
+### Install the daemon using release binaries
 
-[ClockBound Daemon](clock-bound-d/README.md) - A daemon to provide clients with an error bounded timestamp interval.
+Download pre-built binaries from the GitHub releases page. The releases include RPM packages for x86_64 Linux and
+aarch64 Linux architectures.
 
-[ClockBound Client FFI](clock-bound-ffi/README.md) - A C client library to communicate with ClockBound daemon.
+```bash
+# Install RPM package (RHEL/CentOS/Amazon Linux)
+sudo rpm -i clockbound-*.rpm
 
-[ClockBound Client Rust](clock-bound-client/README.md) - A Rust client library to communicate with ClockBound daemon.
+# Start the daemon
+sudo systemctl enable clockbound
+sudo systemctl start clockbound
+```
 
-Please see the respective README.md files for information about how to get these set up.
+More information on the daemon can be found here in [ClockBound Daemon](docs/clockbound-daemon.md) - A daemon to provide
+clients with an error bounded timestamp interval.
 
-### Custom Client
+### Use the rust client
 
-The [ClockBound Protocol](docs/PROTOCOL.md) is provided if there is interest in creating a custom client.
+Set up your application's `Cargo.toml` so it looks like this:
+
+```toml
+[dependencies]
+clock-bound = "3.0.0-alpha.0"
+```
+
+And then the code:
+
+```rust
+use clock_bound::client::ClockBoundClient;
+
+let mut client = ClockBoundClient::new()?;
+let result = client.now()?;
+println!("Time range: {:?} to {:?}", result.earliest, result.latest);
+```
+
+For more information on the rust client, check out [ClockBound Client Rust](docs/rust-client.md) - A Rust client crate
+to create bounded timestamps synchronized by the ClockBound daemon. (Or better yet, we should just move this info into
+the docs.rs page)
+
+#### C Client
+
+```c
+#include <clockbound.h>
+
+clockbound_now_result now;
+clockbound_err cb_err;
+clockbound_ctx *ctx;
+
+ctx = clockbound_open(&cb_err);
+
+clockbound_now(ctx, &now, &cb_err);
+
+printf("Time range: %ld.%09ld to %ld.%09ld\n",
+       now.earliest.tv_sec, now.earliest.tv_nsec,
+       now.latest.tv_sec, now.latest.tv_nsec);
+```
+
+For more information see [ClockBound FFI library](docs/clockbound-ffi.md) - A C client library to create bounded
+timestamps synchronized by the ClockBound daemon, and examples provided.
+
+#### Custom Client
+
+The [ClockBound Protocol](docs/PROTOCOL.md) is provided so that one can create custom clients.
 
 Clients can be created in any programming language that can read from a shared memory segment that is backed by a file.
+[ClockBound Protocol](docs/protocol.md) - Reference provided to create a custom client. Clients can be created in any
+programming language that can read from a shared memory segment that is backed by a file.
 
 ## Security
 
@@ -50,9 +151,10 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 
 ## License
 
-clock-bound-d is licensed under the [GPL v2 LICENSE](clock-bound-d/LICENSE).
+This project is distributed under the following 2 licenses:
 
-clock-bound-ffi is licensed under the [Apache 2.0 LICENSE](clock-bound-ffi/LICENSE).
+- MIT License
+- Apache License 2.0
 
-clock-bound-client is licensed under the [Apache 2.0 LICENSE](clock-bound-client/LICENSE).
-
+These are included as LICENSE.MIT and LICENSE.Apache-2.0 respectively. You may use this software under the terms of any
+of these licenses, at your option.
