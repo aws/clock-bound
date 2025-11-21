@@ -548,6 +548,7 @@ impl Phc {
                         break;
                     }
                     // Clock Disruption logic here
+                    info!("Received clock disruption signal.");
                     self.handle_disruption();
                 }
                 ctrl_req = self.ctrl_receiver.recv() => {

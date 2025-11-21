@@ -147,6 +147,7 @@ impl NTPSource {
                         tracing::error!(?e, "Clock disruption receiver dropped.");
                         break;
                     }
+                    info!("Received clock disruption signal.");
                     self.handle_disruption();
                 }
                 ctrl_req = self.ctrl_receiver.recv() => {

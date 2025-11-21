@@ -6,7 +6,7 @@ use tokio::{
     sync::{mpsc, watch},
     time::{Duration, Interval, MissedTickBehavior, interval},
 };
-use tracing::{debug, info};
+use tracing::{info, warn};
 
 use crate::shm::ShmError;
 use crate::vmclock::{shm::VMClockShmBody, shm_reader::VMClockShmReader};
@@ -142,10 +142,10 @@ impl VMClock {
                         Ok(s) => {
                             if let ClockDisruptionStatus::Disrupted(disruption_marker) = s {
                                 self.clock_disruption_sender.send(ClockDisruptionEvent{ disruption_marker: Some(disruption_marker)}).unwrap();
-                                debug!(?self, "A clock disruption event occurred and a disruption event was sent.");
+                                info!(?self, "A clock disruption event occurred and a disruption event was sent.");
                             }
                         },
-                        Err(e) => debug!(?e, "Failed to sample the VMClock.")
+                        Err(e) => warn!(?e, "Failed to sample the VMClock.")
                     }
                 }
                 ctrl_req = self.ctrl_receiver.recv() => {
