@@ -171,6 +171,8 @@ pub struct Phc {
     reader: PhcReader,
     /// Reader for the PTP hardware clock (PHC) clock error bound.
     clock_error_bound_reader: PhcClockErrorBoundReader,
+    /// Path to the PHC device.
+    device_path: String,
 }
 
 impl Phc {
@@ -184,7 +186,8 @@ impl Phc {
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     ) -> Result<Self, PhcError> {
-        let (phc_reader, phc_clock_error_bound_reader) = Self::autoconfigure_phc_readers().await?;
+        let (phc_reader, phc_clock_error_bound_reader, device_path) =
+            Self::autoconfigure_phc_readers().await?;
         let mut phc_interval = interval(PHC_SOURCE_INTERVAL_DURATION);
         phc_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -195,7 +198,13 @@ impl Phc {
             interval: phc_interval,
             reader: phc_reader,
             clock_error_bound_reader: phc_clock_error_bound_reader,
+            device_path,
         })
+    }
+
+    /// Getter for `device_path`
+    pub fn device_path(&self) -> &str {
+        &self.device_path
     }
 
     /// Attempts to autoconfigure readers for the PHC and PHC clock error bound
@@ -203,6 +212,8 @@ impl Phc {
     ///
     /// If there are no eligible PTP devices found then a `PhcError::PtpDeviceNotFound`
     /// will be returned in the Result.
+    ///
+    /// Returns the Phc Reader, the Phc Clock Error Bound Reader, and the selected ptp device path
     #[expect(
         clippy::too_many_lines,
         reason = "This function is already refactored to call
@@ -211,7 +222,7 @@ impl Phc {
         approaches would make the code harder to follow than the current implementation."
     )]
     pub async fn autoconfigure_phc_readers()
-    -> Result<(PhcReader, PhcClockErrorBoundReader), PhcError> {
+    -> Result<(PhcReader, PhcClockErrorBoundReader, String), PhcError> {
         // Get the list of network interfaces.
         let network_interfaces = match get_network_interfaces().await {
             Ok(network_interfaces) => network_interfaces,
@@ -391,7 +402,9 @@ impl Phc {
         // There is at least one PTP device available to use.
         // Use the first PTP device in the vec.
         if let Some((ptp_device_path, phc_clock_error_bound_sysfs_path)) =
-            ptp_device_path_and_phc_clock_error_bound_sysfs_path_vec.first()
+            ptp_device_path_and_phc_clock_error_bound_sysfs_path_vec
+                .into_iter()
+                .next()
         {
             info!(
                 ?ptp_device_path,
@@ -412,14 +425,14 @@ impl Phc {
 
             let phc_reader: PhcReader = PhcReader::new(ptp_device_file);
             let phc_clock_error_bound_reader: PhcClockErrorBoundReader =
-                PhcClockErrorBoundReader::new(PathBuf::from(phc_clock_error_bound_sysfs_path));
+                PhcClockErrorBoundReader::new(PathBuf::from(&phc_clock_error_bound_sysfs_path));
 
             info!(
                 ?ptp_device_path,
                 ?phc_clock_error_bound_sysfs_path,
                 "Done configuring PHC readers"
             );
-            Ok((phc_reader, phc_clock_error_bound_reader))
+            Ok((phc_reader, phc_clock_error_bound_reader, ptp_device_path))
         } else {
             Err(PhcError::PtpDeviceNotFound(
                 "No eligible PTP devices found".to_string(),

@@ -185,6 +185,13 @@ impl SourceIO {
         info!("Source PHC update complete.");
     }
 
+    pub fn phc(&self) -> Option<&Phc> {
+        self.phc.as_ref().and_then(|s| match &s.state {
+            SourceState::Initialized(phc) => Some(phc),
+            SourceState::Running => None,
+        })
+    }
+
     /// Returns true if a PHC source exists (has been created).
     pub fn phc_exists(&self) -> bool {
         self.phc.is_some()

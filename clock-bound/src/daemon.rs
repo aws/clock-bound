@@ -40,7 +40,7 @@ use tokio_util::task::TaskTracker;
 use rand::{RngCore, rng};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info};
 
 /// The maximum dispersion growth every second
 ///
@@ -111,15 +111,12 @@ impl Daemon {
 
         // Note: Failure to create a PHC IO component here is considered non-fatal,
         // we will continue without using the device as an clock sync input.
-        let phc = if io_front_end.phc_exists() {
-            Some(clock_sync_algorithm::source::Phc::new(
-                std::path::PathBuf::new(), //TODO: propagate actual device path.
+        let phc = io_front_end.phc().map(|io_phc| {
+            clock_sync_algorithm::source::Phc::new(
+                io_phc.device_path().to_owned(),
                 MAX_DISPERSION_GROWTH,
-            ))
-        } else {
-            warn!("PHC source failed creation. Continuing without it.");
-            None
-        };
+            )
+        });
         let phc_rx = if io_front_end.phc_exists() {
             Some(phc_rx)
         } else {
@@ -225,13 +222,13 @@ impl Daemon {
                 Ok(()) => (),
                 Err(SendError::Disrupted(clock_parameters)) => {
                     // don't handle_disruption. It will be handled on the next call of tokio::select
-                    tracing::info!(
+                    info!(
                         ?clock_parameters,
                         "Trying to send a value when there was a disruption event. dropping."
                     );
                 }
                 Err(SendError::BufferClosed(e)) => {
-                    tracing::error!(
+                    error!(
                         ?e,
                         "Trying to send a value when the buffer is closed. Panicking."
                     );
