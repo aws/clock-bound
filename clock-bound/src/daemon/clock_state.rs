@@ -63,6 +63,7 @@ impl ClockState {
         clock_params_receiver: Receiver<ClockParameters>,
         cancellation_token: CancellationToken,
         disruption_marker: u64,
+        clock_disruption_support_enabled: bool,
     ) -> Self {
         // Build two writers, each writing to a specific shared memory segment path.
         //
@@ -86,7 +87,7 @@ impl ClockState {
         let safe_shm_writer_1 = SafeShmWriter::new(shm_writer_1);
 
         let clock_state_writer: ClockStateWriter<SafeShmWriter> = ClockStateWriter::builder()
-            .clock_disruption_support_enabled(true)
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
             .shm_writer_0(safe_shm_writer_0)
             .shm_writer_1(safe_shm_writer_1)
             .max_drift_ppb(MAX_DISPERSION_GROWTH_PPB)

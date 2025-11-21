@@ -103,6 +103,7 @@ impl Daemon {
             .vmclock()
             .map(|vmclock| vmclock.last_disruption_marker())
             .unwrap_or_default();
+        let clock_disruption_support_enabled = io_front_end.vmclock().is_some();
 
         // Initialize PHC event buffer and IO component.
         let (phc_tx, phc_rx) = async_ring_buffer::create(2);
@@ -150,6 +151,7 @@ impl Daemon {
                 rx,
                 clock_state_cancellation_token.clone(),
                 disruption_marker,
+                clock_disruption_support_enabled,
             );
             (tx, clock_state)
         };
