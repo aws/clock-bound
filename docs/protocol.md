@@ -1,3 +1,176 @@
+# ClockBound Shared Memory Protocol Version 3
+
+This protocol version corresponds with ClockBound daemon and client releases 3.0.0 and greater.
+The communication between the daemon and client are performed via shared memory.
+By default the shared memory segment is mapped to a file at path `/var/run/clockbound/shm1`.
+
+## Shared Memory Segment Layout
+
+The byte ordering of data described below is in the native endian of the CPU architecture you are running on.
+For example, x86_64 and ARM-based Graviton CPUs use little endian.
+
+```text
+0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                          Magic Number                         +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+   8 bytes
+|                          Segment Size                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ 
+|   Min Version |   Max Version |          Generation           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  16 bytes
+|                                                               |
++                           As-Of TSC                           |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  24 bytes
+|                                                               |
++                                                               |
+|                                                               |
++                        As-Of Timestamp                        +  32 bytes
+|                                                               |
++                                                               |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  40 bytes
+|                                                               |
++                                                               |
+|                                                               |
++                      Void-After Timestamp                     +  48 bytes
+|                                                               |
++                                                               |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  56 bytes
+|                                                               |
++                            Period                             |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  64 bytes
+|                                                               |
++                         Period Error                          |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  72 bytes
+|                                                               |
++                           Bound                               |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  80 bytes
+|                                                               |
++                       Disruption Count                        |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  88 bytes
+|                           Max Drift                           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                         Clock Status                          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+  96 bytes
+|   Disruption  |  Period Shift |PeriodErrShift |    Padding    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                            Padding                            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ 104 bytes
+```
+
+## Description
+
+**Magic Number**: (u64)
+
+The signature that identifies a ClockBound shared memory segment.
+
+`0x41 0x4D 0x5A 0x4E 0x43 0x42 0x02 0x00`
+
+**Segment Size**: (u32)
+
+The size of shared memory segment in bytes.
+
+**Mininum Version**: (u8)
+
+This field represents the minimum version supported by this layout.
+
+That is the oldest version that is backward compatible with this layout
+
+**Maximum Version**: (u8)
+
+This fields represents the most recent version of this layout.
+
+For example a Minimum Version of 3 and a Maximum Version of 5 means that clients that know 3, 4, and 5 are supported.
+
+**Generation**: (u16)
+
+The generation number is increased during updates to the shared memory content by the ClockBound daemon.
+It is set to an odd number before an update and it is set to an even number after an update is completed.
+Upon rolling over, the generation is not set to 0 but it is set to 2.
+
+**As-Of TSC**: (u64)
+
+the TSC counter value used to create the as_of timestamp.
+
+This value can be read by either calling `rdtsc` on x86 architectures, or `cntvct_el0` on aarch64 architectures. 
+
+**As-Of Timestamp**: (i64, i64)
+
+The ClockBound calculated timestamp. This is the time at the `TSC` timestamp
+
+The two signed 64-bit integers correspond to a libc::timespec's `tv_sec` and `tv_nsec`.
+
+**Void-After Timestamp**: (i64, i64)
+
+The time after which the bound of the clock error should not be trusted.
+
+The two signed 64-bit integers correspond to a libc::timespec's `tv_sec` and `tv_nsec`.
+
+**Period**: (u64)
+
+The fractional part of the scaled period of the TSC
+
+resolution is 1/2^(64 + p_shift), expressed in ppb
+
+**Period Error**: (u64)
+
+the fractional part of the period error of the Period estimation
+
+resolution is 1/2^(64 + p_err_shift), expressed in ppb
+
+**Bound**: (i64)
+
+The absolute upper bound on the accuracy with regard to true time at the instant represented by the *As-Of Timestamp*. The units of this value is nanoseconds.
+
+**Disruption Marker**: (u64)
+
+The last disruption marker value that the ClockBound daemon has read from the VMClock.
+
+**Max Drift**: (u32)
+
+The maximum drift rate of the clock between updates of the synchronization daemon, represented in parts per billion (ppb).
+
+**Clock Status**: (i32)
+
+The clock status. Possible values are:
+
+0 - Unknown: The status of the clock is unknown.
+
+1 - Synchronized: The clock is kept accurate by the synchronization daemon.
+
+2 - FreeRunning: The clock is free running and not updated by the synchronization daemon.
+
+3 - Disrupted: The clock has been disrupted and the accuracy of time cannot be bounded.
+
+**Clock Disruption Support**: (u8)
+
+The flag which indicates that clock disruption support is enabled.
+
+0 - Clock disruption support is not enabled.
+
+1 - Clock disruption support is enabled.
+
+**Period Shift**: (u8)
+
+The value used to scale the period.
+
+See the above Period section on how to use this field.
+
+**Period Error Shift**: (u8)
+
+The value used to scale the period error.
+
+See the above Period Error section on how to use this field.
+
 # ClockBound Shared Memory Protocol Version 2
 
 This protocol version corresponds with ClockBound daemon and client releases 2.0.0 and greater.
