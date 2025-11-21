@@ -715,6 +715,7 @@ impl ClockErrorBoundV3 {
         // updated last. This is computed of a TSC value stored in the snapshot, hence this
         // duration should never be negative.
         let duration_tsc = now_tsc.saturating_sub(self.as_of_tsc);
+        let duration = duration_tsc as f64 * self.period();
         let duration_nsec = duration_tsc as f64 * self.period() * NANOS_PER_SECOND;
 
         // Convert the TSC timestamp into seconds with a linear projection.
@@ -725,11 +726,13 @@ impl ClockErrorBoundV3 {
         );
 
         // Similarly, need to grow the bound on the clock error since the last update.
-        // This takes into accounts the fact that the ff-sync period is an estimate (polluted by
-        // measurement noise), and that the underlying oscillator drifts (possibly at a worse
+        //
+        // First, amount for the underlying oscillator drifts (possibly at a worse
         // possible rate) in between consecutive clock adjustments.
-        let oscillator_err_nsec = duration_nsec * f64::from(self.max_drift_ppb) / NANOS_PER_SECOND;
-        let p_estimate_err_nsec = duration_nsec * self.period_err() / NANOS_PER_SECOND;
+        let oscillator_err_nsec = duration * f64::from(self.max_drift_ppb);
+        // And take into account the fact that the ff-sync period is an estimate (polluted by
+        // measurement noise).
+        let p_estimate_err_nsec = duration_nsec * self.period_err();
 
         let updated_bound = TimeSpec::nanoseconds(
             (self.bound_nsec as f64 + oscillator_err_nsec + p_estimate_err_nsec) as i64,
