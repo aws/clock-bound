@@ -86,7 +86,7 @@ int main(int argc, char *argv[]) {
         int i;
 
         // Open clockbound and retrieve a context on success.
-        ctx = clockbound_vmclock_open(clockbound_shm_path, vmclock_shm_path, &cb_err);
+        ctx = clockbound_open_with(clockbound_shm_path, vmclock_shm_path, &cb_err);
         if (ctx == NULL) {
                 print_clockbound_err(&cb_err);
                 return 1;

@@ -91,8 +91,6 @@ double duration(struct timespec start, struct timespec end) {
 }
 
 int main(int argc, char *argv[]) {
-        char const* clockbound_shm_path = CLOCKBOUND_SHM_DEFAULT_PATH;
-        char const* vmclock_shm_path = VMCLOCK_SHM_DEFAULT_PATH;
         clockbound_ctx *ctx;
         clockbound_err cb_err;
         clockbound_err *err;
@@ -102,7 +100,7 @@ int main(int argc, char *argv[]) {
         int i;
 
         // Open clockbound and retrieve a context on success.
-        ctx = clockbound_vmclock_open(clockbound_shm_path, vmclock_shm_path, &cb_err);
+        ctx = clockbound_open(&cb_err);
         if (ctx == NULL) {
                 print_clockbound_err(&cb_err);
                 return 1;

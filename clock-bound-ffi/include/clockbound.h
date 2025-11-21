@@ -74,13 +74,13 @@ typedef struct clockbound_now_result {
 } clockbound_now_result;
 
 /*
- * Open a new context using the ClockBound daemon-client segment at `clockbound_shm_path`
- * and the VMClock segment at the default VMClock segment path.
+ * Open a new context using the ClockBound daemon-client segment and the VMClock segment
+ * at their default path.
  *
  * Returns a newly-allocated context on success, and NULL on failure. If `err` is
  * non-null, fills `*err` with error details.
  */
-clockbound_ctx* clockbound_open(char const* clockbound_shm_path, clockbound_err *err);
+clockbound_ctx* clockbound_open(clockbound_err *err);
 
 /*
  * Open a new context using the ClockBound daemon-client segment at `clockbound_shm_path`
@@ -89,7 +89,7 @@ clockbound_ctx* clockbound_open(char const* clockbound_shm_path, clockbound_err 
  * Returns a newly-allocated context on success, and NULL on failure. If `err` is
  * non-null, fills `*err` with error details.
  */
-clockbound_ctx* clockbound_vmclock_open(char const* clockbound_shm_path,
+clockbound_ctx* clockbound_open_with(char const* clockbound_shm_path,
 		char const* vmclock_shm_path, clockbound_err *err);
 
 /*

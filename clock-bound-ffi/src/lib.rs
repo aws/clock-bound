@@ -6,7 +6,7 @@
 #![allow(non_camel_case_types)]
 
 use clock_bound::client::{ClockBoundClient, ClockBoundError, ClockBoundErrorKind};
-use clock_bound::shm::{ClockBoundNowResult, ClockStatus};
+use clock_bound::shm::{CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH, ClockBoundNowResult, ClockStatus};
 use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use core::ptr;
 use errno::Errno;
@@ -173,16 +173,14 @@ impl From<ClockBoundNowResult> for clockbound_now_result {
 /// # Safety
 /// Rely on the caller to pass valid pointers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn clockbound_open(
-    clockbound_shm_path: *const c_char,
-    err: *mut clockbound_err,
-) -> *mut clockbound_ctx {
+pub unsafe extern "C" fn clockbound_open(err: *mut clockbound_err) -> *mut clockbound_ctx {
     // Safety: Convert the default path to a CString, and then an array of bytes. The conversion of
     // the default path into a CString is unit tested and safe.
+    #[expect(clippy::missing_panics_doc, reason = "infallible")]
     unsafe {
-        #[expect(clippy::missing_panics_doc, reason = "infallible")]
+        let clockbound_shm_path = CString::new(CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH).unwrap();
         let vmclock_shm_path = CString::new(VMCLOCK_SHM_DEFAULT_PATH).unwrap();
-        clockbound_vmclock_open(clockbound_shm_path, vmclock_shm_path.as_ptr(), err)
+        clockbound_open_with(clockbound_shm_path.as_ptr(), vmclock_shm_path.as_ptr(), err)
     }
 }
 
@@ -201,7 +199,7 @@ pub unsafe extern "C" fn clockbound_open(
 // be to have a more meaningful variant added to `ClockBoundErrorKind` but don't want to change the
 // C API just yet.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn clockbound_vmclock_open(
+pub unsafe extern "C" fn clockbound_open_with(
     clockbound_shm_path: *const c_char,
     vmclock_shm_path: *const c_char,
     err: *mut clockbound_err,
@@ -551,7 +549,7 @@ mod t_ffi {
             let mut err: clockbound_err = std::mem::zeroed();
             let mut now_result: clockbound_now_result = std::mem::zeroed();
 
-            let ctx = clockbound_vmclock_open(
+            let ctx = clockbound_open_with(
                 clockbound_path_cstring.as_ptr(),
                 vmclock_path_cstring.as_ptr(),
                 &mut err,
