@@ -548,7 +548,7 @@ impl Phc {
                         break;
                     }
                     // Clock Disruption logic here
-                    Self::handle_disruption();
+                    self.handle_disruption();
                 }
                 ctrl_req = self.ctrl_receiver.recv() => {
                     // Ctrl logic here.
@@ -593,9 +593,21 @@ impl Phc {
     }
 
     /// Handles a clock disruption event
-    fn handle_disruption() {
-        // No special logic to handle disruption.
-        debug!("PHC IO source handle_disruption()");
+    fn handle_disruption(&mut self) {
+        let Self {
+            clock_disruption_receiver: _,
+            event_sender,
+            ctrl_receiver: _,
+            interval,
+            reader: _,
+            clock_error_bound_reader: _,
+            device_path: _,
+        } = self;
+        // so interval immediately fires
+        interval.reset();
+        // and clean up disruption from sender side
+        event_sender.handle_disruption();
+        tracing::info!("PHC IO handled disruption");
     }
 }
 
