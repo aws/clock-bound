@@ -17,7 +17,7 @@ name = "vmclock-updater"
 path = "src/main.rs"
 
 [dependencies]
-clock-bound = { version = "2.0", path = "../../clock-bound" }
+clock-bound = { path = "../../clock-bound" }
 byteorder = "1"
 clap = { version = "4", features = ["derive"] }
 errno = { version = "0.3.0", default-features = false }

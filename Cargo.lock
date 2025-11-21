@@ -266,7 +266,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "clock-bound"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "approx",
  "bon",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-adjust-clock"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-adjust-clock-test"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "clock-bound",
  "rstest 0.26.1",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-client-generic"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-ff-tester"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-ffi"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "byteorder",
  "clock-bound",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-now"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "chrono",
  "clap",
@@ -404,8 +404,9 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-phc-offset"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
+ "anyhow",
  "clap",
  "clock-bound",
  "clock-bound-client-generic",
@@ -447,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-vmclock-client-example"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "byteorder",
  "clock-bound",
@@ -457,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-vmclock-client-test"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "byteorder",
  "clock-bound",
@@ -1064,7 +1065,7 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
 name = "link-local"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "clock-bound",
  "rand 0.9.2",
@@ -1242,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "ntp-source"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "clock-bound",
  "md5",
@@ -1350,7 +1351,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phc"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "clock-bound",
  "rand 0.9.2",
@@ -2339,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "vmclock"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "clock-bound",
  "rand 0.9.2",
@@ -2349,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "vmclock-updater"
-version = "2.0.3"
+version = "3.0.0-alpha.0"
 dependencies = [
  "byteorder",
  "clap",

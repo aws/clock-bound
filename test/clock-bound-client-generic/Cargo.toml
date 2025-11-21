@@ -14,9 +14,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-clock-bound = { version = "2.0", path = "../../clock-bound", features = [
-  "client",
-] }
+clock-bound = { path = "../../clock-bound", features = ["client", "daemon"] }
 clock-bound-client = { version = "2.0" }
 
 chrono = { version = "0.4", features = ["serde"] }

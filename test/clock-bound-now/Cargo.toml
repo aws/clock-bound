@@ -18,7 +18,7 @@ name = "clock-bound-now"
 path = "src/main.rs"
 
 [dependencies]
-clock-bound-client-generic = { version = "2.0", path = "../clock-bound-client-generic" }
+clock-bound-client-generic = { path = "../clock-bound-client-generic" }
 
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
