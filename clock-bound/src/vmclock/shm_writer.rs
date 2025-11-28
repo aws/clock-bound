@@ -134,7 +134,10 @@ impl VMClockShmWriter {
                 Err(err) => Err(err),
             }
         } else {
-            Err(ShmError::SegmentNotInitialized)
+            Err(ShmError::SegmentNotInitialized(format!(
+                "SHM segment path is not a valid C string [{}]",
+                path.to_string_lossy()
+            )))
         }
     }
 

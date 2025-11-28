@@ -29,7 +29,7 @@ impl FdGuard {
         // SAFETY: `path` is a valid C string.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
         if fd < 0 {
-            return syserror!(concat!("open"));
+            return syserror!(format!("Faild to open file at {:?}", path));
         }
 
         Ok(FdGuard(fd))
@@ -86,7 +86,7 @@ impl MmapGuard {
         };
 
         if segment == libc::MAP_FAILED {
-            return syserror!("mmap SHM segment");
+            return syserror!(String::from("Failed to mmap the SHM segment"));
         }
 
         Ok(MmapGuard { segment, segsize })
@@ -178,7 +178,10 @@ impl ShmReader {
         if CLOCKBOUND_SHM_LATEST_VERSION < min_version
             || CLOCKBOUND_SHM_LATEST_VERSION > max_version
         {
-            return Err(ShmError::SegmentVersionNotSupported);
+            let msg = format!(
+                "Clockbound shared memory segment supports versions {min_version} to {max_version} which does not include this reader version {CLOCKBOUND_SHM_LATEST_VERSION}",
+            );
+            return Err(ShmError::SegmentVersionNotSupported(msg));
         }
         let shm_version = ClockErrorBoundLayoutVersion::try_from(CLOCKBOUND_SHM_LATEST_VERSION)?;
 
@@ -274,7 +277,12 @@ impl ShmReader {
         };
 
         if mmap_guard.segsize < size_of::<ShmHeader>() + layout_size {
-            return Err(ShmError::SegmentMalformed);
+            let msg = format!(
+                "Clockbound segment size is smaller than expected [{} < {}].",
+                mmap_guard.segsize,
+                size_of::<ShmHeader>() + layout_size
+            );
+            return Err(ShmError::SegmentMalformed(msg));
         }
 
         // SAFETY: segment size has been checked to ensure `cursor` move leads to a valid cast
@@ -321,7 +329,10 @@ impl ShmReader {
         if CLOCKBOUND_SHM_LATEST_VERSION < min_version
             || CLOCKBOUND_SHM_LATEST_VERSION < max_version
         {
-            return Err(ShmError::SegmentVersionNotSupported);
+            let msg = format!(
+                "Clockbound shared memory segment supports versions {min_version} to {max_version} which does not include this reader version {CLOCKBOUND_SHM_LATEST_VERSION}",
+            );
+            return Err(ShmError::SegmentVersionNotSupported(msg));
         }
 
         // Atomically read the current generation in the shared memory segment
@@ -393,7 +404,9 @@ impl ShmReader {
         }
 
         // Attempts to read the snapshot have failed.
-        Err(ShmError::SegmentNotInitialized)
+        Err(ShmError::SegmentNotInitialized(String::from(
+            "Failed to read the SHM segment after all attempts",
+        )))
     }
 }
 
@@ -558,8 +571,10 @@ mod t_reader {
 
         // Assert that creating a reader on an unsupported shared memory segment version
         // returns Err(ShmError::SegmentVersionNotSupported).
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ShmError::SegmentVersionNotSupported);
+        assert!(matches!(
+            result.unwrap_err(),
+            ShmError::SegmentVersionNotSupported(_)
+        ));
     }
 
     /// Assert that creating a reader and taking a snapshot when the
@@ -618,7 +633,8 @@ mod t_reader {
         // Assert that taking a snapshot of an unsupported shared memory segment version
         // returns Err(ShmError::SegmentVersionNotSupported).
         let result = reader.snapshot();
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ShmError::SegmentVersionNotSupported);
+        assert!(
+            matches!(result.unwrap_err(), ShmError::SegmentVersionNotSupported(msg) if msg.starts_with("Clockbound shared memory segment supports versions"))
+        );
     }
 }

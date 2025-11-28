@@ -20,7 +20,7 @@ pub const CLOCK_MONOTONIC: ClockId = ClockId::CLOCK_MONOTONIC_COARSE;
 pub fn clock_gettime_safe(clock_id: ClockId) -> Result<TimeSpec, ShmError> {
     match clock_gettime(clock_id) {
         Ok(ts) => Ok(ts),
-        _ => syserror!("clock_gettime"),
+        _ => syserror!(String::from("clock_gettime failed")),
     }
 }
 

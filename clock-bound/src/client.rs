@@ -141,10 +141,14 @@ impl ClockBoundSHM {
     fn new(clockbound_shm_path: &str) -> Result<ClockBoundSHM, ClockBoundError> {
         // Fail early if the provided shared memory path does not exist.
         if !Path::new(clockbound_shm_path).exists() {
-            let mut error = ClockBoundError::from(ShmError::SegmentNotInitialized);
-            error.detail = format!(
+            let detail = format!(
                 "Path to clockbound daemon shared memory segment does not exist: {clockbound_shm_path}"
             );
+            let error = ClockBoundError {
+                kind: ClockBoundErrorKind::SegmentNotInitialized,
+                detail,
+                errno: Errno(0),
+            };
             return Err(error);
         }
 
@@ -185,10 +189,14 @@ impl VMClockSHM {
         if clock_disruption_support_enabled {
             // Fail early if the provided shared memory path does not exist.
             if !Path::new(vmclock_shm_path).exists() {
-                let mut error = ClockBoundError::from(ShmError::SegmentNotInitialized);
-                error.detail = format!(
+                let detail = format!(
                     "Path to VMClock device shared memory segment does not exist: {vmclock_shm_path}"
                 );
+                let error = ClockBoundError {
+                    kind: ClockBoundErrorKind::SegmentNotInitialized,
+                    detail,
+                    errno: Errno(0),
+                };
                 return Err(error);
             }
             vmclock_shm_reader = Some(VMClockShmReader::new(vmclock_shm_path)?);
@@ -227,25 +235,22 @@ pub struct ClockBoundError {
 
 impl From<ShmError> for ClockBoundError {
     fn from(value: ShmError) -> Self {
-        let kind = match value {
-            ShmError::SyscallError(_, _) => ClockBoundErrorKind::Syscall,
-            ShmError::SegmentNotInitialized => ClockBoundErrorKind::SegmentNotInitialized,
-            ShmError::SegmentMalformed => ClockBoundErrorKind::SegmentMalformed,
-            ShmError::CausalityBreach => ClockBoundErrorKind::CausalityBreach,
-            ShmError::SegmentVersionNotSupported => ClockBoundErrorKind::SegmentVersionNotSupported,
-        };
-
-        let errno = match value {
-            ShmError::SyscallError(errno, _) => errno,
-            _ => Errno(0),
-        };
-
-        let detail = match value {
-            ShmError::SyscallError(_, detail) => detail
-                .to_str()
-                .expect("Failed to convert CStr to str")
-                .to_owned(),
-            _ => String::from("No detail available"),
+        let (kind, detail, errno) = match value {
+            ShmError::SyscallError(detail, errno) => (ClockBoundErrorKind::Syscall, detail, errno),
+            ShmError::SegmentNotInitialized(detail) => {
+                (ClockBoundErrorKind::SegmentNotInitialized, detail, Errno(0))
+            }
+            ShmError::SegmentMalformed(detail) => {
+                (ClockBoundErrorKind::SegmentMalformed, detail, Errno(0))
+            }
+            ShmError::CausalityBreach(detail) => {
+                (ClockBoundErrorKind::CausalityBreach, detail, Errno(0))
+            }
+            ShmError::SegmentVersionNotSupported(detail) => (
+                ClockBoundErrorKind::SegmentVersionNotSupported,
+                detail,
+                Errno(0),
+            ),
         };
 
         ClockBoundError {
@@ -277,7 +282,6 @@ mod lib_tests {
 
     use byteorder::{NativeEndian, WriteBytesExt};
     use nix::sys::time::TimeSpec;
-    use std::ffi::CStr;
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     use std::path::Path;
@@ -748,21 +752,19 @@ mod lib_tests {
     #[test]
     fn test_shmerror_clockbounderror_conversion_syscallerror() {
         let errno = Errno(1);
-        let detail: &CStr =
-            ::std::ffi::CStr::from_bytes_with_nul("test_detail\0".as_bytes()).unwrap();
-        let detail_str_slice: &str = detail.to_str().unwrap();
-        let detail_string: String = detail_str_slice.to_owned();
-        let shm_error = ShmError::SyscallError(errno, detail);
+        let detail = String::from("test detail");
+        let shm_error = ShmError::SyscallError(detail.clone(), errno);
         // Perform the conversion.
         let clockbounderror = ClockBoundError::from(shm_error);
         assert_eq!(ClockBoundErrorKind::Syscall, clockbounderror.kind);
         assert_eq!(errno, clockbounderror.errno);
-        assert_eq!(detail_string, clockbounderror.detail);
+        assert_eq!(detail, clockbounderror.detail);
     }
 
     #[test]
     fn test_shmerror_clockbounderror_conversion_segmentnotinitialized() {
-        let shm_error = ShmError::SegmentNotInitialized;
+        let detail = String::from("test detail");
+        let shm_error = ShmError::SegmentNotInitialized(detail.clone());
         // Perform the conversion.
         let clockbounderror = ClockBoundError::from(shm_error);
         assert_eq!(
@@ -770,26 +772,28 @@ mod lib_tests {
             clockbounderror.kind
         );
         assert_eq!(Errno(0), clockbounderror.errno);
-        assert_eq!(String::from("No detail available"), clockbounderror.detail);
+        assert_eq!(detail, clockbounderror.detail);
     }
 
     #[test]
     fn test_shmerror_clockbounderror_conversion_segmentmalformed() {
-        let shm_error = ShmError::SegmentMalformed;
+        let detail = String::from("test detail");
+        let shm_error = ShmError::SegmentMalformed(detail.clone());
         // Perform the conversion.
         let clockbounderror = ClockBoundError::from(shm_error);
         assert_eq!(ClockBoundErrorKind::SegmentMalformed, clockbounderror.kind);
         assert_eq!(Errno(0), clockbounderror.errno);
-        assert_eq!(String::from("No detail available"), clockbounderror.detail);
+        assert_eq!(detail, clockbounderror.detail);
     }
 
     #[test]
     fn test_shmerror_clockbounderror_conversion_causalitybreach() {
-        let shm_error = ShmError::CausalityBreach;
+        let detail = String::from("test detail");
+        let shm_error = ShmError::CausalityBreach(detail.clone());
         // Perform the conversion.
         let clockbounderror = ClockBoundError::from(shm_error);
         assert_eq!(ClockBoundErrorKind::CausalityBreach, clockbounderror.kind);
         assert_eq!(Errno(0), clockbounderror.errno);
-        assert_eq!(String::from("No detail available"), clockbounderror.detail);
+        assert_eq!(detail, clockbounderror.detail);
     }
 }

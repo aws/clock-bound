@@ -2,6 +2,7 @@ use std::mem::{MaybeUninit, size_of};
 use std::sync::atomic;
 
 use crate::{shm::ShmError, syserror};
+use tracing::error;
 
 /// The magic number that identifies a `ClockErrorBound` shared memory segment.
 pub const SHM_MAGIC: [u32; 2] = [0x414D_5A4E, 0x4342_0200];
@@ -46,9 +47,13 @@ impl ShmHeader {
                 size_of::<ShmHeader>(),
             )
         } {
-            ret if ret < 0 => return syserror!("read SHM segment"),
+            ret if ret < 0 => return syserror!(String::from("Failed to read SHM segment")),
             ret if (ret as usize) < size_of::<ShmHeader>() => {
-                return Err(ShmError::SegmentNotInitialized);
+                return Err(ShmError::SegmentNotInitialized(format!(
+                    "SHM segment too short [{} < {}]",
+                    ret,
+                    size_of::<ShmHeader>(),
+                )));
             }
             _ => (),
         }
@@ -99,19 +104,27 @@ impl ShmHeader {
     /// Check whether a `ShmHeader` is valid
     fn is_valid(&self) -> Result<(), ShmError> {
         if !self.matches_magic(&SHM_MAGIC) {
-            return Err(ShmError::SegmentNotInitialized);
+            let msg = String::from("ClockBound SHM header does not have a matching magic number.");
+            error!(msg);
+            return Err(ShmError::SegmentMalformed(msg));
         }
 
         if !self.has_valid_version() {
-            return Err(ShmError::SegmentVersionNotSupported);
+            let msg = String::from("ClockBound SHM header does not have a valid version number.");
+            error!(msg);
+            return Err(ShmError::SegmentVersionNotSupported(msg));
         }
 
         if !self.is_initialized() {
-            return Err(ShmError::SegmentNotInitialized);
+            let msg = String::from("ClockBound SHM header is not initialized");
+            error!(msg);
+            return Err(ShmError::SegmentNotInitialized(msg));
         }
 
         if !self.is_well_formed() {
-            return Err(ShmError::SegmentMalformed);
+            let msg = String::from("ClockBound SHM segment is not well formed.");
+            error!(msg);
+            return Err(ShmError::SegmentMalformed(msg));
         }
         Ok(())
     }

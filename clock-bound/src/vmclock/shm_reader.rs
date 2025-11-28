@@ -34,23 +34,35 @@ impl MmapGuard {
     /// Create a new `MmapGuard`.
     ///
     /// Memory map the provided open File.
-    fn new(mut file: File) -> Result<Self, ShmError> {
+    fn new(path: &str) -> Result<Self, ShmError> {
+        let mut file = match File::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("VMClockShmReader::new(): {:?}", e);
+                return Err(ShmError::SegmentNotInitialized(format!(
+                    "Failed to open SHM segment at {path}"
+                )));
+            }
+        };
+
         let mut buffer = vec![];
 
         let Ok(bytes_read) = file.read_to_end(&mut buffer) else {
-            return syserror!("Failed to read SHM segment");
+            return syserror!(String::from("Failed to read SHM segment"));
         };
 
         if bytes_read == 0_usize {
-            error!("MmapGuard: Read zero bytes.");
-            return Err(ShmError::SegmentNotInitialized);
+            let msg = String::from("MmapGuard: Read zero bytes.");
+            error!(msg);
+            return Err(ShmError::SegmentNotInitialized(msg));
         } else if bytes_read < size_of::<VMClockShmHeader>() {
-            error!(
+            let msg = format!(
                 "MmapGuard: Number of bytes read ({:?}) is less than the size of VMClockShmHeader ({:?}).",
                 bytes_read,
                 size_of::<VMClockShmHeader>()
             );
-            return Err(ShmError::SegmentMalformed);
+            error!(msg);
+            return Err(ShmError::SegmentMalformed(msg));
         }
 
         debug!("MMapGuard: Reading the VMClockShmHeader ...");
@@ -77,7 +89,7 @@ impl MmapGuard {
         };
 
         if segment == libc::MAP_FAILED {
-            return syserror!("mmap SHM segment");
+            return syserror!(String::from("Failed to mmap the SHM segment"));
         }
 
         Ok(MmapGuard {
@@ -157,17 +169,11 @@ impl VMClockShmReader {
     /// returned.
     #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(path: &str) -> Result<VMClockShmReader, ShmError> {
-        debug!("VMClockShmReader::new(): path is: {:?}", path);
-        let file = match File::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("VMClockShmReader::new(): {:?}", e);
-                return Err(ShmError::SegmentNotInitialized);
-            }
-        };
-
-        debug!("VMClockShmReader::new(): Creating a MmapGuard ...");
-        let mmap_guard = MmapGuard::new(file)?;
+        debug!(
+            "VMClockShmReader::new(): Creating a MmapGuard at path: {:?}",
+            path
+        );
+        let mmap_guard = MmapGuard::new(path)?;
 
         // Create a cursor to pick the addresses of the various elements of interest in the shared
         // memory segment.
@@ -193,11 +199,11 @@ impl VMClockShmReader {
         let version = unsafe { &*version_ptr };
         let version_number = version.load(atomic::Ordering::Acquire);
         if version_number != VMCLOCK_SUPPORTED_VERSION {
-            error!(
-                "VMClock shared memory segment has version {:?} which is not supported by this version of the VMClockShmReader.",
-                version_number
+            let msg = format!(
+                "VMClock shared memory segment has version {version_number} which is not supported by this version of the VMClockShmReader."
             );
-            return Err(ShmError::SegmentVersionNotSupported);
+            error!(msg);
+            return Err(ShmError::SegmentVersionNotSupported(msg));
         }
 
         // Log the counter_id in the shared memory segment.
@@ -217,8 +223,13 @@ impl VMClockShmReader {
         // Move to the end of the header and map the VMClockShmBody data, but only if the segment
         // size allows it and matches our expectation.
         if mmap_guard.segsize < (size_of::<VMClockShmHeader>() + size_of::<VMClockShmBody>()) {
-            error!("VMClockShmReader::new(): Segment size is smaller than expected.");
-            return Err(ShmError::SegmentMalformed);
+            let msg = format!(
+                "VMClockShmReader::new(): Segment size is smaller than expected [{} < {}].",
+                mmap_guard.segsize,
+                size_of::<VMClockShmHeader>() + size_of::<VMClockShmBody>()
+            );
+            error!(msg);
+            return Err(ShmError::SegmentMalformed(msg));
         }
         // SAFETY: segment size has been checked to ensure `cursor` move leads to a valid cast
         cursor = unsafe { cursor.add(size_of::<VMClockShmHeader>()) };
@@ -258,11 +269,11 @@ impl VMClockShmReader {
         // We are validating the version prior to each snapshot to protect
         // against a Hypervisor which has implemented an unsupported VMClock version.
         if version != VMCLOCK_SUPPORTED_VERSION {
-            error!(
-                "VMClock shared memory segment has version {:?} which is not supported by this version of the VMClockShmReader.",
-                version
+            let msg = format!(
+                "VMClock shared memory segment has version {version} which is not supported by this version of the VMClockShmReader."
             );
-            return Err(ShmError::SegmentVersionNotSupported);
+            error!(msg);
+            return Err(ShmError::SegmentVersionNotSupported(msg));
         }
 
         // Atomically read the current seq_count in the shared memory segment
@@ -315,7 +326,9 @@ impl VMClockShmReader {
         }
 
         // Attempts to read the snapshot have failed.
-        Err(ShmError::SegmentNotInitialized)
+        Err(ShmError::SegmentNotInitialized(String::from(
+            "Failed to read the SHM segment after all attempts",
+        )))
     }
 }
 
@@ -445,11 +458,7 @@ mod t_reader {
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
         remove_path_if_exists(vmclock_shm_path);
 
-        let expected = ShmError::SegmentNotInitialized;
-        match VMClockShmReader::new(&vmclock_shm_path) {
-            Err(actual) => assert_eq!(expected, actual),
-            _ => assert!(false),
-        }
+        assert!(VMClockShmReader::new(&vmclock_shm_path).is_err());
     }
 
     /// Assert that the reader will return an error when it tries to open a file that is empty.
@@ -459,11 +468,7 @@ mod t_reader {
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
 
-        let expected = ShmError::SegmentNotInitialized;
-        match VMClockShmReader::new(&vmclock_shm_path) {
-            Err(actual) => assert_eq!(expected, actual),
-            _ => assert!(false),
-        }
+        assert!(VMClockShmReader::new(&vmclock_shm_path).is_err());
     }
 
     /// Assert that the reader will return an error when it tries to read a file
@@ -503,11 +508,7 @@ mod t_reader {
         };
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
-        let expected = ShmError::SegmentVersionNotSupported;
-        match VMClockShmReader::new(&vmclock_shm_path) {
-            Err(actual) => assert_eq!(expected, actual),
-            _ => assert!(false),
-        }
+        assert!(VMClockShmReader::new(&vmclock_shm_path).is_err());
     }
 
     /// Assert that the reader will return an error when it tries to read a file
@@ -547,11 +548,7 @@ mod t_reader {
         };
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
-        let expected = ShmError::SegmentMalformed;
-        match VMClockShmReader::new(&vmclock_shm_path) {
-            Err(actual) => assert_eq!(expected, actual),
-            _ => assert!(false),
-        }
+        assert!(VMClockShmReader::new(&vmclock_shm_path).is_err());
     }
 
     /// Assert that the reader will return an error when it tries to read a file
@@ -592,10 +589,6 @@ mod t_reader {
         };
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
-        let expected = ShmError::SegmentMalformed;
-        match VMClockShmReader::new(&vmclock_shm_path) {
-            Err(actual) => assert_eq!(expected, actual),
-            _ => assert!(false),
-        }
+        assert!(VMClockShmReader::new(&vmclock_shm_path).is_err());
     }
 }

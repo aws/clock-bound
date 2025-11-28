@@ -135,15 +135,21 @@ impl ShmWriter {
     ///
     /// The segment is usable if it can be opened at `path` and it can be read by a `ShmReader`.
     fn is_usable_segment(path: &Path) -> Result<(), ShmError> {
-        let path_cstring = CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| ShmError::SegmentNotInitialized)?;
+        let path_cstring = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+            ShmError::SegmentNotInitialized(format!(
+                "SHM segment path is not a valid C string [{}]",
+                path.to_string_lossy()
+            ))
+        })?;
 
         match ShmReader::new_with_max_version_unchecked(path_cstring.as_c_str()) {
             Ok((_reader, max_version)) => {
                 if max_version == CLOCKBOUND_SHM_LATEST_VERSION {
                     Ok(())
                 } else {
-                    Err(ShmError::SegmentVersionNotSupported)
+                    Err(ShmError::SegmentVersionNotSupported(format!(
+                        "Existing SHM segment maximum version ({max_version}) does not match daemon version ({CLOCKBOUND_SHM_LATEST_VERSION})"
+                    )))
                 }
             }
             Err(err) => Err(err),

@@ -24,7 +24,6 @@ use bon::Builder;
 use errno::Errno;
 use nix::sys::time::{TimeSpec, TimeValLike};
 use std::error::Error;
-use std::ffi::CStr;
 use std::fmt;
 
 pub const CLOCKBOUND_SHM_DEFAULT_PATH_V0: &str = "/var/run/clockbound/shm0";
@@ -38,11 +37,8 @@ const NANOS_PER_SECOND: f64 = 1_000_000_000.0;
 /// origin information.
 #[macro_export]
 macro_rules! syserror {
-    ($origin:expr) => {
-        Err($crate::shm::ShmError::SyscallError(
-            ::errno::errno(),
-            ::std::ffi::CStr::from_bytes_with_nul(concat!($origin, "\0").as_bytes()).unwrap(),
-        ))
+    ($msg:expr) => {
+        Err($crate::shm::ShmError::SyscallError($msg, ::errno::errno()))
     };
 }
 
@@ -212,7 +208,9 @@ impl TryFrom<u8> for ClockErrorBoundLayoutVersion {
         match value {
             2 => Ok(ClockErrorBoundLayoutVersion::V2),
             3 => Ok(ClockErrorBoundLayoutVersion::V3),
-            _ => Err(ShmError::SegmentVersionNotSupported),
+            _ => Err(ShmError::SegmentVersionNotSupported(format!(
+                "Found version {value}",
+            ))),
         }
     }
 }
@@ -223,7 +221,9 @@ impl TryFrom<u16> for ClockErrorBoundLayoutVersion {
         match value {
             2 => Ok(ClockErrorBoundLayoutVersion::V2),
             3 => Ok(ClockErrorBoundLayoutVersion::V3),
-            _ => Err(ShmError::SegmentVersionNotSupported),
+            _ => Err(ShmError::SegmentVersionNotSupported(format!(
+                "Found version {value}",
+            ))),
         }
     }
 }
@@ -247,45 +247,52 @@ pub struct ClockBoundNowResult {
 
 /// Error condition returned by all low-level ClockBound APIs.
 ///
-// FIXME: the `detail` static CString referenced on the Syscall variant can be changed. The C
-// caller now pass memory over the FFI interface.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShmError {
     /// A system call failed.
     /// Variant includes the Errno struct with error details, and an indication on the origin of
     /// the system call that error'ed.
-    SyscallError(Errno, &'static CStr),
+    SyscallError(String, Errno),
 
     /// The shared memory segment is not initialized.
-    SegmentNotInitialized,
+    SegmentNotInitialized(String),
 
     /// The shared memory segment is initialized but malformed.
-    SegmentMalformed,
+    SegmentMalformed(String),
 
     /// Failed causality check when comparing timestamps.
-    CausalityBreach,
+    CausalityBreach(String),
 
     /// The shared memory segment version is not supported.
-    SegmentVersionNotSupported,
+    SegmentVersionNotSupported(String),
 }
 
 impl fmt::Display for ShmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ShmError::SyscallError(errno, c_str) => {
-                write!(f, "Errno: {errno:?} Details: {c_str:?}")
+            ShmError::SyscallError(msg, errno) => {
+                write!(f, "Errno: {errno:?} Details: {msg}")
             }
-            ShmError::SegmentNotInitialized => {
-                write!(f, "The shared memory segment is not initialized.")
+            ShmError::SegmentNotInitialized(msg) => {
+                write!(f, "The shared memory segment is not initialized [{msg}].")
             }
-            ShmError::SegmentMalformed => {
-                write!(f, "The shared memory segment is initialized but malformed.")
+            ShmError::SegmentMalformed(msg) => {
+                write!(
+                    f,
+                    "The shared memory segment is initialized but malformed [{msg}]."
+                )
             }
-            ShmError::CausalityBreach => {
-                write!(f, "Failed causality check when comparing timestamps.")
+            ShmError::CausalityBreach(msg) => {
+                write!(
+                    f,
+                    "Failed causality check when comparing timestamps [{msg}]."
+                )
             }
-            ShmError::SegmentVersionNotSupported => {
-                write!(f, "The shared memory segment version is not supported.")
+            ShmError::SegmentVersionNotSupported(msg) => {
+                write!(
+                    f,
+                    "The shared memory segment version is not supported [{msg}]."
+                )
             }
         }
     }
@@ -439,7 +446,10 @@ impl ClockErrorBoundV2 {
         //   causality between mono and as_of should be enforced.
         // - a extremely high value of the `max_drift_ppb` is a sign of something going wrong
         if self.max_drift_ppb >= 1_000_000_000 {
-            return Err(ShmError::SegmentMalformed);
+            return Err(ShmError::SegmentMalformed(format!(
+                "max_drift_ppb too large [{}]",
+                self.max_drift_ppb,
+            )));
         }
 
         // If the ClockErrorBound data has not been updated "recently", the status of the clock
@@ -518,7 +528,10 @@ impl ClockErrorBoundV2 {
             TimeSpec::new(0, 0)
         } else {
             // Causality is breached.
-            return Err(ShmError::CausalityBreach);
+            return Err(ShmError::CausalityBreach(format!(
+                "as_of ({:?}) more recent than {:?}",
+                self.as_of, mono
+            )));
         };
 
         // Inflate the bound on clock error with the maximum drift the clock may be experiencing
@@ -709,7 +722,10 @@ impl ClockErrorBoundV3 {
         //   causality between mono and as_of should be enforced.
         // - a extremely high value of the `max_drift_ppb` is a sign of something going wrong
         if self.max_drift_ppb >= 1_000_000_000 {
-            return Err(ShmError::SegmentMalformed);
+            return Err(ShmError::SegmentMalformed(format!(
+                "max_drift_ppb too large: [{}]",
+                self.max_drift_ppb,
+            )));
         }
 
         // Compute the number of TSC cycles between now and the instant the ff-sync clock was

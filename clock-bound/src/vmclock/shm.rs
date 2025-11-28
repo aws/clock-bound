@@ -66,7 +66,11 @@ impl VMClockShmHeader {
     #[expect(clippy::missing_panics_doc, reason = "slices appropriately sized")]
     pub fn read(vector: &Vec<u8>) -> Result<Self, ShmError> {
         if vector.len() < size_of::<VMClockShmHeader>() {
-            return syserror!("Insufficient bytes to create a VMClockShmHeader.");
+            return syserror!(format!(
+                "VMClockShmHeader is shorter than expected size [{} < {}].",
+                vector.len(),
+                size_of::<VMClockShmHeader>()
+            ));
         }
 
         let slice = vector.as_slice();
@@ -115,18 +119,21 @@ impl VMClockShmHeader {
     /// Check whether a `VMClockShmHeader` is valid
     fn is_valid(&self) -> Result<(), ShmError> {
         if !self.matches_magic() {
-            error!("VMClockShmHeader does not have a matching magic number.");
-            return Err(ShmError::SegmentMalformed);
+            let msg = String::from("VMClockShmHeader does not have a matching magic number.");
+            error!(msg);
+            return Err(ShmError::SegmentMalformed(msg));
         }
 
         if !self.has_valid_version() {
-            error!("VMClockShmHeader does not have a valid version number.");
-            return Err(ShmError::SegmentNotInitialized);
+            let msg = String::from("VMClockShmHeader does not have a valid version number.");
+            error!(msg);
+            return Err(ShmError::SegmentVersionNotSupported(msg));
         }
 
         if !self.is_well_formed() {
-            error!("VMClockShmHeader is not well formed.");
-            return Err(ShmError::SegmentMalformed);
+            let msg = String::from("VMClockShmHeader is not well formed.");
+            error!(msg);
+            return Err(ShmError::SegmentMalformed(msg));
         }
         Ok(())
     }
