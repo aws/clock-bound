@@ -139,9 +139,6 @@ timestamps synchronized by the ClockBound daemon, and examples provided.
 
 #### Custom Client
 
-The [ClockBound Protocol](docs/PROTOCOL.md) is provided so that one can create custom clients.
-
-Clients can be created in any programming language that can read from a shared memory segment that is backed by a file.
 [ClockBound Protocol](docs/protocol.md) - Reference provided to create a custom client. Clients can be created in any
 programming language that can read from a shared memory segment that is backed by a file.
 
