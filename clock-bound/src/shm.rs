@@ -31,7 +31,7 @@ pub const CLOCKBOUND_SHM_DEFAULT_PATH_V0: &str = "/var/run/clockbound/shm0";
 pub const CLOCKBOUND_SHM_DEFAULT_PATH_V1: &str = "/var/run/clockbound/shm1";
 pub const CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH: &str = CLOCKBOUND_SHM_DEFAULT_PATH_V1;
 
-const CLOCKBOUND_RESTART_GRACE_PERIOD: TimeSpec = TimeSpec::new(5, 0);
+const FREE_RUNNING_GRACE_PERIOD: TimeSpec = TimeSpec::new(60, 0);
 const NANOS_PER_SECOND: f64 = 1_000_000_000.0;
 
 /// Convenience macro to build a `ShmError::SyscallError` with extra info from errno and custom
@@ -460,16 +460,17 @@ impl ClockErrorBoundV2 {
             // the shared memory segment in a while, the status written to the shared memory
             // segment may not be reliable anymore.
             ClockStatus::Synchronized | ClockStatus::FreeRunning => {
-                if mono < self.as_of + CLOCKBOUND_RESTART_GRACE_PERIOD {
-                    // Allow for a restart of the daemon, for a short period of time, the status is
-                    // trusted to be correct.
-                    self.clock_status
-                } else if mono < self.void_after {
-                    // Beyond the grace period, for a free running status.
+                if mono > self.void_after {
+                    // The last update is old and beyond the horizon defined by the daemon, no
+                    // guarantee is provided anymore, hence report Unknown status.
+                    ClockStatus::Unknown
+                } else if mono > self.as_of + FREE_RUNNING_GRACE_PERIOD {
+                    // The last update is too old to be trusted to be synchronized, reports Free
+                    // Running status.
                     ClockStatus::FreeRunning
                 } else {
-                    // If beyond void_after, no guarantee is provided anymore.
-                    ClockStatus::Unknown
+                    // The last update is recent enough, hence report it
+                    self.clock_status
                 }
             }
         };
@@ -748,7 +749,6 @@ impl ClockErrorBoundV3 {
         // caller that guarantees are gone. We could return an Err here, but choosing to leverage
         // ClockStatus instead, and putting the responsibility on the caller to check the clock
         // status value being returned.
-        let duration = TimeSpec::nanoseconds(duration_nsec as i64);
         let clock_status = match self.clock_status {
             // If the status in the shared memory segment is Unknown or Disrupted, returns that
             // status.
@@ -759,16 +759,17 @@ impl ClockErrorBoundV3 {
             // the shared memory segment in a while, the status written to the shared memory
             // segment may not be reliable anymore.
             ClockStatus::Synchronized | ClockStatus::FreeRunning => {
-                if duration < CLOCKBOUND_RESTART_GRACE_PERIOD {
-                    // Allow for a restart of the daemon, for a short period of time, the status is
-                    // trusted to be correct.
-                    self.clock_status
-                } else if now < self.void_after {
-                    // Beyond the grace period, for a free running status.
+                if now > self.void_after {
+                    // The last update is old and beyond the horizon defined by the daemon, no
+                    // guarantee is provided anymore, hence report Unknown status.
+                    ClockStatus::Unknown
+                } else if now > self.as_of + FREE_RUNNING_GRACE_PERIOD {
+                    // The last update is too old to be trusted to be synchronized, reports Free
+                    // Running status.
                     ClockStatus::FreeRunning
                 } else {
-                    // If beyond void_after, no guarantee is provided anymore.
-                    ClockStatus::Unknown
+                    // The last update is recent enough, hence report it
+                    self.clock_status
                 }
             }
         };
@@ -914,13 +915,13 @@ mod t_lib {
         assert_eq!(clock_status, ClockStatus::Synchronized);
     }
 
-    /// Assert the clock status is FreeRunning if the ClockErrorBound data is passed the grace
-    /// period
+    /// Assert the clock status is FreeRunning if the ClockErrorBound data is passed the free
+    /// running grace period, simulating behavior of the daemon has died.
     #[test]
     fn compute_bound_force_free_running_status() {
         let ceb = clockbound_v2!((0, 0), (100, 0));
-        let real = TimeSpec::new(8, 0);
-        let mono = TimeSpec::new(8, 0);
+        let real = TimeSpec::new(61, 0);
+        let mono = TimeSpec::new(61, 0);
 
         let ClockBoundNowResult {
             earliest,
@@ -930,12 +931,13 @@ mod t_lib {
             .compute_bound_at(real, mono)
             .expect("Failed to compute bound");
 
-        // 8 seconds have passed since the bound was snapshot, hence 8 microsec of drift on top of
-        // the default 10 microsec put in the ClockBoundError data
-        assert_eq!(earliest.tv_sec(), 7);
-        assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 18_000);
-        assert_eq!(latest.tv_sec(), 8);
-        assert_eq!(latest.tv_nsec(), 18_000);
+        // 61 seconds have passed since the bound was snapshot, hence 61 microsec of drift have
+        // accumulated at max_drift_ppb on top of the default 10 microsec put in the
+        // ClockBoundError data.
+        assert_eq!(earliest.tv_sec(), 60);
+        assert_eq!(earliest.tv_nsec(), 1_000_000_000 - 71_000);
+        assert_eq!(latest.tv_sec(), 61);
+        assert_eq!(latest.tv_nsec(), 71_000);
         assert_eq!(clock_status, ClockStatus::FreeRunning);
     }
 
