@@ -22,7 +22,7 @@ pub struct SelectedClockSource {
 }
 
 impl SelectedClockSource {
-    /// Get the current clock source and stratum
+    /// Get the current clock source and its stratum
     ///
     /// Returns a tuple of (`ClockSource`, `Stratum`) representing the current state.
     pub fn get(&self) -> (ClockSource, Stratum) {
@@ -32,6 +32,21 @@ impl SelectedClockSource {
             Stratum::try_from(((packed >> 32) & 0xFF) as u8).unwrap_or(Stratum::Unspecified);
 
         (Self::params_to_source(refid, stratum), stratum)
+    }
+
+    /// Get the current clock source and the stratum of this client
+    ///
+    /// Returns a tuple of (`ClockSource`, `Stratum`) representing the current state.
+    /// The `Stratum` is of the client per RFC 5905, i.e., stratum 0 during INIT, stratum 16
+    /// for loss of synchronization, and source stratum + 1 in other cases.
+    pub fn get_with_client_stratum(&self) -> (ClockSource, Stratum) {
+        let (source, stratum) = self.get();
+        let client_stratum = match source {
+            ClockSource::Init => Stratum::Unspecified,
+            ClockSource::None => Stratum::Unsynchronized,
+            _ => stratum.incremented(),
+        };
+        (source, client_stratum)
     }
 
     /// Set the clock source to PHC
@@ -163,6 +178,7 @@ impl Display for ClockSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::event::ValidStratumLevel;
     use rstest::rstest;
 
     #[test]
@@ -187,6 +203,41 @@ mod tests {
         let (read_source, read_stratum) = clock.get();
         assert_eq!(read_source, source);
         assert_eq!(read_stratum, stratum);
+    }
+
+    #[rstest]
+    #[case(ClockSource::Init, Stratum::Unspecified, Stratum::Unspecified)]
+    #[case(ClockSource::None, Stratum::Unspecified, Stratum::Unsynchronized)]
+    #[case(ClockSource::Phc, Stratum::Unspecified, Stratum::Level(ValidStratumLevel::new(1).unwrap()))]
+    #[case(ClockSource::VMClock, Stratum::Unspecified, Stratum::Level(ValidStratumLevel::new(1).unwrap()))]
+    #[case(ClockSource::Server(0xA9FEA97B), Stratum::Level(ValidStratumLevel::new(1).unwrap()), Stratum::TWO)]
+    #[case(ClockSource::Server(0xA9FEA97B), Stratum::Level(ValidStratumLevel::new(2).unwrap()), Stratum::Level(ValidStratumLevel::new(3).unwrap()))]
+    #[case(ClockSource::Server(0xA9FEA97B), Stratum::Level(ValidStratumLevel::new(15).unwrap()), Stratum::Unsynchronized)]
+    fn get_with_client_stratum_maps_correctly_per_clocksource(
+        #[case] selected_source: ClockSource,
+        #[case] source_stratum: Stratum,
+        #[case] expected_client_stratum: Stratum,
+    ) {
+        let clock = SelectedClockSource::default();
+
+        // Set up the clock state based on the source type
+        match selected_source {
+            ClockSource::Init => {} // Default state
+            ClockSource::None => clock.set_to_none(),
+            ClockSource::Phc => clock.set_to_phc(),
+            ClockSource::VMClock => clock.set_to_vmclock(),
+            ClockSource::Server(id) => {
+                clock.set_to_server(
+                    // Fine to re-interpret IPv6 since its md5 hash is truncated to the first 4 octets anyway
+                    std::net::IpAddr::from(std::net::Ipv4Addr::from(id)),
+                    source_stratum,
+                );
+            }
+        }
+
+        let (result_source, result_stratum) = clock.get_with_client_stratum();
+        assert_eq!(result_source, selected_source);
+        assert_eq!(result_stratum, expected_client_stratum);
     }
 
     #[test]

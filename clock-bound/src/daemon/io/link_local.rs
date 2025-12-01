@@ -101,13 +101,13 @@ impl LinkLocal {
     /// collected the NTP sample we construct the `Event` and push that event through
     /// to the ring buffer.
     async fn sample(&mut self) -> Result<event::Ntp, LinkLocalError> {
-        let (refid, stratum) = self.selected_clock.get();
         let counter = self.transmit_counter.0;
         self.transmit_counter += 1;
+        let (source, stratum) = self.selected_clock.get_with_client_stratum();
         let packet = Packet::builder()
             .transmit_timestamp(Timestamp::new(counter))
-            .stratum(stratum.incremented().into())
-            .reference_id(refid.into())
+            .stratum(stratum.into())
+            .reference_id(source.into())
             .build();
         packet.emit_bytes(&mut self.ntp_buffer);
 
