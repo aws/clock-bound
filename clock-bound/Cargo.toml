@@ -2,7 +2,7 @@
 name = "clock-bound"
 description = "A crate to provide error bounded timestamp intervals."
 license = "MIT OR Apache-2.0"
-readme = "../README.md" # Relative path to the README
+readme = "../README.md"
 
 authors.workspace = true
 categories.workspace = true
