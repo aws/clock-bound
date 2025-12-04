@@ -62,7 +62,7 @@ The window of uncertainty is defined as the time reported by the clockbound daem
 The figure below illustrates how the clock error bound grows in between clock updates. At any point, a clockbound client
 can read a pair of timestamps that bound the clock error.
 
-![Clock Error Bound Image](docs/assets/ClockErrorBound.png)
+![Clock Error Bound Image](./docs/assets/ClockErrorBound.png)
 
 Figure 1: The Clock Error Bound provides a bound on the local clock error with regard to “true time”.
 
@@ -90,7 +90,7 @@ sudo systemctl enable clockbound
 sudo systemctl start clockbound
 ```
 
-More information on the daemon can be found here in [ClockBound Daemon](docs/clockbound-daemon.md) - A daemon to provide
+More information on the daemon can be found here in [ClockBound Daemon](./docs/clockbound-daemon.md) - A daemon to provide
 clients with an error bounded timestamp interval.
 
 ### Use the rust client
@@ -112,7 +112,7 @@ let result = client.now()?;
 println!("Time range: {:?} to {:?}", result.earliest, result.latest);
 ```
 
-For more information on the rust client, check out [ClockBound Client Rust](docs/rust-client.md) - A Rust client crate
+For more information on the rust client, check out [ClockBound Client Rust](./docs/rust-client.md) - A Rust client crate
 to create bounded timestamps synchronized by the ClockBound daemon. (Or better yet, we should just move this info into
 the docs.rs page)
 
@@ -134,12 +134,12 @@ printf("Time range: %ld.%09ld to %ld.%09ld\n",
        now.latest.tv_sec, now.latest.tv_nsec);
 ```
 
-For more information see [ClockBound FFI library](docs/clockbound-ffi.md) - A C client library to create bounded
+For more information see [ClockBound FFI library](./docs/clockbound-ffi.md) - A C client library to create bounded
 timestamps synchronized by the ClockBound daemon, and examples provided.
 
 #### Custom Client
 
-[ClockBound Protocol](docs/protocol.md) - Reference provided to create a custom client. Clients can be created in any
+[ClockBound Protocol](./docs/protocol.md) - Reference provided to create a custom client. Clients can be created in any
 programming language that can read from a shared memory segment that is backed by a file.
 
 ## Security
