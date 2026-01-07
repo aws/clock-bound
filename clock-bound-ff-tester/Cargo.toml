@@ -22,6 +22,12 @@ clock-bound = { path = "../clock-bound", features = [
   "time-string-parse",
 ] }
 num-traits = "0.2.19"
+polars = { version = "0.52.0", features = [
+  "lazy",
+  "timezones",
+  "dtype-full",
+  "parquet",
+] }
 rand = "0.8.5"
 # rand_chacha used by statsrs
 rand_chacha = "0.3.1"

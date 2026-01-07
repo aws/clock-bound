@@ -127,6 +127,7 @@ async fn test_clock_disruption_polling_rate(receiver: &Receiver<Ntp>, sourceio: 
     write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
     // Clock disruption polling rate
+    #[allow(clippy::unchecked_time_subtraction)]
     let polling_duration = Duration::from_secs(1) - write_time.elapsed().unwrap();
     let clock_disruption_polling_rate = measure_polling_rate(receiver, polling_duration).await;
     println!("Clock disruption polling rate avg: {clock_disruption_polling_rate:?}");

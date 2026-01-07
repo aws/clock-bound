@@ -4,23 +4,23 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use crate::{
+    repro::{self, ReproEvent},
+    time::Skew,
+};
 use clap::Parser;
 use clock_bound::daemon::{
     self,
     clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
     selected_clock::SelectedClockSource,
 };
-use clock_bound_ff_tester::{
-    repro::{self, ReproEvent},
-    time::Skew,
-};
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Clone, Debug)]
 /// Replay a scenario from a logfile back into the `ClockSyncAlgorithm`
 ///
 /// Outputs the results from this run into `--output-dir` with the same
 /// format as the input
-struct Args {
+pub struct Cli {
     /// The logfile to replay
     #[arg(short, long)]
     logfile: PathBuf,
@@ -30,8 +30,7 @@ struct Args {
     output_dir: PathBuf,
 }
 
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+pub fn main(args: Cli) -> anyhow::Result<()> {
     let max_dispersion = Skew::from_ppm(15.0);
     let mut alg = ClockSyncAlgorithm::builder()
         .link_local(source::LinkLocal::new(max_dispersion))
@@ -53,7 +52,7 @@ fn main() -> anyhow::Result<()> {
                 tracing::warn!("Received disruption.");
                 alg.handle_disruption();
             }
-            ReproEvent::Feed(event, _) => {
+            ReproEvent::Feed { event, .. } => {
                 // unused result since output log directory will contain this
                 let _ = alg.feed(event);
             }

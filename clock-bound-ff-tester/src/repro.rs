@@ -1,10 +1,11 @@
-//! Convert logs into `ff-tester` types in a Scenario
+//! Reproduction utilities
 
-use std::{
-    fs::File,
-    io::{BufRead, Read},
-    path::Path,
-};
+mod log_parse;
+pub use log_parse::{repro_events_from_log_file, repro_events_from_reader};
+
+use std::{borrow::Borrow, io::Write};
+
+use polars::prelude as pl;
 
 use crate::events::v1;
 use crate::time::CbBridge;
@@ -17,83 +18,236 @@ use clock_bound::daemon::{
 
 /// Events fed into the `ClockSyncAlgorithm`
 #[expect(clippy::large_enum_variant)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum ReproEvent {
     /// Feed a routable event into the clock sync algorithm
-    Feed(RoutableEvent, Option<ClockParameters>),
+    Feed {
+        event: RoutableEvent,
+        output: Option<ClockParameters>,
+    },
     /// The application initialized.
     Init,
     /// A disruption event came in. Call `handle_disruption`
     Disruption,
 }
 
-/// Read a logfile and return all inputs and outputs from the `ClockSyncAlgorithm`
-///
-/// # Errors
-/// - Returns an error if unable to open the file.
-/// - Returns and error if unable to read values from the logfile
-pub fn repro_events_from_log_file(file_path: impl AsRef<Path>) -> anyhow::Result<Vec<ReproEvent>> {
-    let file = File::open(file_path)?;
-    repro_events_from_reader(file)
-}
+impl ReproEvent {
+    /// Convert event into a [polars dataframe](pl::DataFrame)
+    ///
+    /// Schema is generally shaped as a column of `event` structs and optional `clock_params`
+    pub fn into_dataframe(events: Vec<Self>) -> Option<pl::DataFrame> {
+        use polars::prelude::*;
 
-/// Convert a log file at `file_path` into a `ff-tester` scenario
-///
-/// Returns a Scenario, and the output from every call into `ClockSyncAlgorithm::feed_link_local`
-///
-/// FIXME: Need to fix source id when integrating `routing` into the `ClockSyncAlgorithm`
-///
-/// # Errors
-/// Returns errors if the logfile is corrupted
-pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEvent>> {
-    let reader = std::io::BufReader::new(input);
+        let (events, outputs): (Vec<_>, Vec<_>) = events
+            .into_iter()
+            .filter_map(|e| {
+                let Self::Feed { event, output } = e else {
+                    return None;
+                };
+                Some((event, output))
+            })
+            .unzip();
 
-    let mut events = Vec::new();
+        let event_df = Self::routable_events_dataframe(&events);
+        let params_df = Self::clock_parameters_dataframe(&outputs);
 
-    for line in reader.lines() {
-        let Ok(line) = line else {
-            tracing::warn!("Could not read line from log file");
-            continue;
-        };
-        let line: Line = match serde_json::from_str(&line) {
-            Ok(line) => line,
-            Err(e) => {
-                tracing::warn!(line, "Could not parse line from log file: {e}");
+        let event_series = event_df.into_struct("event".into()).into_series();
+        let params_series = params_df.into_struct("clock_params".into()).into_series();
+
+        #[expect(clippy::missing_panics_doc, reason = "infallible")]
+        let df = DataFrame::new(vec![event_series.into(), params_series.into()]).unwrap();
+
+        // Convert clock_params from a struct filled with nulls to a null struct
+        #[expect(clippy::missing_panics_doc, reason = "infallible")]
+        let df = df
+            .lazy()
+            .with_column(
+                when(
+                    col("clock_params")
+                        .struct_()
+                        .field_by_name("time")
+                        .is_null(),
+                )
+                .then(lit(Null {}))
+                .otherwise(col("clock_params"))
+                .alias("clock_params"),
+            )
+            .collect()
+            .unwrap();
+
+        Some(df)
+    }
+
+    fn clock_parameters_dataframe(params: &[Option<ClockParameters>]) -> pl::DataFrame {
+        use polars::prelude::*;
+
+        let capacity = params.len();
+        let mut tsc_counts = Vec::with_capacity(capacity);
+        let mut times = Vec::with_capacity(capacity);
+        let mut clock_error_bounds = Vec::with_capacity(capacity);
+        let mut periods = Vec::with_capacity(capacity);
+        let mut period_max_errors = Vec::with_capacity(capacity);
+        for param in params {
+            let Some(param) = param else {
+                tsc_counts.push(None);
+                times.push(None);
+                clock_error_bounds.push(None);
+                periods.push(None);
+                period_max_errors.push(None);
                 continue;
-            }
-        };
+            };
+            tsc_counts.push(Some(param.tsc_count.get()));
+            times.push(Some(param.time.as_nanos()));
+            clock_error_bounds.push(Some(param.clock_error_bound.as_nanos()));
+            periods.push(Some(param.period.get()));
+            period_max_errors.push(Some(param.period_max_error.get()));
+        }
 
-        match &line.fields {
-            FieldEnum::Init(_init) => events.push(ReproEvent::Init),
+        let df = df!(
+            "tsc_count" => tsc_counts,
+            "time" => times,
+            "clock_error_bound" => clock_error_bounds,
+            "period_s" => periods,
+            "period_max_error_s" => period_max_errors,
+        )
+        .unwrap();
 
-            FieldEnum::Disruption(_disruption) => events.push(ReproEvent::Disruption),
+        df.lazy()
+            .with_columns([
+                Self::cast_col_to_ts_ns("time"),
+                Self::cast_col_to_dur_ns("clock_error_bound"),
+            ])
+            .collect()
+            .unwrap()
+    }
 
-            FieldEnum::FeedEvent(fields) => {
-                let event = match fields.parse_event() {
-                    Ok(event) => event,
-                    Err(e) => {
-                        tracing::warn!(line = ?line, "Could not parse event: {e}");
-                        continue;
-                    }
-                };
+    fn routable_events_dataframe(events: &[RoutableEvent]) -> pl::DataFrame {
+        use polars::prelude::*;
+        let capacity = events.len();
+        let mut event_types = Vec::with_capacity(capacity);
+        let mut tsc_pres = Vec::with_capacity(capacity);
+        let mut tsc_posts = Vec::with_capacity(capacity);
+        let mut server_recv_times = Vec::with_capacity(capacity);
+        let mut server_send_times = Vec::with_capacity(capacity);
+        let mut root_delays = Vec::with_capacity(capacity);
+        let mut root_dispersions = Vec::with_capacity(capacity);
+        let mut stratums = Vec::with_capacity(capacity);
+        let mut phc_times = Vec::with_capacity(capacity);
+        let mut clock_error_bounds = Vec::with_capacity(capacity);
+        let mut socket_addrs = Vec::with_capacity(capacity);
 
-                let output = match fields.parse_output() {
-                    Ok(output) => output,
-                    Err(e) => {
-                        tracing::warn!(line = ?line, "Could not parse output: {e}");
-                        continue;
-                    }
-                };
-
-                events.push(ReproEvent::Feed(event, output));
+        for event in events {
+            match event {
+                RoutableEvent::LinkLocal(event) => {
+                    event_types.push("LinkLocal".to_string());
+                    tsc_pres.push(event.tsc_pre().get());
+                    tsc_posts.push(event.tsc_post().get());
+                    server_recv_times.push(Some(event.data().server_recv_time.as_nanos()));
+                    server_send_times.push(Some(event.data().server_send_time.as_nanos()));
+                    root_delays.push(Some(event.data().root_delay.as_nanos()));
+                    root_dispersions.push(Some(event.data().root_dispersion.as_nanos()));
+                    stratums.push(Some(u8::from(event.data().stratum)));
+                    phc_times.push(None);
+                    clock_error_bounds.push(None);
+                    socket_addrs.push(None);
+                }
+                RoutableEvent::Phc(event) => {
+                    event_types.push("Phc".to_string());
+                    tsc_pres.push(event.tsc_pre().get());
+                    tsc_posts.push(event.tsc_post().get());
+                    server_recv_times.push(None);
+                    server_send_times.push(None);
+                    root_delays.push(None);
+                    root_dispersions.push(None);
+                    stratums.push(None);
+                    phc_times.push(Some(event.data().time.as_nanos()));
+                    clock_error_bounds.push(Some(event.data().clock_error_bound.as_nanos()));
+                    socket_addrs.push(None);
+                }
+                RoutableEvent::NtpSource(addr, event) => {
+                    event_types.push("NtpSource".to_string());
+                    tsc_pres.push(event.tsc_pre().get());
+                    tsc_posts.push(event.tsc_post().get());
+                    server_recv_times.push(Some(event.data().server_recv_time.as_nanos()));
+                    server_send_times.push(Some(event.data().server_send_time.as_nanos()));
+                    root_delays.push(Some(event.data().root_delay.as_nanos()));
+                    root_dispersions.push(Some(event.data().root_dispersion.as_nanos()));
+                    stratums.push(Some(u8::from(event.data().stratum)));
+                    phc_times.push(None);
+                    clock_error_bounds.push(None);
+                    socket_addrs.push(Some(addr.to_string()));
+                }
             }
         }
+        let df = df!(
+            "type" => event_types,
+            "tsc_pre" => tsc_pres,
+            "tsc_post" => tsc_posts,
+            "server_recv_time" => server_recv_times,
+            "server_send_time" => server_send_times,
+            "root_delay" => root_delays,
+            "root_dispersion" => root_dispersions,
+            "stratum" => stratums,
+            "phc_time" => phc_times,
+            "clock_error_bound" => clock_error_bounds,
+            "socket_addr" => socket_addrs,
+        )
+        .unwrap();
+
+        // convert time types
+        df.lazy()
+            .with_columns([
+                Self::cast_col_to_ts_ns("server_recv_time"),
+                Self::cast_col_to_ts_ns("server_send_time"),
+                Self::cast_col_to_dur_ns("root_delay"),
+                Self::cast_col_to_dur_ns("root_dispersion"),
+                Self::cast_col_to_ts_ns("phc_time"),
+                Self::cast_col_to_dur_ns("clock_error_bound"),
+            ])
+            .collect()
+            .unwrap()
     }
 
-    if events.is_empty() {
-        anyhow::bail!("No events found in log file");
+    fn cast_col_to_ts_ns(col_name: &str) -> pl::Expr {
+        use polars::prelude::*;
+        col(col_name)
+            .cast(DataType::Int64)
+            .cast(DataType::Datetime(
+                TimeUnit::Nanoseconds,
+                Some(TimeZone::UTC),
+            ))
+            .alias(col_name)
     }
 
-    Ok(events)
+    fn cast_col_to_dur_ns(col_name: &str) -> pl::Expr {
+        use polars::prelude::*;
+        col(col_name)
+            .cast(DataType::Int64)
+            .cast(DataType::Duration(TimeUnit::Nanoseconds))
+            .alias(col_name)
+    }
+}
+
+/// Write a collection of [`ReproEvent`] items into a writeable sink
+///
+/// Implementation uses the [`serde_json`] implementation on [`ReproEvent`] to write these to newline delimited json.
+///
+/// The output of this file can be used in other analysis libraries, like with `polars.read_ndjson` in python
+///
+/// # Errors
+/// Returns if there are errors with writing or serialization
+pub fn write_repro_events_to_newline_delimited_json<T>(
+    events: impl IntoIterator<Item = T>,
+    writer: &mut impl Write,
+) -> anyhow::Result<()>
+where
+    T: Borrow<ReproEvent>,
+{
+    for event in events {
+        serde_json::to_writer(writer.by_ref(), event.borrow())?;
+        writeln!(writer)?;
+    }
+    Ok(())
 }
 
 pub fn tester_event_from_cb_ntp(event: &event::Ntp, source_id: String) -> v1::Event {
@@ -165,61 +319,6 @@ pub fn routable_from_tester_event(event: v1::Event) -> RoutableEvent {
             RoutableEvent::Phc(event)
         }
         v1::EventKind::VMClock(_) => panic!("unsupported"),
-    }
-}
-
-/// Convenience struct to parse each line of the log
-///
-/// It's not exhaustive, but has the minimum number of fields
-/// to get the [`NTP event`](clock_bound::daemon::event::Ntp) and [`ClockParameters`]
-#[derive(Debug, Clone, serde::Deserialize)]
-struct Line {
-    fields: FieldEnum,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(untagged)] // load bearing untagged
-enum FieldEnum {
-    FeedEvent(Fields),
-    Init(Init),
-    Disruption(Disruption),
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[expect(unused, reason = "key used for deserialization")]
-struct Init {
-    init: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[expect(unused, reason = "key used for deserialization")]
-struct Disruption {
-    disruption: String,
-}
-
-/// Workaround for tracing escapes
-///
-/// Holds strings to make it easy to grab the inner keys. But since these values cannot be parsed directly from json,
-/// implement methods to parse each event.
-///
-/// tracing currently escapes double quote characters in json when logging. So we need to convert all `\"` into '"'
-#[derive(Debug, Clone, serde::Deserialize)]
-struct Fields {
-    event: String, // FIXME switch to routable event
-    output: String,
-}
-
-impl Fields {
-    fn parse_output(&self) -> anyhow::Result<Option<ClockParameters>> {
-        let unescaped = self.output.replace("\\\"", "\"");
-        let retval: Option<ClockParameters> = serde_json::from_str(&unescaped)?;
-        Ok(retval)
-    }
-
-    fn parse_event(&self) -> anyhow::Result<RoutableEvent> {
-        let unescaped = self.event.replace("\\\"", "\"");
-        let retval: RoutableEvent = serde_json::from_str(&unescaped)?;
-        Ok(retval)
     }
 }
 
@@ -299,12 +398,24 @@ mod tests {
         let param_count = events
             .iter()
             .filter_map(|event| {
-                let ReproEvent::Feed(_, params) = event else {
+                let ReproEvent::Feed {
+                    event: _event,
+                    output: params,
+                } = event
+                else {
                     return None;
                 };
                 params.as_ref()
             })
             .count();
         assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
+    }
+
+    #[test]
+    fn to_dataframe_does_not_panic() {
+        let example_log = include_str!("repro/test_11_06_2025.log");
+
+        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
+        let _df = ReproEvent::into_dataframe(events);
     }
 }

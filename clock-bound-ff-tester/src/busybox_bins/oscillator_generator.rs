@@ -8,9 +8,9 @@
 
 use std::path::PathBuf;
 
+use crate::simulation::oscillator::{Noise, Oscillator};
+use crate::time::{Frequency, Skew, TrueDuration, TrueInstant, TscCount};
 use clap::{Parser, Subcommand};
-use clock_bound_ff_tester::simulation::oscillator::{Noise, Oscillator};
-use clock_bound_ff_tester::time::{Frequency, Skew, TrueDuration, TrueInstant, TscCount};
 use rand::SeedableRng;
 
 /// Main command-line interface for the oscillator generator
@@ -149,8 +149,7 @@ pub struct CommonArgs {
 ///
 /// Parses command-line arguments, creates a simple oscillator model,
 /// and outputs the model to the specified file or to stdout.
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+pub fn main(cli: Cli) -> anyhow::Result<()> {
     let (oscillator, output) = match &cli.command {
         Commands::Simple(args) => handle_simple_command(args),
         Commands::Sine(args) => handle_sine_command(args),

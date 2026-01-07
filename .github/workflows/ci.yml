@@ -27,6 +27,9 @@ jobs:
         with:
           components: clippy
 
+      - name: Setup mold linker as default
+        uses: rui314/setup-mold@v1
+
       - name: Cargo cache
         uses: swatinem/rust-cache@v2
         with:

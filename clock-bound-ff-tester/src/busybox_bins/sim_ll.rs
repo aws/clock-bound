@@ -3,20 +3,20 @@
 
 use std::sync::Arc;
 
+use crate::{
+    events::{Scenario, v1::EventKind},
+    sim_ll::{self, TestLinkLocal},
+    time::{CbBridge, Skew, TrueDuration},
+};
 use clock_bound::daemon::{
     clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
     selected_clock::SelectedClockSource,
     subscriber::PRIMER_TARGET,
 };
-use clock_bound_ff_tester::{
-    events::{Scenario, v1::EventKind},
-    sim_ll::{self, TestLinkLocal},
-    time::{CbBridge, Skew, TrueDuration},
-};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
-fn main() {
+pub fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()

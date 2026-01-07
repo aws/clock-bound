@@ -6,10 +6,8 @@
 
 use std::{fs::File, io::BufReader, path::PathBuf};
 
-use anyhow::{Context, Ok};
-use clap::{Parser, Subcommand};
-use clock_bound_ff_tester::events::{self, Scenario as TesterScenario};
-use clock_bound_ff_tester::simulation::{
+use crate::events::Scenario as TesterScenario;
+use crate::simulation::{
     delay::{Delay, DelayRng, TimeUnit},
     generator::GeneratorExt,
     ntp::{VariableNetworkDelayGenerator, VariableRoundTripDelays},
@@ -18,7 +16,9 @@ use clock_bound_ff_tester::simulation::{
     stats::{self, DiracDistribution, GammaDistribution},
     vmclock,
 };
-use clock_bound_ff_tester::time::{EstimateDuration, Period, TrueDuration};
+use crate::time::{EstimateDuration, Period, TrueDuration};
+use anyhow::{Context, Ok};
+use clap::{Parser, Subcommand};
 use rand::rngs::OsRng;
 use std::str::FromStr;
 
@@ -227,8 +227,7 @@ pub struct VMClock {
 /// 4. Sets up an generator with the specified parameters
 /// 5. Generates a scenario with events
 /// 6. Serializes the scenario to a file or stdout
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+pub fn main(cli: Cli) -> anyhow::Result<()> {
     let oscillator = deserialize_oscillator(&cli.oscillator_file).with_context(|| {
         format!(
             "Failed to load oscillator from file '{}'",
@@ -299,7 +298,7 @@ fn deserialize_oscillator(path: &PathBuf) -> Result<Oscillator, anyhow::Error> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open oscillator file '{}'", path.display()))?;
     let reader = BufReader::new(file);
-    let inner: clock_bound_ff_tester::events::v1::Oscillator = serde_json::from_reader(reader)
+    let inner: crate::events::v1::Oscillator = serde_json::from_reader(reader)
         .with_context(|| format!("Failed to parse oscillator JSON from '{}'", path.display()))?;
     let oscillator = Oscillator::from(inner);
     Ok(oscillator)
@@ -352,7 +351,7 @@ fn serialize_scenario(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clock_bound_ff_tester::time::{Frequency, TscCount};
+    use crate::time::{Frequency, TscCount};
     use serde_json::{Value, json};
     use std::io::{Read, Write};
     use tempfile::NamedTempFile;
