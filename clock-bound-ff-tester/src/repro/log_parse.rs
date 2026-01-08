@@ -1,5 +1,6 @@
 //! Functions and structs related to parsing the primer logfiles
 
+use anyhow::Context;
 use clock_bound::daemon::{clock_parameters::ClockParameters, receiver_stream::RoutableEvent};
 
 use super::ReproEvent;
@@ -31,12 +32,23 @@ pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEve
 
     let mut events = Vec::new();
 
-    for line in reader.lines() {
+    for (idx, line) in reader.lines().enumerate() {
         let Ok(line) = line else {
             tracing::warn!("Could not read line from log file");
             continue;
         };
-        let line: Line = match serde_json::from_str(&line) {
+        // If pulling logs via `aws logs tail`, extra information will be prepended on each line. Strip it out
+        let start_index = line
+            .find('{')
+            .with_context(|| format!("Line {idx} does contain {{. {line}"))?;
+        let end_index = line
+            .rfind('}')
+            .with_context(|| format!("Line {idx} does not contain }} {line}"))?;
+        if end_index < start_index {
+            anyhow::bail!("Json braces out of order on line {idx}: {line}");
+        }
+        let line = &line[start_index..=end_index];
+        let line: Line = match serde_json::from_str(line) {
             Ok(line) => line,
             Err(e) => {
                 tracing::warn!(line, "Could not parse line from log file: {e}");
@@ -44,10 +56,10 @@ pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEve
             }
         };
 
-        match &line.fields {
-            FieldEnum::Init(_init) => events.push(ReproEvent::Init),
+        let repro_event = match &line.fields {
+            FieldEnum::Init(_init) => ReproEvent::Init,
 
-            FieldEnum::Disruption(_disruption) => events.push(ReproEvent::Disruption),
+            FieldEnum::Disruption(_disruption) => ReproEvent::Disruption,
 
             FieldEnum::FeedEvent(fields) => {
                 let event = match fields.parse_event() {
@@ -65,15 +77,20 @@ pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEve
                         continue;
                     }
                 };
-
-                events.push(ReproEvent::Feed { event, output });
+                ReproEvent::Feed { event, output }
             }
-        }
+        };
+        events.push((line.timestamp, repro_event));
     }
 
     if events.is_empty() {
         anyhow::bail!("No events found in log file");
     }
+
+    // Sort by the timestamp
+    events.sort_by(|(a_ts, _), (b_ts, _)| a_ts.cmp(b_ts));
+
+    let events = events.into_iter().map(|(_, e)| e).collect();
 
     Ok(events)
 }
@@ -84,6 +101,14 @@ pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEve
 /// to get the [`NTP event`](clock_bound::daemon::event::Ntp) and [`ClockParameters`]
 #[derive(Debug, Clone, serde::Deserialize)]
 struct Line {
+    /// The timestamp when the log was written
+    ///
+    /// Need this value because a misconfigured cloudwatch can store logs in the incorrect order.
+    /// And we can use this to sort the logs in this case.
+    ///
+    /// Using a string since it's in ISO 8601 format (YYYY-MM-DD HH:MM) which sorts alphabetically
+    timestamp: String,
+    /// The actual fields of the log
     fields: FieldEnum,
 }
 
@@ -135,6 +160,8 @@ impl Fields {
 
 #[cfg(test)]
 mod tests {
+    use clock_bound::daemon::event::TscRtt;
+
     use super::*;
 
     #[test]
@@ -157,5 +184,33 @@ mod tests {
             })
             .count();
         assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
+    }
+
+    #[test]
+    fn scenario_from_cloudwatch_logs() {
+        // this log also has an out of order log event
+        let log = include_str!("cw_tail_12_29_2026.log");
+
+        let events = repro_events_from_reader(log.as_bytes()).unwrap();
+
+        let events: Vec<_> = events
+            .iter()
+            .filter_map(|event| {
+                let ReproEvent::Feed {
+                    event,
+                    output: _params,
+                } = event
+                else {
+                    return None;
+                };
+                Some(event)
+            })
+            .collect();
+
+        assert_eq!(events.len(), 13);
+
+        // verify that it's deserialized and sorted
+        let is_sorted = events.is_sorted_by_key(|e| e.tsc_pre());
+        assert!(is_sorted);
     }
 }
