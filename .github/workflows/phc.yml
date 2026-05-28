@@ -33,7 +33,7 @@ jobs:
     name: PHC Tests
     needs: build
     runs-on:
-      - codebuild-StagingClockBound-${{ github.run_id }}-${{ github.run_attempt }}
+      - codebuild-${{ vars.PHC_X86_FLEET }}-${{ github.run_id }}-${{ github.run_attempt }}
         buildspec-override:true
 
     steps:
