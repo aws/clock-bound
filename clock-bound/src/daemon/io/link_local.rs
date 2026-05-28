@@ -6,7 +6,7 @@ use tokio::{
     io,
     net::UdpSocket,
     sync::{mpsc, watch},
-    time::{self, Instant, Interval, MissedTickBehavior, interval},
+    time::{self, Instant, Interval, MissedTickBehavior, interval, interval_at},
 };
 use tracing::{debug, info};
 
@@ -253,7 +253,13 @@ impl LinkLocal {
         } = self;
 
         *mode = Mode::Normal;
-        *ll_interval = interval(LINK_LOCAL_INTERVAL_DURATION);
+        // `tokio::time::interval` first tick completes immediately,
+        // which would cause us to immediately handle that tick, and poll the NTP server again.
+        // To avoid that behavior, we set the interval to start ahead by at least `LINK_LOCAL_INTERVAL_DURATION`.
+        *ll_interval = interval_at(
+            Instant::now() + LINK_LOCAL_INTERVAL_DURATION,
+            LINK_LOCAL_INTERVAL_DURATION,
+        );
         ll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     }
 }

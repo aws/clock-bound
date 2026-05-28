@@ -38,7 +38,7 @@ fn main() {
             format_clock_status(&now_result.clock_status)
         );
 
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_secs(1));
     }
 }
 
