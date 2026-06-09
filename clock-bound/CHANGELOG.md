@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0-alpha.2] - 2026-05-28
+
+### Fixed
+
+- Fix link-local burst mode to delay the first poll after transitioning back to normal mode.
+
+### Changed
+
+- Fix broken URL links in the top-level README.md file.
+- Add support for reading logs from `aws logs tail` in the ff-tester tool.
+- Add support for writing repro logs to parquet in the ff-tester tool.
+- Allow supplying dynamic codebuild runner in CI.
+
 ## [3.0.0-alpha.1] - 2025-12-02
 
 ### Changed
