@@ -1,0 +1,78 @@
+name: Clock Sync Algorithm Regression Tests
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build
+    runs-on:
+      - codebuild-${{ vars.PHC_X86_FLEET }}-${{ github.run_id }}-${{ github.run_attempt }}
+        buildspec-override:true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cargo build
+        run: cargo build --bin clock-bound-ff-tester --release
+
+      - name: Upload clock-bound-ff-tester artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: clock-bound-ff-tester
+          path: target/release/clock-bound-ff-tester
+
+  regression-test:
+    name: Regression Tests
+    needs: build
+    runs-on:
+      - codebuild-${{ vars.PHC_X86_FLEET }}-${{ github.run_id }}-${{ github.run_attempt }}
+        buildspec-override:true
+    steps:
+      - name: Download ff-tester artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: clock-bound-ff-tester
+
+      - name: Make binary executable
+        run: |
+          echo "Changing permissions of the test artifact to be executable."
+          chmod +x clock-bound-ff-tester
+
+      - name: Download regression test logs from S3
+        run: |
+          echo "Pulling repro logs from S3 into directory regression-logs."
+          mkdir -p regression-logs
+          aws s3 cp s3://${{ secrets.TESTS_S3_BUCKET }}/input regression-logs/ --recursive
+
+      - name: Run repro-replay against log files
+        run: |
+          echo "Running repro-replay against repro logs."
+          for logfile in regression-logs/*; do
+            if [ -f "$logfile" ]; then
+              echo "Processing: $logfile"
+              ./clock-bound-ff-tester repro-replay --logfile "$logfile" --output-dir ./repro-output
+            fi
+          done
+
+      - name: Upload results to S3
+        run: |
+          echo "Uploading results to S3"
+          aws s3 cp ./repro-output s3://${{ secrets.TESTS_S3_BUCKET }}/output/${{ github.run_id }} --recursive
+
+      # TODO: Implement validation logic
+      - name: Validate replay results
+        run: |
+          echo "Placeholder step - validation logic to be added"
