@@ -19,11 +19,11 @@ pub(crate) mod test_assets {
 
     impl TscRtt for TestEvent {
         fn tsc_post(&self) -> TscCount {
-            TscCount::new(self.tsc_post as i128)
+            TscCount::new(self.tsc_post as i64)
         }
 
         fn tsc_pre(&self) -> TscCount {
-            TscCount::new(self.tsc_pre as i128)
+            TscCount::new(self.tsc_pre as i64)
         }
     }
 

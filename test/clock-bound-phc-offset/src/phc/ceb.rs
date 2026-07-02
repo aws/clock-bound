@@ -30,6 +30,6 @@ impl PhcClockErrorBoundReader {
             .trim()
             .parse::<i64>()
             .map_err(|e| CebReadError::ParseInt(e.to_string()))?;
-        Ok(Duration::from_nanos(nanos.into()))
+        Ok(Duration::from_nanos(nanos))
     }
 }

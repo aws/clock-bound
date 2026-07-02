@@ -167,7 +167,7 @@ impl Oscillator {
         let series_start = (TrueDuration::from_secs(0), starting_oscillator_offset);
 
         let end_offset = skew.get() * duration.as_nanos() as f64;
-        let end_offset = starting_oscillator_offset + TrueDuration::from_nanos(end_offset as i128);
+        let end_offset = starting_oscillator_offset + TrueDuration::from_nanos(end_offset as i64);
         let series_end = (duration, end_offset);
 
         let mut offsets: Series<TrueDuration, TrueDuration> =
@@ -175,20 +175,20 @@ impl Oscillator {
 
         if let Some(mut noise) = noise {
             let normal_dist = Normal::new(
-                noise.mean.as_femtos() as f64,
-                noise.std_dev.as_femtos() as f64,
+                noise.mean.as_nanos() as f64,
+                noise.std_dev.as_nanos() as f64,
             )
             .unwrap();
             let noise_points =
-                offsets.indices().last().unwrap().as_femtos() / noise.step_size.as_femtos();
+                offsets.indices().last().unwrap().as_nanos() / noise.step_size.as_nanos();
             let offsets_with_noise: Series<TrueDuration, TrueDuration> = (0..noise_points)
                 .map(|i| {
                     let x = noise.step_size * usize::try_from(i).unwrap();
                     let y = offsets.approximate(x)
                         .expect("Approximation should succeed as noise sampling points are within the original series range");
                     #[allow(clippy::cast_possible_truncation)]
-                    let y = TrueDuration::from_femtos(
-                        y.as_femtos() + normal_dist.sample(noise.rng_mut()).round() as i128,
+                    let y = TrueDuration::from_nanos(
+                        y.as_nanos() + normal_dist.sample(noise.rng_mut()).round() as i64,
                     );
                     (x, y)
                 })
@@ -277,19 +277,19 @@ impl Oscillator {
         if let Some(mut noise) = noise {
             #[allow(clippy::cast_precision_loss)]
             let normal_dist = Normal::new(
-                noise.mean.as_femtos() as f64,
-                noise.std_dev.as_femtos() as f64,
+                noise.mean.as_nanos() as f64,
+                noise.std_dev.as_nanos() as f64,
             )
             .unwrap();
             let noise_points =
-                offsets.indices().last().unwrap().as_femtos() / noise.step_size.as_femtos();
+                offsets.indices().last().unwrap().as_nanos() / noise.step_size.as_nanos();
             let offsets_with_noise: Series<TrueDuration, TrueDuration> = (0..noise_points)
                 .map(|i| {
                     let x = noise.step_size * usize::try_from(i).unwrap();
                     let y = offsets.approximate(x)
                         .expect("Approximation should succeed as noise sampling points are within the original series range");
                     #[allow(clippy::cast_possible_truncation)]
-                    let y = y + TrueDuration::from_femtos(normal_dist.sample(noise.rng_mut()).round() as i128);
+                    let y = y + TrueDuration::from_nanos(normal_dist.sample(noise.rng_mut()).round() as i64);
                     (x, y)
                 })
                 .collect();
@@ -727,8 +727,8 @@ mod test {
     #[case::offset(constant_offset_oscillator(), 10_000_000_000, 9_999_950_000)]
     fn oscillator_estimate_to_true_duration_matches_expected(
         #[case] oscillator: Oscillator,
-        #[case] estimate_nanos: i128,
-        #[case] expected_nanos: i128,
+        #[case] estimate_nanos: i64,
+        #[case] expected_nanos: i64,
     ) {
         let model = FullModel::calculate_from_oscillator(oscillator);
         let estimate = EstimateDuration::from_nanos(estimate_nanos);
@@ -996,8 +996,8 @@ mod test {
         #[allow(clippy::cast_possible_truncation)]
         let noise = Noise::builder()
             .rng(rng)
-            .mean(TrueDuration::from_nanos(mean.round() as i128))
-            .std_dev(TrueDuration::from_nanos(std_dev_ns.round() as i128))
+            .mean(TrueDuration::from_nanos(mean.round() as i64))
+            .std_dev(TrueDuration::from_nanos(std_dev_ns.round() as i64))
             .step_size(TrueDuration::from_millis(10))
             .build();
 
@@ -1014,7 +1014,7 @@ mod test {
         let noisy_offsets = osc_with_noise.offset_series().as_ref().data();
 
         // Calculate mean
-        let sum: i128 = noisy_offsets.iter().map(|d| d.as_nanos()).sum();
+        let sum: i64 = noisy_offsets.iter().map(|d| d.as_nanos()).sum();
         #[allow(clippy::cast_precision_loss)]
         let calculated_mean = sum as f64 / noisy_offsets.len() as f64;
 
@@ -1080,8 +1080,8 @@ mod test {
 
         for (o1, o2) in tiny_noise_offsets.iter().zip(no_noise_offsets.iter()) {
             approx::assert_abs_diff_eq!(
-                o1.as_nanos() as i64,
-                o2.as_nanos() as i64,
+                o1.as_nanos(),
+                o2.as_nanos(),
                 epsilon = 2 // Allow 2ns difference due to tiny std dev noise
             );
         }
@@ -1140,7 +1140,7 @@ mod test {
 
         // Calculate standard deviation
         #[allow(clippy::cast_precision_loss)]
-        let sum: i128 = large_noise_offsets.iter().map(|d| d.as_nanos()).sum();
+        let sum: i64 = large_noise_offsets.iter().map(|d| d.as_nanos()).sum();
         #[allow(clippy::cast_precision_loss)]
         let mean_offset = sum as f64 / large_noise_offsets.len() as f64;
 

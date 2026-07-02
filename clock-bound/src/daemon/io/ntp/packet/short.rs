@@ -196,6 +196,10 @@ mod test {
         let short = Short::from_secs_f64(11.123).unwrap();
         let duration = ClockBoundDuration::from(short);
 
-        assert_eq!(duration.as_seconds_f64(), short.to_secs_f64());
+        approx::assert_abs_diff_eq!(
+            duration.as_seconds_f64(),
+            short.to_secs_f64(),
+            epsilon = 1e-9
+        );
     }
 }

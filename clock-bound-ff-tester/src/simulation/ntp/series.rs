@@ -552,7 +552,7 @@ mod test {
     }
 
     #[fixture]
-    fn true_time_start_nanos() -> i128 {
+    fn true_time_start_nanos() -> i64 {
         1_576_800_000_000_000_000 // 365 * 50 * 24 * 60 * 60 * 1000 * 1000 * 1000
     }
 
@@ -562,22 +562,22 @@ mod test {
     }
 
     #[fixture]
-    fn tsc_timestamp_client_start() -> i128 {
+    fn tsc_timestamp_client_start() -> i64 {
         10_000
     }
 
     #[fixture]
-    fn starting_oscillator_offset_nanos() -> i128 {
+    fn starting_oscillator_offset_nanos() -> i64 {
         200_000
     }
 
     #[fixture]
     fn constant_skew_oscillator_model(
         clock_freq_ghz: f64,
-        true_time_start_nanos: i128,
+        true_time_start_nanos: i64,
         oscillator_skew_ppm: f64,
-        tsc_timestamp_client_start: i128,
-        starting_oscillator_offset_nanos: i128,
+        tsc_timestamp_client_start: i64,
+        starting_oscillator_offset_nanos: i64,
     ) -> FullModel {
         let oscillator = Oscillator::create_simple()
             .clock_frequency(Frequency::from_ghz(clock_freq_ghz))
@@ -591,12 +591,12 @@ mod test {
     }
 
     #[fixture]
-    fn poll_period() -> i128 {
+    fn poll_period() -> i64 {
         16
     }
 
     #[fixture]
-    fn generator(poll_period: i128) -> Generator {
+    fn generator(poll_period: i64) -> Generator {
         let (root_delays, root_dispersions, rtds) = valid_series();
         Generator::builder()
             .poll_period(EstimateDuration::from_secs(poll_period))
@@ -855,7 +855,7 @@ mod test {
         // Check event type and timestamps
         #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
         let client_start_timestamp_in_nanos =
-            (tsc_timestamp_client_start() as f64 / clock_freq_ghz()) as i128;
+            (tsc_timestamp_client_start() as f64 / clock_freq_ghz()) as i64;
         assert_eq!(
             event.client_tsc_pre_time,
             TscCount::new(poll_period() * 1_000_000_000 + client_start_timestamp_in_nanos)
@@ -882,8 +882,8 @@ mod test {
                 .unwrap();
 
         approx::assert_abs_diff_eq!(
-            event.client_tsc_post_time.get() as i64,
-            expected.as_nanos() as i64,
+            event.client_tsc_post_time.get(),
+            expected.as_nanos(),
             epsilon = 2 // 2 ns tolerance
         );
 
@@ -902,8 +902,8 @@ mod test {
                 .unwrap();
 
         approx::assert_abs_diff_eq!(
-            ntp.server_system_recv_time.as_nanos() as i64,
-            expected.as_nanos() as i64,
+            ntp.server_system_recv_time.as_nanos(),
+            expected.as_nanos(),
             epsilon = 1,
         );
 
@@ -915,8 +915,8 @@ mod test {
                 .unwrap();
 
         approx::assert_abs_diff_eq!(
-            ntp.server_system_send_time.as_nanos() as i64,
-            expected.as_nanos() as i64,
+            ntp.server_system_send_time.as_nanos(),
+            expected.as_nanos(),
             epsilon = 1,
         );
 
@@ -952,7 +952,7 @@ mod test {
 
         #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
         let first_client_send_timestamp_in_nanos =
-            (first_event.client_tsc_pre_time.get() as f64 / clock_freq_ghz()) as i128;
+            (first_event.client_tsc_pre_time.get() as f64 / clock_freq_ghz()) as i64;
 
         assert_eq!(
             second_event.client_tsc_pre_time,
@@ -986,7 +986,7 @@ mod test {
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
         let client_skew_between_polls_nanos =
-            (poll_period() as f64 * -oscillator_skew_ppm() * 1_000.0) as i128;
+            (poll_period() as f64 * -oscillator_skew_ppm() * 1_000.0) as i64;
 
         let expected = first_ntp.server_system_recv_time.assume_true()
             - generator

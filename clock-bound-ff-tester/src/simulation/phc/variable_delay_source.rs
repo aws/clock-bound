@@ -260,7 +260,7 @@ mod test {
             .build();
 
         let next_event_ready = generator.next_event_ready(&constant_skew).unwrap();
-        assert_eq!(next_event_ready, TscCount::new(16_000_010_079));
+        assert_eq!(next_event_ready, TscCount::new(16_000_010_078));
     }
 
     #[fixture]

@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 /// Abstraction used to reuse basic time arithmetic, but allow for different types based on its usage
 pub trait Type {}
 
-/// Abstraction for time type whose tick unit is approximately one femtosecond
-pub trait FemtoType: Type {
+/// Abstraction for time type whose tick unit is approximately one nanosecond
+pub trait NanoType: Type {
     /// The type prefix to use in the `Debug` impl
     const INSTANT_PREFIX: &'static str;
     const DURATION_PREFIX: &'static str;
@@ -33,14 +33,14 @@ pub trait FemtoType: Type {
 /// The comparison is bounded by the round-trip-time of this measurement, and thus is useful for
 /// determining the quality of the sample or bounding the clock error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ClockOffsetAndRtt<T: FemtoType + Copy> {
+pub struct ClockOffsetAndRtt<T: NanoType + Copy> {
     /// Offset
     offset: Diff<T>,
     /// RTT
     rtt: Diff<T>,
 }
 
-impl<T: FemtoType + Copy> ClockOffsetAndRtt<T> {
+impl<T: NanoType + Copy> ClockOffsetAndRtt<T> {
     pub(crate) fn new(offset: Diff<T>, rtt: Diff<T>) -> Self {
         Self { offset, rtt }
     }
@@ -61,7 +61,7 @@ pub trait Clock<T: Type + Copy> {
 }
 
 /// Extension trait for Clock that provides offset and RTT measurement functionality
-pub trait ClockExt<T: FemtoType + Copy>: Clock<T> {
+pub trait ClockExt<T: NanoType + Copy>: Clock<T> {
     /// Get the offset and RTT measurement for this reading between this clock and another clock.
     /// The "offset" is from the caller to the `other` clock - e.g. if `self` is running behind `other`,
     /// we would expect a negative value, and if it `self` running ahead of `other`, we expect a positive value.
@@ -77,7 +77,7 @@ pub trait ClockExt<T: FemtoType + Copy>: Clock<T> {
 }
 
 /// Blanket implementation of `ClockExt` for all types that implement Clock
-impl<T: FemtoType + Copy, C: Clock<T>> ClockExt<T> for C {}
+impl<T: NanoType + Copy, C: Clock<T>> ClockExt<T> for C {}
 
 /// Abstract type for Time while keeping arithmetic consistent
 ///
@@ -88,24 +88,24 @@ impl<T: FemtoType + Copy, C: Clock<T>> ClockExt<T> for C {}
 #[serde(transparent)]
 #[repr(transparent)]
 pub struct Time<T> {
-    instant: i128,
+    instant: i64,
     _marker: std::marker::PhantomData<T>,
 }
 
-impl<T: FemtoType + Copy> std::fmt::Debug for Time<T> {
+impl<T: NanoType + Copy> std::fmt::Debug for Time<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug_femtos(f, T::INSTANT_PREFIX, self.as_femtos())
+        debug_nanos(f, T::INSTANT_PREFIX, self.as_nanos())
     }
 }
 
 impl<T> Time<T> {
     /// Get the inner value
-    pub const fn get(&self) -> i128 {
+    pub const fn get(&self) -> i64 {
         self.instant
     }
 }
 
-impl<T> From<Time<T>> for i128 {
+impl<T> From<Time<T>> for i64 {
     fn from(value: Time<T>) -> Self {
         value.instant
     }
@@ -117,7 +117,7 @@ impl<T: Type> Time<T> {
     pub const EPOCH: Self = Self::new(0);
 
     /// constructor
-    pub const fn new(instant: i128) -> Self {
+    pub const fn new(instant: i64) -> Self {
         Self {
             instant,
             _marker: PhantomData,
@@ -133,8 +133,8 @@ impl<T: Type + Copy> Time<T> {
     }
 }
 
-impl<T: Type> From<i128> for Time<T> {
-    fn from(value: i128) -> Self {
+impl<T: Type> From<i64> for Time<T> {
+    fn from(value: i64) -> Self {
         Self::new(value)
     }
 }
@@ -183,64 +183,54 @@ impl<T: Type> SubAssign<Diff<T>> for Time<T> {
     }
 }
 
-impl<T: FemtoType + Copy> Time<T> {
+impl<T: NanoType + Copy> Time<T> {
     pub const UNIX_EPOCH: Self = Self::new(0);
-    pub const MAX: Self = Self::new(i128::MAX);
-    pub const MIN: Self = Self::new(i128::MIN);
+    pub const MAX: Self = Self::new(i64::MAX);
+    pub const MIN: Self = Self::new(i64::MIN);
 
     /// Create a new `Instant` from the number of seconds since the Unix Epoch
-    pub const fn from_secs(secs: i128) -> Self {
-        Self::new(secs * FEMTOS_PER_SEC)
+    pub const fn from_secs(secs: i64) -> Self {
+        Self::new(secs * NANOS_PER_SEC)
     }
 
     /// Create a new `Instant` from the number of milliseconds since the Unix Epoch
-    pub const fn from_millis(millis: i128) -> Self {
-        Self::new(millis * FEMTOS_PER_MILLI)
+    pub const fn from_millis(millis: i64) -> Self {
+        Self::new(millis * NANOS_PER_MILLI)
     }
 
     /// Create a new `Instant` from the number of microseconds since the Unix Epoch
-    pub const fn from_micros(micros: i128) -> Self {
-        Self::new(micros * FEMTOS_PER_MICRO)
+    pub const fn from_micros(micros: i64) -> Self {
+        Self::new(micros * NANOS_PER_MICRO)
     }
 
     /// Create a new `Instant` from the number of nanoseconds since the Unix Epoch
-    pub const fn from_nanos(nanos: i128) -> Self {
-        Self::new(nanos * FEMTOS_PER_NANO)
-    }
-
-    /// Create a new `Instant` from the number of picoseconds since the Unix Epoch
-    pub const fn from_picos(picos: i128) -> Self {
-        Self::new(picos * FEMTOS_PER_PICO)
-    }
-
-    /// Create a new `Instant` from the number of femtoseconds since the Unix Epoch
-    pub const fn from_femtos(femtos: i128) -> Self {
-        Self::new(femtos)
+    pub const fn from_nanos(nanos: i64) -> Self {
+        Self::new(nanos)
     }
 
     /// Create a new `Instant` from the number of minutes since the Unix Epoch
-    pub const fn from_minutes(minutes: i128) -> Self {
-        Self::new(minutes * FEMTOS_PER_SEC * SECS_PER_MINUTE)
+    pub const fn from_minutes(minutes: i64) -> Self {
+        Self::new(minutes * NANOS_PER_SEC * SECS_PER_MINUTE)
     }
 
     /// Create a new `Instant` from the number of hours since the Unix Epoch
-    pub const fn from_hours(hours: i128) -> Self {
-        Self::new(hours * FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR)
+    pub const fn from_hours(hours: i64) -> Self {
+        Self::new(hours * NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR)
     }
 
     /// Create a new `Instant` from the number of days since the Unix Epoch
-    pub const fn from_days(days: i128) -> Self {
-        Self::new(days * FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)
+    pub const fn from_days(days: i64) -> Self {
+        Self::new(days * NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)
     }
 
     /// Construct from the number of seconds and nanos since the Unix Epoch
     ///
     /// # Panics
     /// Panics if `nanos >= 1_000_000_000`, or value does not fit within the type
-    pub fn from_time(secs: i128, nanos: u32) -> Self {
+    pub fn from_time(secs: i64, nanos: u32) -> Self {
         assert!(nanos < 1_000_000_000, "nanos must be less than 1 second");
         let secs = Self::from_secs(secs);
-        let nanos = Diff::<T>::from_nanos(i128::from(nanos));
+        let nanos = Diff::<T>::from_nanos(i64::from(nanos));
         secs + nanos
     }
 
@@ -256,67 +246,57 @@ impl<T: FemtoType + Copy> Time<T> {
     )]
     #[allow(
         clippy::cast_sign_loss,
-        reason = "timespect from clock_gettime tv_nsec should be between 0 and 1e9-1 so no loss of sign"
+        reason = "timespec from clock_gettime tv_nsec should be between 0 and 1e9-1 so no loss of sign"
     )]
     pub fn from_timespec(timespec: TimeSpec) -> Self {
-        Self::from_time(timespec.tv_sec().into(), timespec.tv_nsec() as u32)
+        Self::from_time(timespec.tv_sec(), timespec.tv_nsec() as u32)
     }
 
-    /// Returns the total number of femtoseconds since the Unix Epoch
-    pub const fn as_femtos(self) -> i128 {
+    /// Returns the total number of nanoseconds since the Unix Epoch
+    pub const fn as_nanos(self) -> i64 {
         self.get()
     }
 
-    /// Returns the total number of picoseconds since the Unix Epoch
-    pub const fn as_picos(self) -> i128 {
-        self.get() / FEMTOS_PER_PICO
-    }
-
-    /// Returns the total number of nanoseconds, rounded since the Unix Epoch
-    pub const fn as_nanos(self) -> i128 {
-        (self.get() + FEMTOS_PER_NANO / 2) / FEMTOS_PER_NANO
-    }
-
     /// Returns the total number of microseconds, rounded, since the Unix Epoch
-    pub const fn as_micros(self) -> i128 {
-        (self.get() + FEMTOS_PER_MICRO / 2) / FEMTOS_PER_MICRO
+    pub const fn as_micros(self) -> i64 {
+        (self.get() + NANOS_PER_MICRO / 2) / NANOS_PER_MICRO
     }
 
     /// Returns the total number of milliseconds, rounded, since the Unix Epoch
-    pub const fn as_millis(self) -> i128 {
-        (self.get() + FEMTOS_PER_MILLI / 2) / FEMTOS_PER_MILLI
+    pub const fn as_millis(self) -> i64 {
+        (self.get() + NANOS_PER_MILLI / 2) / NANOS_PER_MILLI
     }
 
     /// Returns the total number of seconds, rounded, since the Unix Epoch
-    pub const fn as_seconds(self) -> i128 {
-        (self.get() + FEMTOS_PER_SEC / 2) / FEMTOS_PER_SEC
+    pub const fn as_seconds(self) -> i64 {
+        (self.get() + NANOS_PER_SEC / 2) / NANOS_PER_SEC
     }
 
     /// Returns the total number of seconds, truncated
-    pub const fn as_seconds_trunc(self) -> i128 {
-        self.get() / FEMTOS_PER_SEC
+    pub const fn as_seconds_trunc(self) -> i64 {
+        self.get() / NANOS_PER_SEC
     }
 
     /// Returns the total number of nanoseconds, truncated
-    pub const fn as_nanos_trunc(self) -> i128 {
-        self.get() / FEMTOS_PER_NANO
+    pub const fn as_nanos_trunc(self) -> i64 {
+        self.get()
     }
 
     /// Returns the total number of minutes, rounded, since the Unix Epoch
-    pub const fn as_minutes(self) -> i128 {
-        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE;
+    pub const fn as_minutes(self) -> i64 {
+        const SCALE_FACTOR: i64 = NANOS_PER_SEC * SECS_PER_MINUTE;
         (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
     /// Returns the total number of hours, rounded, since the Unix Epoch
-    pub const fn as_hours(self) -> i128 {
-        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR;
+    pub const fn as_hours(self) -> i64 {
+        const SCALE_FACTOR: i64 = NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR;
         (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
     /// Returns the total number of days, rounded, since the Unix Epoch
-    pub const fn as_days(self) -> i128 {
-        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY;
+    pub const fn as_days(self) -> i64 {
+        const SCALE_FACTOR: i64 = NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY;
         (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 }
@@ -330,19 +310,19 @@ impl<T: FemtoType + Copy> Time<T> {
 #[serde(transparent)]
 #[repr(transparent)]
 pub struct Diff<T> {
-    duration: i128,
+    duration: i64,
     _marker: PhantomData<T>,
 }
 
-impl<T: FemtoType + Copy> std::fmt::Debug for Diff<T> {
+impl<T: NanoType + Copy> std::fmt::Debug for Diff<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug_femtos(f, T::DURATION_PREFIX, self.as_femtos())
+        debug_nanos(f, T::DURATION_PREFIX, self.as_nanos())
     }
 }
 
 impl<T> Diff<T> {
     /// Inner Count value
-    pub const fn get(&self) -> i128 {
+    pub const fn get(&self) -> i64 {
         self.duration
     }
 
@@ -356,7 +336,7 @@ impl<T> Diff<T> {
     }
 }
 
-impl<T> From<Diff<T>> for i128 {
+impl<T> From<Diff<T>> for i64 {
     fn from(value: Diff<T>) -> Self {
         value.duration
     }
@@ -364,7 +344,7 @@ impl<T> From<Diff<T>> for i128 {
 
 impl<T: Type> Diff<T> {
     /// constructor
-    pub const fn new(duration: i128) -> Self {
+    pub const fn new(duration: i64) -> Self {
         Self {
             duration,
             _marker: PhantomData,
@@ -372,8 +352,8 @@ impl<T: Type> Diff<T> {
     }
 }
 
-impl<T: Type> From<i128> for Diff<T> {
-    fn from(value: i128) -> Self {
+impl<T: Type> From<i64> for Diff<T> {
+    fn from(value: i64) -> Self {
         Self::new(value)
     }
 }
@@ -418,7 +398,7 @@ impl<T: Type> Div<usize> for Diff<T> {
     #[allow(clippy::cast_possible_wrap)]
     fn div(self, rhs: usize) -> Self::Output {
         Self {
-            duration: self.duration / rhs as i128,
+            duration: self.duration / rhs as i64,
             _marker: PhantomData,
         }
     }
@@ -427,16 +407,17 @@ impl<T: Type> Div<usize> for Diff<T> {
 impl<T: Type> DivAssign<usize> for Diff<T> {
     #[allow(clippy::cast_possible_wrap)]
     fn div_assign(&mut self, rhs: usize) {
-        self.duration /= rhs as i128;
+        self.duration /= rhs as i64;
     }
 }
 
 impl<T: Type> Mul<usize> for Diff<T> {
     type Output = Self;
 
+    #[allow(clippy::cast_possible_wrap)]
     fn mul(self, rhs: usize) -> Self::Output {
         Self {
-            duration: self.duration * rhs as i128,
+            duration: self.duration * rhs as i64,
 
             _marker: PhantomData,
         }
@@ -452,8 +433,9 @@ impl<T: Type> Mul<Diff<T>> for usize {
 }
 
 impl<T: Type> MulAssign<usize> for Diff<T> {
+    #[allow(clippy::cast_possible_wrap)]
     fn mul_assign(&mut self, rhs: usize) {
-        self.duration *= rhs as i128;
+        self.duration *= rhs as i64;
     }
 }
 
@@ -468,183 +450,158 @@ impl<T: Type> Neg for Diff<T> {
     }
 }
 
-impl<T: FemtoType + Copy> Diff<T> {
+impl<T: NanoType + Copy> Diff<T> {
     /// zero-valued diff
     pub const ZERO: Self = Self::new(0);
 
     /// Create a new [`Diff`] from the number of seconds
-    pub const fn from_secs(secs: i128) -> Self {
-        Self::new(secs * FEMTOS_PER_SEC)
+    pub const fn from_secs(secs: i64) -> Self {
+        Self::new(secs * NANOS_PER_SEC)
     }
 
     /// Create a new [`Diff`] from the number of seconds in `f64` format
     ///
-    /// Will round to the nearest femtosecond
+    /// Will round to the nearest nanosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
     #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_seconds_f64(secs: f64) -> Self {
-        Self::new((secs * FEMTOS_PER_SEC as f64).round() as i128)
+        Self::new((secs * NANOS_PER_SEC as f64).round() as i64)
     }
 
     /// Create a new [`Diff`] from the number of milliseconds in `f64` format
     ///
-    /// Will round to the nearest femtosecond
+    /// Will round to the nearest nanosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
     #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_millis_f64(millis: f64) -> Self {
-        Self::new((millis * FEMTOS_PER_MILLI as f64).round() as i128)
+        Self::new((millis * NANOS_PER_MILLI as f64).round() as i64)
     }
 
     /// Create a new [`Diff`] from the number of microseconds in `f64` format
     ///
-    /// Will round to the nearest femtosecond
+    /// Will round to the nearest nanosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
     #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_micros_f64(micros: f64) -> Self {
-        Self::new((micros * FEMTOS_PER_MICRO as f64).round() as i128)
+        Self::new((micros * NANOS_PER_MICRO as f64).round() as i64)
     }
 
     /// Create a new [`Diff`] from the number of nanoseconds in `f64` format
     ///
-    /// Will round to the nearest femtosecond
+    /// Will round to the nearest nanosecond
     #[expect(clippy::cast_possible_truncation, reason = "truncation documented")]
-    #[expect(clippy::cast_precision_loss, reason = "const will not wrap")]
     pub const fn from_nanos_f64(nanos: f64) -> Self {
-        Self::new((nanos * FEMTOS_PER_NANO as f64).round() as i128)
+        Self::new(nanos.round() as i64)
     }
 
     /// Create a new [`Diff`] from the number of milliseconds
-    pub const fn from_millis(millis: i128) -> Self {
-        Self::new(millis * FEMTOS_PER_MILLI)
+    pub const fn from_millis(millis: i64) -> Self {
+        Self::new(millis * NANOS_PER_MILLI)
     }
 
     /// Create a new [`Diff`] from the number of microseconds
-    pub const fn from_micros(micros: i128) -> Self {
-        Self::new(micros * FEMTOS_PER_MICRO)
+    pub const fn from_micros(micros: i64) -> Self {
+        Self::new(micros * NANOS_PER_MICRO)
     }
 
     /// Create a new [`Diff`] from the number of nanoseconds
-    pub const fn from_nanos(nanos: i128) -> Self {
-        Self::new(nanos * FEMTOS_PER_NANO)
-    }
-
-    /// Create a new [`Diff`] from the number of picoseconds
-    pub const fn from_picos(picos: i128) -> Self {
-        Self::new(picos * FEMTOS_PER_PICO)
-    }
-
-    /// Create a new [`Diff`] from the number of femtoseconds
-    pub const fn from_femtos(femtos: i128) -> Self {
-        Self::new(femtos)
+    pub const fn from_nanos(nanos: i64) -> Self {
+        Self::new(nanos)
     }
 
     /// Create a new [`Diff`] from the number of minutes
-    pub const fn from_minutes(minutes: i128) -> Self {
-        Self::new(minutes * FEMTOS_PER_SEC * SECS_PER_MINUTE)
+    pub const fn from_minutes(minutes: i64) -> Self {
+        Self::new(minutes * NANOS_PER_SEC * SECS_PER_MINUTE)
     }
 
     /// Create a new [`Diff`] from the number of hours
-    pub const fn from_hours(hours: i128) -> Self {
-        Self::new(hours * FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR)
+    pub const fn from_hours(hours: i64) -> Self {
+        Self::new(hours * NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR)
     }
 
     /// Create a new [`Diff`] from the number of days
-    pub const fn from_days(days: i128) -> Self {
-        Self::new(days * FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)
+    pub const fn from_days(days: i64) -> Self {
+        Self::new(days * NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)
     }
 
     /// Construct from seconds and nanos
     ///
     /// # Panics
     /// Panics if `nanos >= 1_000_000_000`, or value does not fit within the type
-    pub fn from_time(secs: i128, nanos: u32) -> Self {
+    pub fn from_time(secs: i64, nanos: u32) -> Self {
         assert!(nanos < 1_000_000_000, "nanos must be less than 1 second");
 
         let secs = Self::from_secs(secs);
-        let nanos = Self::from_nanos(i128::from(nanos));
+        let nanos = Self::from_nanos(i64::from(nanos));
         secs + nanos
     }
 
-    /// Returns the total number of femtoseconds
-    pub const fn as_femtos(self) -> i128 {
+    /// Returns the total number of nanoseconds
+    pub const fn as_nanos(self) -> i64 {
         self.get()
     }
 
-    /// Returns the total number of picoseconds, rounded
-    pub const fn as_picos(self) -> i128 {
-        (self.get() + FEMTOS_PER_PICO / 2) / FEMTOS_PER_PICO
-    }
-
-    /// Returns the total number of nanoseconds, rounded
-    pub const fn as_nanos(self) -> i128 {
-        (self.get() + FEMTOS_PER_NANO / 2) / FEMTOS_PER_NANO
-    }
-
     /// Returns the total number of microseconds, rounded
-    pub const fn as_micros(self) -> i128 {
-        (self.get() + FEMTOS_PER_MICRO / 2) / FEMTOS_PER_MICRO
+    pub const fn as_micros(self) -> i64 {
+        (self.get() + NANOS_PER_MICRO / 2) / NANOS_PER_MICRO
     }
 
     /// Returns the total number of milliseconds, rounded
-    pub const fn as_millis(self) -> i128 {
-        (self.get() + FEMTOS_PER_MILLI / 2) / FEMTOS_PER_MILLI
+    pub const fn as_millis(self) -> i64 {
+        (self.get() + NANOS_PER_MILLI / 2) / NANOS_PER_MILLI
     }
 
     /// Returns the total number of seconds, rounded
-    pub const fn as_seconds(self) -> i128 {
-        (self.get() + FEMTOS_PER_SEC / 2) / FEMTOS_PER_SEC
+    pub const fn as_seconds(self) -> i64 {
+        (self.get() + NANOS_PER_SEC / 2) / NANOS_PER_SEC
     }
 
     /// Returns the total number of seconds, truncated
-    pub const fn as_seconds_trunc(self) -> i128 {
-        self.get() / FEMTOS_PER_SEC
+    pub const fn as_seconds_trunc(self) -> i64 {
+        self.get() / NANOS_PER_SEC
     }
 
     /// Returns the total number of nanoseconds, truncated
-    pub const fn as_nanos_trunc(self) -> i128 {
-        self.get() / FEMTOS_PER_NANO
+    pub const fn as_nanos_trunc(self) -> i64 {
+        self.get()
     }
 
     /// Returns the total number of seconds as a f64
     #[expect(clippy::cast_precision_loss, reason = "division mitigates")]
     pub const fn as_seconds_f64(self) -> f64 {
-        self.get() as f64 / FEMTOS_PER_SEC as f64
+        self.get() as f64 / NANOS_PER_SEC as f64
     }
 
     /// Returns the total number of minutes, rounded
-    pub const fn as_minutes(self) -> i128 {
-        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE;
+    pub const fn as_minutes(self) -> i64 {
+        const SCALE_FACTOR: i64 = NANOS_PER_SEC * SECS_PER_MINUTE;
         (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
     /// Returns the total number of hours, rounded
-    pub const fn as_hours(self) -> i128 {
-        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR;
+    pub const fn as_hours(self) -> i64 {
+        const SCALE_FACTOR: i64 = NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR;
         (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
     /// Returns the total number of days, rounded
-    pub const fn as_days(self) -> i128 {
-        const SCALE_FACTOR: i128 = FEMTOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY;
+    pub const fn as_days(self) -> i64 {
+        const SCALE_FACTOR: i64 = NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY;
         (self.get() + SCALE_FACTOR / 2) / SCALE_FACTOR
     }
 
     /// Returns the `Duration` converted to a `timeval`.
     /// It's used by `adjtimex`/`ntp_adjtime` in the returned timestamp or in `ADJ_SETOFFSET`.
     ///
-    /// A `timeval` is equivalent to `timespec` in usage, but with normally less resolution..
+    /// A `timeval` is equivalent to `timespec` in usage, but with normally less resolution.
     /// However, a caller may supply `ADJ_NANO` to tell the kernel we want to supply a nanosecond value inside
-    /// `tv_usec`, and so we do that to be consistent with our `clock_adjust` offset resolution).
+    /// `tv_usec`, and so we do that to be consistent with our `clock_adjust` offset resolution.
     /// Thus, this does not return a correct `timeval` by the specifications of the fields themselves, but instead
     /// a `timeval` in the context of an `adjtimex` call with `ADJ_NANO` set.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "tv_sec truncation should be acceptable to i64::MAX for any of our use cases, and tv_usec should be between 0 and 1e9-1 so no truncation"
-    )]
     pub fn to_timeval_nanos(self) -> timeval {
         let mut tv = timeval {
-            tv_sec: self.as_seconds_trunc() as i64,
-            tv_usec: (self.as_nanos_trunc() % NANOS_PER_SECOND) as i64,
+            tv_sec: self.as_seconds_trunc(),
+            tv_usec: self.get() % NANOS_PER_SEC,
         };
         // Normalize the timeval, as `tv_usec` cannot be negative (so we push the "negative" place into `tv_sec`)
         if tv.tv_usec < 0 {
@@ -656,49 +613,46 @@ impl<T: FemtoType + Copy> Diff<T> {
 }
 
 // print in <seconds>.<millis>_<micros>_<nanos> format.
-fn debug_femtos(
+fn debug_nanos(
     f: &mut std::fmt::Formatter<'_>,
     prefix: &'static str,
-    femtos: i128,
+    nanos: i64,
 ) -> std::fmt::Result {
-    let sign = if femtos < 0 { "-" } else { "" };
-    let femtos = femtos.abs();
-    let secs = femtos / FEMTOS_PER_SEC;
-    let nanos = (femtos / FEMTOS_PER_NANO - secs * 1_000_000_000).abs();
-    if nanos == 0 {
+    let sign = if nanos < 0 { "-" } else { "" };
+    let nanos_abs = nanos.abs();
+    let secs = nanos_abs / NANOS_PER_SEC;
+    let sub_nanos = nanos_abs % NANOS_PER_SEC;
+    if sub_nanos == 0 {
         return f
             .debug_tuple(prefix)
             .field(&format_args!("{sign}{secs}.0"))
             .finish();
     }
-    let millis = nanos / 1_000_000;
-    let micros = (nanos / 1_000) % 1_000;
-    let nanos = nanos % 1_000;
-    if nanos == 0 && micros == 0 {
+    let millis = sub_nanos / 1_000_000;
+    let micros = (sub_nanos / 1_000) % 1_000;
+    let nanos_part = sub_nanos % 1_000;
+    if nanos_part == 0 && micros == 0 {
         return f
             .debug_tuple(prefix)
             .field(&format_args!("{sign}{secs}.{millis:0>3}"))
             .finish();
     }
-    if nanos == 0 {
+    if nanos_part == 0 {
         return f
             .debug_tuple(prefix)
             .field(&format_args!("{sign}{secs}.{millis:0>3}_{micros:0>3}"))
             .finish();
     }
-    let formatted = format_args!("{sign}{secs}.{millis:0>3}_{micros:0>3}_{nanos:0>3}");
+    let formatted = format_args!("{sign}{secs}.{millis:0>3}_{micros:0>3}_{nanos_part:0>3}");
     f.debug_tuple(prefix).field(&formatted).finish()
 }
 
-pub(crate) const FEMTOS_PER_SEC: i128 = 1_000_000_000_000_000;
-pub(crate) const FEMTOS_PER_MILLI: i128 = 1_000_000_000_000;
-pub(crate) const FEMTOS_PER_MICRO: i128 = 1_000_000_000;
-pub(crate) const FEMTOS_PER_NANO: i128 = 1_000_000;
-pub(crate) const FEMTOS_PER_PICO: i128 = 1_000;
-pub(crate) const SECS_PER_MINUTE: i128 = 60;
-pub(crate) const MINS_PER_HOUR: i128 = 60;
-pub(crate) const HOURS_PER_DAY: i128 = 24;
-pub(crate) const NANOS_PER_SECOND: i128 = 1_000_000_000;
+pub(crate) const NANOS_PER_SEC: i64 = 1_000_000_000;
+pub(crate) const NANOS_PER_MILLI: i64 = 1_000_000;
+pub(crate) const NANOS_PER_MICRO: i64 = 1_000;
+pub(crate) const SECS_PER_MINUTE: i64 = 60;
+pub(crate) const MINS_PER_HOUR: i64 = 60;
+pub(crate) const HOURS_PER_DAY: i64 = 24;
 
 #[cfg(test)]
 mod test {
@@ -835,7 +789,7 @@ mod test {
     #[case::positive(100, 200, 150)]
     #[case::negative(300, -100, 100)]
     #[case::same(100, 100, 100)]
-    fn midpoint(#[case] a: i128, #[case] b: i128, #[case] expected: i128) {
+    fn midpoint(#[case] a: i64, #[case] b: i64, #[case] expected: i64) {
         let a = TestTimestamp::new(a);
         let b = TestTimestamp::new(b);
         let midpoint = a.midpoint(b);
@@ -846,7 +800,7 @@ mod test {
     fn secs() {
         let time = Instant::from_secs(1);
         assert_eq!(time.as_seconds(), 1);
-        assert_eq!(time.as_femtos(), 1_000_000_000_000_000);
+        assert_eq!(time.as_nanos(), 1_000_000_000);
     }
 
     #[test]
@@ -1011,9 +965,9 @@ mod test {
     #[case(Duration::from_secs(1234567), "Duration(1234567.0)")]
     #[case(Duration::from_seconds_f64(-1.123456), "Duration(-1.123_456)")]
     #[case(Duration::from_secs(0), "Duration(0.0)")]
-    #[case(Duration::from_picos(6500), "Duration(0.000_000_006)")]
+    #[case(Duration::from_nanos(6), "Duration(0.000_000_006)")]
     #[case(Duration::from_micros(-1500), "Duration(-0.001_500)")]
-    #[case(Duration::from_picos(50), "Duration(0.0)")]
+    #[case(Duration::from_nanos(0), "Duration(0.0)")]
     fn duration_debug(#[case] duration: Duration, #[case] expected: &str) {
         assert_eq!(format!("{duration:?}"), expected);
     }
@@ -1025,9 +979,9 @@ mod test {
     #[case(Instant::from_secs(1234567), "Instant(1234567.0)")]
     #[case(Instant::from_micros(-1123456), "Instant(-1.123_456)")]
     #[case(Instant::from_secs(0), "Instant(0.0)")]
-    #[case(Instant::from_picos(6500), "Instant(0.000_000_006)")]
+    #[case(Instant::from_nanos(6), "Instant(0.000_000_006)")]
     #[case(Instant::from_nanos(-1500), "Instant(-0.000_001_500)")]
-    #[case(Instant::from_picos(50), "Instant(0.0)")]
+    #[case(Instant::from_nanos(0), "Instant(0.0)")]
     fn instant_debug(#[case] instant: Instant, #[case] expected: &str) {
         assert_eq!(format!("{instant:?}"), expected);
     }

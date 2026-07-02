@@ -1,6 +1,6 @@
 //! Everything is time. True time is the largely fictional/aspirational concept of what if we knew exactly what time it was, without error
 
-use super::inner::{FemtoType, Type};
+use super::inner::{NanoType, Type};
 
 use crate::time::inner::{Diff, Time};
 
@@ -11,7 +11,7 @@ use super::{EstimateDuration, EstimateInstant};
 pub struct True;
 
 impl Type for True {}
-impl FemtoType for True {
+impl NanoType for True {
     const INSTANT_PREFIX: &'static str = "TrueInstant";
     const DURATION_PREFIX: &'static str = "TrueDuration";
 }
@@ -26,7 +26,7 @@ impl FemtoType for True {
 ///
 /// This type's epoch is UTC. January 1, 1970 0:00:00 UTC (aka “UNIX timestamp”). Counted **without** leap seconds
 ///
-/// This type's inner value is an i128 number of **femto**seconds from epoch.
+/// This type's inner value is an i64 number of **nano**seconds from epoch.
 pub type TrueInstant = Time<True>;
 
 /// The corresponding duration type for [`TrueInstant`]

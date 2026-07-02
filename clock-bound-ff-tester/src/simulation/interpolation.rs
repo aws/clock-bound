@@ -103,9 +103,9 @@ impl SeriesInterpolation for FrequencyModel {
         }
 
         let res = linear()
-            .x(x.as_femtos())
-            .x0(x_window[0].as_femtos())
-            .x1(x_window[1].as_femtos())
+            .x(x.as_nanos())
+            .x0(x_window[0].as_nanos())
+            .x1(x_window[1].as_nanos())
             .y0(y_window[0].get())
             .y1(y_window[1].get())
             .call();
@@ -121,8 +121,8 @@ impl SeriesInterpolation for FrequencyModel {
 
 impl<X, Y> SeriesInterpolation for Series<X, Y>
 where
-    X: PartialOrd + Copy + Into<i128> + From<i128>,
-    Y: PartialOrd + Copy + Into<i128> + From<i128>,
+    X: PartialOrd + Copy + Into<i64> + From<i64>,
+    Y: PartialOrd + Copy + Into<i64> + From<i64>,
 {
     type X = X;
     type Y = Y;
@@ -308,7 +308,7 @@ mod test {
     #[rstest]
     #[case(5, 50)]
     #[case(8, 80)]
-    fn interpolation_basic(#[case] x: i128, #[case] y: i128) {
+    fn interpolation_basic(#[case] x: i64, #[case] y: i64) {
         let index = vec![TrueDuration::from_nanos(0), TrueDuration::from_nanos(10)];
         let data = vec![TrueDuration::from_nanos(0), TrueDuration::from_nanos(100)];
         let series = Series::new(index, data).unwrap();
@@ -322,7 +322,7 @@ mod test {
     #[rstest]
     #[case(0, 5)]
     #[case(10, 25)]
-    fn series_interpolation_exact_points(#[case] x: i128, #[case] y: i128) {
+    fn series_interpolation_exact_points(#[case] x: i64, #[case] y: i64) {
         let index = vec![TrueDuration::from_nanos(0), TrueDuration::from_nanos(10)];
         let data = vec![TrueDuration::from_nanos(5), TrueDuration::from_nanos(25)];
         let series = Series::new(index, data).unwrap();
@@ -342,7 +342,7 @@ mod test {
     #[rstest]
     #[case(-5)]
     #[case(115)]
-    fn series_interpolation_out_of_bounds(#[case] x: i128) {
+    fn series_interpolation_out_of_bounds(#[case] x: i64) {
         let index = vec![TrueDuration::from_nanos(0), TrueDuration::from_nanos(10)];
         let data = vec![TrueDuration::from_nanos(0), TrueDuration::from_nanos(100)];
         let series = Series::new(index, data).unwrap();
@@ -358,7 +358,7 @@ mod test {
     #[rstest]
     #[case(5, 50)]
     #[case(15, 75)]
-    fn series_interpolation_multiple_points(#[case] x: i128, #[case] expected_y: i128) {
+    fn series_interpolation_multiple_points(#[case] x: i64, #[case] expected_y: i64) {
         let index = vec![
             TrueDuration::from_nanos(0),
             TrueDuration::from_nanos(10),

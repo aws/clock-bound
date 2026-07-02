@@ -298,12 +298,12 @@ mod test {
     }
 
     #[fixture]
-    fn poll_period() -> i128 {
+    fn poll_period() -> i64 {
         16
     }
 
     #[fixture]
-    fn generator(poll_period: i128) -> Generator {
+    fn generator(poll_period: i64) -> Generator {
         Generator::builder()
             .poll_period(EstimateDuration::from_secs(poll_period))
             .id("dispersion_increase_period_test".to_string())

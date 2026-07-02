@@ -141,8 +141,8 @@ pub struct TimeAndBoundAndStatus {
 }
 impl From<ClockBoundNowResult> for TimeAndBoundAndStatus {
     fn from(value: ClockBoundNowResult) -> Self {
-        let time = Instant::from_nanos(value.timestamp.into());
-        let ceb = Duration::from_nanos(value.ceb.into());
+        let time = Instant::from_nanos(value.timestamp);
+        let ceb = Duration::from_nanos(value.ceb);
         let status = value.clock_status;
 
         TimeAndBoundAndStatus { time, ceb, status }

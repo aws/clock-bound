@@ -83,10 +83,10 @@ mod test {
         let delay_value = delay.get_value(&mut rng);
         #[allow(clippy::cast_possible_truncation)]
         let expected_value = match unit {
-            TimeUnit::Secs => TrueDuration::from_secs(v as i128),
-            TimeUnit::Millis => TrueDuration::from_millis(v as i128),
-            TimeUnit::Micros => TrueDuration::from_micros(v as i128),
-            TimeUnit::Nanos => TrueDuration::from_nanos(v as i128),
+            TimeUnit::Secs => TrueDuration::from_secs(v as i64),
+            TimeUnit::Millis => TrueDuration::from_millis(v as i64),
+            TimeUnit::Micros => TrueDuration::from_micros(v as i64),
+            TimeUnit::Nanos => TrueDuration::from_nanos(v as i64),
         };
 
         assert_eq!(expected_value, delay_value);

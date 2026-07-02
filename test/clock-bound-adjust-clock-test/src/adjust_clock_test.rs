@@ -181,7 +181,7 @@ impl ClockAdjustTestParameters {
         let time_since_pll_start = time - pll_start_time;
 
         // Only work with positive values to make our lives easier. We'll deal with it after.
-        let mut remaining_correction = if self.phase_correction.as_femtos() < 0 {
+        let mut remaining_correction = if self.phase_correction.get() < 0 {
             -self.phase_correction
         } else {
             self.phase_correction
@@ -211,7 +211,7 @@ impl ClockAdjustTestParameters {
 
         // `remaining_correction` is positive. If initial `phase_correction` was negative, we should add it,
         // else subtract it.
-        if self.phase_correction.as_femtos() < 0 {
+        if self.phase_correction.get() < 0 {
             self.phase_correction + remaining_correction
         } else {
             self.phase_correction - remaining_correction
@@ -235,7 +235,7 @@ impl ClockAdjustTestParameters {
         // This may introduce some loss in precision, but over the duration of these tests
         // and because of the nature of the measurement of the offset of the clocks, this is OK
         let time_in_nanos_adjusted_for_skew = time_in_nanos as f64 * self.skew.get();
-        Duration::from_nanos(time_in_nanos_adjusted_for_skew as i128)
+        Duration::from_nanos(time_in_nanos_adjusted_for_skew as i64)
     }
 }
 
@@ -260,7 +260,7 @@ mod tests {
 
     use super::*;
 
-    const FEMTOS_PER_SEC: i128 = 1_000_000_000_000_000;
+    const NANOS_PER_SEC: i64 = 1_000_000_000;
 
     struct OffsetChangeSnapshot {
         pub time_since_start: Duration,
@@ -270,7 +270,7 @@ mod tests {
     #[rstest]
     #[case::zero_phase_correction(
         Duration::from_secs(0),
-        Instant::from(FEMTOS_PER_SEC / 2),
+        Instant::from(NANOS_PER_SEC / 2),
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot { time_since_start: Duration::from_secs(0), offset_change: Duration::from_secs(0) },
@@ -280,7 +280,7 @@ mod tests {
     )]
     #[case::big_positive_phase_correction(
         Duration::from_millis(500), // Correct 0.5 seconds
-        Instant::from(FEMTOS_PER_SEC / 2), // Start mid second
+        Instant::from(NANOS_PER_SEC / 2), // Start mid second
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot {
@@ -307,7 +307,7 @@ mod tests {
     )]
     #[case::big_negative_phase_correction(
         -Duration::from_millis(500), // Correct 0.5 seconds
-        Instant::from(FEMTOS_PER_SEC / 2), // Start mid second
+        Instant::from(NANOS_PER_SEC / 2), // Start mid second
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot {
@@ -355,7 +355,7 @@ mod tests {
     #[rstest]
     #[case::zero_skew(
         Skew::from_ppm(0.0),
-        Instant::from(FEMTOS_PER_SEC / 2),
+        Instant::from(NANOS_PER_SEC / 2),
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot { time_since_start: Duration::from_secs(0), offset_change: Duration::from_secs(0) },
@@ -366,7 +366,7 @@ mod tests {
     )]
     #[case::positive_skew_100_ppm(
         Skew::from_ppm(100.0), // 100 ppm positive skew
-        Instant::from(FEMTOS_PER_SEC / 2),
+        Instant::from(NANOS_PER_SEC / 2),
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot {
@@ -389,7 +389,7 @@ mod tests {
     )]
     #[case::negative_skew_50_ppm(
         Skew::from_ppm(-50.0), // 50 ppm negative skew
-        Instant::from(FEMTOS_PER_SEC / 2),
+        Instant::from(NANOS_PER_SEC / 2),
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot {
@@ -412,7 +412,7 @@ mod tests {
     )]
     #[case::large_positive_skew_1000_ppm(
         Skew::from_ppm(1000.0), // 1000 ppm (0.1%) positive skew
-        Instant::from(FEMTOS_PER_SEC / 2),
+        Instant::from(NANOS_PER_SEC / 2),
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot {
@@ -431,7 +431,7 @@ mod tests {
     )]
     #[case::fractional_time_positive_skew(
         Skew::from_ppm(200.0), // 200 ppm positive skew
-        Instant::from(FEMTOS_PER_SEC / 2),
+        Instant::from(NANOS_PER_SEC / 2),
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot {
@@ -454,7 +454,7 @@ mod tests {
     )]
     #[case::very_small_skew(
         Skew::from_ppm(0.1), // Very small 0.1 ppm skew
-        Instant::from(FEMTOS_PER_SEC / 2),
+        Instant::from(NANOS_PER_SEC / 2),
         Duration::from_secs(0),
         vec![
             OffsetChangeSnapshot {

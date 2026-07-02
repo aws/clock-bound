@@ -172,9 +172,9 @@ mod tests {
             assert_eq!(param.tsc_count, tsc_midpoint, "Failure at idx {idx}");
             assert!(
                 approx::abs_diff_eq!(
-                    param.time.into_estimate().as_picos() as i64,
-                    phc.phc_time.as_picos() as i64,
-                    epsilon = 10
+                    param.time.into_estimate().as_nanos(),
+                    phc.phc_time.as_nanos(),
+                    epsilon = 1
                 ),
                 "Failure at idx {idx}. parameters not expected: {param:#?}\nexpected {}\ngot{}",
                 phc.phc_time.get(),

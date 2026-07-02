@@ -136,15 +136,16 @@ impl TryFrom<PhcSample> for event::Phc {
             return Err(TryFromPhcSampleError::InvalidClockErrorBound);
         }
 
+        #[allow(clippy::cast_possible_wrap)]
+        let tsc_pre = TscCount::new(sample.counter_pre as i64);
+        #[allow(clippy::cast_possible_wrap)]
+        let tsc_post = TscCount::new(sample.counter_post as i64);
         let builder = event::Phc::builder()
-            .tsc_pre(TscCount::new(sample.counter_pre.into()))
-            .tsc_post(TscCount::new(sample.counter_post.into()))
+            .tsc_pre(tsc_pre)
+            .tsc_post(tsc_post)
             .data(PhcData {
-                time: Instant::from_time(
-                    sample.ptp_clock_time.sec.into(),
-                    sample.ptp_clock_time.nsec,
-                ),
-                clock_error_bound: Duration::from_nanos(sample.ptp_clock_error_bound_nsec.into()),
+                time: Instant::from_time(sample.ptp_clock_time.sec, sample.ptp_clock_time.nsec),
+                clock_error_bound: Duration::from_nanos(sample.ptp_clock_error_bound_nsec),
             });
 
         match builder.build() {

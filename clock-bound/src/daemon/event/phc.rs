@@ -455,25 +455,25 @@ mod tests {
     #[rstest]
     #[case::first_two(
         // First event
-        (TscCount::new(1369766986771638), TscCount::new(1369766987268186), Instant::from_femtos(1763156375539567199000000), Duration::from_femtos(15_258_789_063)),
+        (TscCount::new(1369766986771638), TscCount::new(1369766987268186), Instant::from_nanos(1763156375539567199), Duration::from_nanos(15259)),
         // Second event
-        (TscCount::new(1369767115896036), TscCount::new(1369767116312166), Instant::from_femtos(1763156375589220795000000), Duration::from_femtos(15_258_789_063)),
+        (TscCount::new(1369767115896036), TscCount::new(1369767116312166), Instant::from_nanos(1763156375589220795), Duration::from_nanos(15259)),
         Period::from_seconds(3.84660556685218820E-10),
         Period::from_seconds(1.601932955446111e-12),
     )]
     #[case::longer_term(
         // First event
-        (TscCount::new(1372612880990286), TscCount::new(1372612881496636), Instant::from_femtos(1763157470124988894000000), Duration::from_femtos(30517578125)),
+        (TscCount::new(1372612880990286), TscCount::new(1372612881496636), Instant::from_nanos(1763157470124988894), Duration::from_nanos(30518)),
         // Second event
-        (TscCount::new(1372984678771576), TscCount::new(1372984679237314), Instant::from_femtos(1763157613125523830000000), Duration::from_femtos(15258789063)),
+        (TscCount::new(1372984678771576), TscCount::new(1372984679237314), Instant::from_nanos(1763157613125523830), Duration::from_nanos(15259)),
         Period::from_seconds(3.846191396030325e-10),
         Period::from_seconds(6.259276438100348e-16),
     )]
     #[case::backward(
         // Second event
-        (TscCount::new(1369767115896036), TscCount::new(1369767116312166), Instant::from_femtos(1763156375589220795000000), Duration::from_femtos(15_258_789_063)),
+        (TscCount::new(1369767115896036), TscCount::new(1369767116312166), Instant::from_nanos(1763156375589220795), Duration::from_nanos(15259)),
         // First event
-        (TscCount::new(1369766986771638), TscCount::new(1369766987268186), Instant::from_femtos(1763156375539567199000000), Duration::from_femtos(15_258_789_063)),
+        (TscCount::new(1369766986771638), TscCount::new(1369766987268186), Instant::from_nanos(1763156375539567199), Duration::from_nanos(15259)),
         Period::from_seconds(3.84660556685218820E-10),
         Period::from_seconds(1.601932955446111e-12),
     )]

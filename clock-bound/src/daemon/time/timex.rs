@@ -38,11 +38,11 @@ impl Timex {
     pub fn time(&self) -> Instant {
         let tv = self.0.time;
         let fractional_part = if self.0.status & STA_NANO > 0 {
-            Duration::from_nanos(tv.tv_usec.into())
+            Duration::from_nanos(tv.tv_usec)
         } else {
-            Duration::from_micros(tv.tv_usec.into())
+            Duration::from_micros(tv.tv_usec)
         };
-        Instant::from_secs(tv.tv_sec.into()) + fractional_part
+        Instant::from_secs(tv.tv_sec) + fractional_part
     }
 
     /// Reads the given `freq` from the underlying `timex`.
@@ -99,7 +99,7 @@ impl Timex {
             // Set `modes` bits for all fields we modify, plus ADJ_NANO to use nanosecond units
             // and ADJ_STATUS to set status bits below.
             modes: MOD_FREQUENCY | MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS,
-            offset: phase_correction.as_nanos_trunc() as i64,
+            offset: phase_correction.as_nanos_trunc(),
             freq: skew.to_timex_freq(),
             maxerror: 0,
             esterror: 0,
@@ -177,7 +177,7 @@ impl Timex {
             // Set `modes` bits for all fields we modify, plus ADJ_NANO to use nanosecond units
             // and ADJ_STATUS to set status bits below.
             modes: MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS,
-            offset: phase_correction.as_nanos_trunc() as i64,
+            offset: phase_correction.as_nanos_trunc(),
             freq: 0,
             maxerror: 0,
             esterror: 0,

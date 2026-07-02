@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// Represents the NTP packet round trip as defined in RFC 5905.
 ///
 /// NOTE: This is NOT a perfect representation of a packet. Instants and durations in this struct
-/// are stored via a count of femtoseconds. However, the NTP packet format stores in a "fixed point"
+/// are stored via a count of nanoseconds. However, the NTP packet format stores in a "fixed point"
 /// type which tends to only have non-whole microsecond step values. We are choosing this trade-off
 /// to reduce complexity in generating events. The logic for converting into NTP-specific values
 /// will be codified elsewhere.

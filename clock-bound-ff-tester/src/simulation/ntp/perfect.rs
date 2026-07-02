@@ -257,7 +257,7 @@ mod test {
         // If this test starts failing, evaluate whether or not this
         // is the best testing mechanism.
         let event = generator.generate(&constant_skew);
-        assert_eq!(event.client_tsc_post_time, TscCount::new(16_000_166_998));
+        assert_eq!(event.client_tsc_post_time, TscCount::new(16_000_166_999));
         let ntp = event.variants.ntp().unwrap();
         assert_eq!(event.client_tsc_pre_time, TscCount::new(16_000_010_000));
         assert_eq!(

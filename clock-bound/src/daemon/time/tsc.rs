@@ -3,7 +3,7 @@
 #![expect(clippy::cast_precision_loss)]
 
 use crate::daemon::time::Instant;
-use crate::daemon::time::inner::FemtoType;
+use crate::daemon::time::inner::NanoType;
 
 use super::Duration;
 use super::inner::{Diff, Time};
@@ -15,7 +15,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const FEMTOS_PER_SEC_F64: f64 = 1.0e15;
+const NANOS_PER_SEC_F64: f64 = 1.0e9;
 
 const FREQUENCY_TO_TIMEX_SCALE: f64 = (1 << 16) as f64;
 
@@ -76,7 +76,7 @@ impl TscCount {
     /// See [`TscCount::uncorrected_time`] for variable definitions
     pub fn from_uncorrected_time(t: Instant, p: Period, k: Instant) -> Self {
         let diff = t - k;
-        let ticks = (diff.as_seconds_f64() / p.get()).round() as i128;
+        let ticks = (diff.as_seconds_f64() / p.get()).round() as i64;
         Self::new(ticks)
     }
 }
@@ -86,7 +86,7 @@ impl std::str::FromStr for TscCount {
     type Err = std::num::ParseIntError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        i128::from_str(s).map(Self::new)
+        i64::from_str(s).map(Self::new)
     }
 }
 
@@ -95,15 +95,15 @@ impl std::str::FromStr for TscDiff {
     type Err = std::num::ParseIntError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        i128::from_str(s).map(Self::new)
+        i64::from_str(s).map(Self::new)
     }
 }
 
 /// A frequency in Hz
 ///
 /// ## Note on lossy-ness
-/// All time durations are stored internally as `i128` values,
-/// and this includes period values of ticks . This means it is possible
+/// All time durations are stored internally as `i64` nanosecond values,
+/// and this includes period values of ticks. This means it is possible
 /// to store frequency values that will have precision loss when converted into
 /// a `period` type and vice versa.
 #[derive(Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -213,18 +213,18 @@ impl Div<Frequency> for TscDiff {
 
     fn div(self, rhs: Frequency) -> Self::Output {
         let raw = self.get() as f64;
-        let duration_femtos = raw / rhs.0 * FEMTOS_PER_SEC_F64;
-        Duration::from_femtos(duration_femtos.round() as i128)
+        let duration_nanos = raw / rhs.0 * NANOS_PER_SEC_F64;
+        Duration::from_nanos(duration_nanos.round() as i64)
     }
 }
 
-impl<T: FemtoType + Copy> Mul<Frequency> for Diff<T> {
+impl<T: NanoType + Copy> Mul<Frequency> for Diff<T> {
     type Output = TscDiff;
 
     fn mul(self, rhs: Frequency) -> Self::Output {
-        let duration_femtos = self.as_femtos() as f64;
-        let raw = duration_femtos * rhs.0 / FEMTOS_PER_SEC_F64;
-        TscDiff::new(raw.round() as i128)
+        let duration_nanos = self.as_nanos() as f64;
+        let raw = duration_nanos * rhs.0 / NANOS_PER_SEC_F64;
+        TscDiff::new(raw.round() as i64)
     }
 }
 
@@ -402,7 +402,7 @@ impl std::str::FromStr for Skew {
 /// `[Period] = 1 / [Frequency]`
 ///
 /// ## Note on lossy-ness
-/// All time durations are stored internally as `i128` values. This means it is possible
+/// All time durations are stored internally as `i64` nanosecond values. This means it is possible
 /// to store frequency values that will have precision loss when converted from
 /// measurements based on [`Duration`] types
 ///
@@ -492,7 +492,7 @@ impl Div<Period> for Duration {
 
     fn div(self, rhs: Period) -> Self::Output {
         let diff = self.as_seconds_f64() / rhs.get();
-        TscDiff::new(diff.round() as i128)
+        TscDiff::new(diff.round() as i64)
     }
 }
 
@@ -808,7 +808,7 @@ mod tests {
         let expected_period = 1.0 / 3.3e9; // 3.3GHz
         let one_second = 1.0_f64;
         let tsc_diff = one_second / expected_period;
-        let tsc_diff = TscDiff::new(tsc_diff.round() as i128);
+        let tsc_diff = TscDiff::new(tsc_diff.round() as i64);
 
         let one_second = Duration::from_seconds_f64(one_second);
         let period = one_second / tsc_diff;

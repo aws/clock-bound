@@ -360,17 +360,17 @@ mod tests {
     /// with parameters similar to the example output
     fn create_sine_oscillator_file() -> anyhow::Result<NamedTempFile> {
         // This matches the sine oscillator output with 20s duration and 1s sample period
-        let mut oscillator_json = json!({
-            "system_start_time": 1_748_583_788_901_252_492_i128,
+        let oscillator_json = json!({
+            "system_start_time": 1_748_583_788_901_252_492_i64,
             "tsc_timestamp_start": 0,
             "clock_frequency": 1_000_000_000.0_f64,
             "oscillator_offsets": {
                 "inner": {
                     "indices": [
-                        0_i128, 1_000_000_000_i128, 2_000_000_000_i128, 3_000_000_000_i128, 4_000_000_000_i128,
-                        5_000_000_000_i128, 6_000_000_000_i128, 7_000_000_000_i128, 8_000_000_000_i128, 9_000_000_000_i128,
-                        10_000_000_000_i128, 11_000_000_000_i128, 12_000_000_000_i128, 13_000_000_000_i128, 14_000_000_000_i128,
-                        15_000_000_000_i128, 16_000_000_000_i128, 17_000_000_000_i128, 18_000_000_000_i128, 19_000_000_000_i128
+                        0_i64, 1_000_000_000_i64, 2_000_000_000_i64, 3_000_000_000_i64, 4_000_000_000_i64,
+                        5_000_000_000_i64, 6_000_000_000_i64, 7_000_000_000_i64, 8_000_000_000_i64, 9_000_000_000_i64,
+                        10_000_000_000_i64, 11_000_000_000_i64, 12_000_000_000_i64, 13_000_000_000_i64, 14_000_000_000_i64,
+                        15_000_000_000_i64, 16_000_000_000_i64, 17_000_000_000_i64, 18_000_000_000_i64, 19_000_000_000_i64
                     ],
                     "data": [
                         0, 837, 1675, 2511, 3347,
@@ -381,20 +381,6 @@ mod tests {
                 }
             }
         });
-
-        // transform from nanoseconds to femtoseconds
-        let indices = oscillator_json["oscillator_offsets"]["inner"]["indices"]
-            .as_array_mut()
-            .unwrap();
-        for i in indices.iter_mut() {
-            *i = Value::from(i.as_i64().unwrap() * 1_000_000);
-        }
-        let data = oscillator_json["oscillator_offsets"]["inner"]["data"]
-            .as_array_mut()
-            .unwrap();
-        for d in data.iter_mut() {
-            *d = Value::from(d.as_i64().unwrap() * 1_000_000);
-        }
 
         let mut temp_file = NamedTempFile::new()?;
         write!(temp_file, "{oscillator_json}")?;

@@ -343,12 +343,12 @@ mod test {
         };
         assert!(
             (mean_forward_network_delay
-                - TrueDuration::from_micros((gamma_shape / gamma_rate) as i128))
+                - TrueDuration::from_micros((gamma_shape / gamma_rate) as i64))
             .abs()
-                < TrueDuration::from_micros((gamma_shape / gamma_rate.powi(2)) as i128)
+                < TrueDuration::from_micros((gamma_shape / gamma_rate.powi(2)) as i64)
         );
         assert!(
-            (mean_backward_network_delay - TrueDuration::from_millis(normal_mean as i128)).abs()
+            (mean_backward_network_delay - TrueDuration::from_millis(normal_mean as i64)).abs()
                 < TrueDuration::from_micros(500)
         );
         assert_eq!(mean_server, server);

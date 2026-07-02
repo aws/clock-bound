@@ -4,7 +4,7 @@ This directory contains the source code for a test program `clock-bound-now`.
 
 ### `clock-bound-now`
 This program reads the SHM segment and the VMClock marker and outputs the earliest and latest
-timestamps (in femtoseconds), the status of the clock, and the "error bound" itself. It outputs this
+timestamps (in nanoseconds), the status of the clock, and the "error bound" itself. It outputs this
 to stdout as JSON to be used in scripts.
 
 ## Prerequisites

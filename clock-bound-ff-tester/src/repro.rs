@@ -1,5 +1,6 @@
 //! Reproduction utilities
 
+mod legacy_femtoseconds;
 mod log_parse;
 pub use log_parse::{repro_events_from_log_file, repro_events_from_reader};
 
@@ -17,7 +18,6 @@ use clock_bound::daemon::{
 };
 
 /// Events fed into the `ClockSyncAlgorithm`
-#[expect(clippy::large_enum_variant)]
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum ReproEvent {
     /// Feed a routable event into the clock sync algorithm
@@ -392,6 +392,28 @@ mod tests {
     #[test]
     fn scenario_from_logs() {
         let example_log = include_str!("repro/test_11_06_2025.log");
+
+        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
+
+        let param_count = events
+            .iter()
+            .filter_map(|event| {
+                let ReproEvent::Feed {
+                    event: _event,
+                    output: params,
+                } = event
+                else {
+                    return None;
+                };
+                params.as_ref()
+            })
+            .count();
+        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
+    }
+
+    #[test]
+    fn scenario_from_nanos_logs() {
+        let example_log = include_str!("repro/test_11_06_2025_nanos.log");
 
         let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
 

@@ -199,10 +199,6 @@ impl Phc {
     ///
     /// This updates the local buffer with the event. If a `period` has been calculated already,
     /// then we can use this value to update the `estimate` buffer as well.
-    #[expect(
-        clippy::result_large_err,
-        reason = "returning passed in value is idiomatic"
-    )]
     fn feed_internal_buffers(&mut self, event: event::Phc) -> Result<bool, FeedError<event::Phc>> {
         let event_rtt = event.rtt();
         self.local.feed(event.clone())?;

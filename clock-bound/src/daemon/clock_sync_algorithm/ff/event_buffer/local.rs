@@ -258,7 +258,7 @@ mod tests {
         // Buffer should only contain last 3 events
         assert_eq!(buffer.iter().count(), 3);
         for (i, event) in buffer.iter().enumerate() {
-            assert_eq!(event.tsc_pre().get(), ((i + 2) * 100) as i128);
+            assert_eq!(event.tsc_pre().get(), ((i + 2) * 100) as i64);
         }
     }
 

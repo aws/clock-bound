@@ -74,9 +74,13 @@ pub async fn sample_packet(
     #[cfg(not(test))]
     let system_clock_reading = crate::daemon::event::SystemClockMeasurement::now();
 
+    #[allow(clippy::cast_possible_wrap)]
+    let tsc_pre = TscCount::new(send_timestamp as i64);
+    #[allow(clippy::cast_possible_wrap)]
+    let tsc_post = TscCount::new(received_timestamp as i64);
     let builder = event::Ntp::builder()
-        .tsc_pre(TscCount::new(send_timestamp.into()))
-        .tsc_post(TscCount::new(received_timestamp.into()))
+        .tsc_pre(tsc_pre)
+        .tsc_post(tsc_post)
         .ntp_data(ntp_data);
 
     let ntp_event = {

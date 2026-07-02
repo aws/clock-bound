@@ -16,7 +16,7 @@ use clock_bound::daemon::time as cb_time;
 pub struct Estimate;
 
 impl super::inner::Type for Estimate {}
-impl super::inner::FemtoType for Estimate {
+impl super::inner::NanoType for Estimate {
     const INSTANT_PREFIX: &'static str = "EstimateInstant";
     const DURATION_PREFIX: &'static str = "EstimateDuration";
 }
@@ -27,7 +27,7 @@ impl super::inner::FemtoType for Estimate {
 ///
 /// This type's epoch is January 1, 1970 0:00:00 UTC (aka "UNIX timestamp")
 ///
-/// This type's inner value is an i128 number of nanoseconds from epoch.
+/// This type's inner value is an i64 number of nanoseconds from epoch.
 pub type EstimateInstant = Time<Estimate>;
 
 /// The corresponding duration type for [`EstimateInstant`]

@@ -201,7 +201,6 @@ impl Ntp {
     ///
     /// This updates the local buffer with the event. If a `period` has been calculated already,
     /// then we can use this value to update the `estimate` buffer as well.
-    #[expect(clippy::result_large_err, reason = "value moved on err is idiomatic")]
     fn feed_internal_buffers(&mut self, event: event::Ntp) -> Result<bool, FeedError<event::Ntp>> {
         let event_rtt = event.rtt();
         self.local.feed(event)?;

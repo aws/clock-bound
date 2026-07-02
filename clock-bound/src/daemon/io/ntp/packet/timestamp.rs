@@ -137,7 +137,7 @@ impl From<Timestamp> for DateTime<Utc> {
 impl From<Timestamp> for ClockBoundInstant {
     fn from(value: Timestamp) -> Self {
         let dt = value.to_utc_datetime();
-        Self::from_time(i128::from(dt.timestamp()), dt.timestamp_subsec_nanos())
+        Self::from_time(dt.timestamp(), dt.timestamp_subsec_nanos())
     }
 }
 

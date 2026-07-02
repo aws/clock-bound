@@ -4,12 +4,59 @@ use anyhow::Context;
 use clock_bound::daemon::{clock_parameters::ClockParameters, receiver_stream::RoutableEvent};
 
 use super::ReproEvent;
+use super::legacy_femtoseconds;
 
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read},
     path::Path,
 };
+
+/// Any time field exceeding this value cannot be a valid nanosecond timestamp.
+/// Corresponds to roughly year 2535 in nanoseconds. Values above this in the first
+/// feed event indicate we are reading the legacy femtosecond format.
+const FEMTOSECOND_THRESHOLD: i128 = 17_828_542_000_000_000_000;
+
+/// The detected log format for a given log file
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Current format: i64 nanoseconds (previously was i128 femtoseconds)
+    Current,
+    /// Legacy format: i128 femtoseconds
+    Femtoseconds,
+}
+
+impl LogFormat {
+    /// Detect the log format from a raw event JSON string
+    ///
+    /// Scans for `server_recv_time` or `"time"` key and checks whether
+    /// its value exceeds the femtosecond threshold.
+    pub fn detect_from_event_str(event_json: &str) -> Self {
+        for key in ["server_recv_time", "\"time\""] {
+            if let Some(value) = extract_numeric_value_after_key(event_json, key) {
+                if value > FEMTOSECOND_THRESHOLD {
+                    return Self::Femtoseconds;
+                }
+                return Self::Current;
+            }
+        }
+        // Default to current format if we can't detect
+        Self::Current
+    }
+}
+
+/// Extract a numeric value that follows a given key in a JSON string
+fn extract_numeric_value_after_key(json: &str, key: &str) -> Option<i128> {
+    let idx = json.find(key)?;
+    let after_key = &json[idx + key.len()..];
+    let colon_idx = after_key.find(':')?;
+    let after_colon = after_key[colon_idx + 1..].trim_start();
+    let num_str: String = after_colon
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    num_str.parse::<i128>().ok()
+}
 
 /// Read a logfile and return all inputs and outputs from the `ClockSyncAlgorithm`
 ///
@@ -25,12 +72,17 @@ pub fn repro_events_from_log_file(file_path: impl AsRef<Path>) -> anyhow::Result
 ///
 /// Returns a Scenario, and the output from every call into `ClockSyncAlgorithm::feed_link_local`
 ///
+/// Automatically detects whether the log uses the legacy femtosecond format or the
+/// current nanosecond format by inspecting the first feed event. Legacy values are
+/// converted to nanoseconds transparently.
+///
 /// # Errors
 /// Returns errors if the logfile is corrupted
 pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEvent>> {
     let reader = BufReader::new(input);
 
     let mut events = Vec::new();
+    let mut detected_format: Option<LogFormat> = None;
 
     for (idx, line) in reader.lines().enumerate() {
         let Ok(line) = line else {
@@ -62,7 +114,20 @@ pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEve
             FieldEnum::Disruption(_disruption) => ReproEvent::Disruption,
 
             FieldEnum::FeedEvent(fields) => {
-                let event = match fields.parse_event() {
+                // Detect the log format on the first feed event
+                if detected_format.is_none() {
+                    let raw_event = fields.event.replace("\\\"", "\"");
+                    detected_format = Some(LogFormat::detect_from_event_str(&raw_event));
+                    if detected_format == Some(LogFormat::Femtoseconds) {
+                        tracing::info!(
+                            "Detected legacy femtosecond log format, converting to nanoseconds"
+                        );
+                    }
+                }
+
+                let format = detected_format.unwrap_or(LogFormat::Current);
+
+                let event = match fields.parse_event(format) {
                     Ok(event) => event,
                     Err(e) => {
                         tracing::warn!(line = ?line, "Could not parse event: {e}");
@@ -70,13 +135,14 @@ pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEve
                     }
                 };
 
-                let output = match fields.parse_output() {
+                let output = match fields.parse_output(format) {
                     Ok(output) => output,
                     Err(e) => {
                         tracing::warn!(line = ?line, "Could not parse output: {e}");
                         continue;
                     }
                 };
+
                 ReproEvent::Feed { event, output }
             }
         };
@@ -145,16 +211,26 @@ struct Fields {
 }
 
 impl Fields {
-    fn parse_output(&self) -> anyhow::Result<Option<ClockParameters>> {
-        let unescaped = self.output.replace("\\\"", "\"");
-        let retval: Option<ClockParameters> = serde_json::from_str(&unescaped)?;
-        Ok(retval)
+    fn parse_event(&self, format: LogFormat) -> anyhow::Result<RoutableEvent> {
+        let unescaped = self.event.replace("\\\"", "\"");
+        match format {
+            LogFormat::Femtoseconds => legacy_femtoseconds::parse_legacy_event(unescaped),
+            LogFormat::Current => {
+                let retval: RoutableEvent = serde_json::from_str(&unescaped)?;
+                Ok(retval)
+            }
+        }
     }
 
-    fn parse_event(&self) -> anyhow::Result<RoutableEvent> {
-        let unescaped = self.event.replace("\\\"", "\"");
-        let retval: RoutableEvent = serde_json::from_str(&unescaped)?;
-        Ok(retval)
+    fn parse_output(&self, format: LogFormat) -> anyhow::Result<Option<ClockParameters>> {
+        let unescaped = self.output.replace("\\\"", "\"");
+        match format {
+            LogFormat::Femtoseconds => legacy_femtoseconds::parse_legacy_output(unescaped),
+            LogFormat::Current => {
+                let retval: Option<ClockParameters> = serde_json::from_str(&unescaped)?;
+                Ok(retval)
+            }
+        }
     }
 }
 
@@ -163,6 +239,40 @@ mod tests {
     use clock_bound::daemon::event::TscRtt;
 
     use super::*;
+
+    #[test]
+    fn detect_current_format() {
+        let event_str = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
+        assert_eq!(
+            LogFormat::detect_from_event_str(event_str),
+            LogFormat::Current
+        );
+    }
+
+    #[test]
+    fn detect_femtosecond_format() {
+        let event_str = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
+        assert_eq!(
+            LogFormat::detect_from_event_str(event_str),
+            LogFormat::Femtoseconds
+        );
+    }
+
+    #[test]
+    fn detect_phc_femtosecond_format() {
+        let event_str = r#"{"Phc":{"tsc_pre":302084682318463,"tsc_post":302084682325383,"data":{"time":1766995198825456232000000,"clock_error_bound":23239000000}}}"#;
+        assert_eq!(
+            LogFormat::detect_from_event_str(event_str),
+            LogFormat::Femtoseconds
+        );
+    }
+
+    #[test]
+    fn current_format_event_parses_directly() {
+        let input = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
+        assert_eq!(LogFormat::detect_from_event_str(input), LogFormat::Current);
+        let _event: RoutableEvent = serde_json::from_str(input).unwrap();
+    }
 
     #[test]
     fn scenario_from_logs() {

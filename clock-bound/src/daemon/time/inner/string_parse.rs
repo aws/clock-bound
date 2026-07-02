@@ -2,9 +2,9 @@
 
 // developers note. Functionality is needed for setting values
 // in `ff-tester` for high level parameters. Do not need to set
-// femtosecond level granularity
+// sub-nanosecond level granularity
 pub trait DurationParse: Sized {
-    fn from_nanoseconds(nanos: i128) -> Self;
+    fn from_nanoseconds(nanos: i64) -> Self;
 
     /// Parse from a duration of time
     ///
@@ -25,9 +25,7 @@ pub trait DurationParse: Sized {
         let s = s.trim();
         let (rest, duration) =
             nom::character::complete::digit1::<_, ()>(s).map_err(|_| "Failed to parse duration")?;
-        let duration = duration
-            .parse::<i128>()
-            .map_err(|_| "i128 parsing failed")?;
+        let duration = duration.parse::<i64>().map_err(|_| "i64 parsing failed")?;
 
         let suffix = rest.trim();
 
@@ -59,19 +57,19 @@ pub trait DurationParse: Sized {
     }
 }
 
-impl<T: super::FemtoType + Copy> DurationParse for super::Time<T> {
-    fn from_nanoseconds(nanos: i128) -> Self {
+impl<T: super::NanoType + Copy> DurationParse for super::Time<T> {
+    fn from_nanoseconds(nanos: i64) -> Self {
         Self::from_nanos(nanos)
     }
 }
 
-impl<T: super::FemtoType + Copy> DurationParse for super::Diff<T> {
-    fn from_nanoseconds(nanos: i128) -> Self {
+impl<T: super::NanoType + Copy> DurationParse for super::Diff<T> {
+    fn from_nanoseconds(nanos: i64) -> Self {
         Self::from_nanos(nanos)
     }
 }
 
-impl<T: super::FemtoType + Copy> std::str::FromStr for super::Time<T> {
+impl<T: super::NanoType + Copy> std::str::FromStr for super::Time<T> {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -79,7 +77,7 @@ impl<T: super::FemtoType + Copy> std::str::FromStr for super::Time<T> {
     }
 }
 
-impl<T: super::FemtoType + Copy> std::str::FromStr for super::Diff<T> {
+impl<T: super::NanoType + Copy> std::str::FromStr for super::Diff<T> {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -87,12 +85,12 @@ impl<T: super::FemtoType + Copy> std::str::FromStr for super::Diff<T> {
     }
 }
 
-const NANOS_PER_SEC: i128 = 1_000_000_000;
-const NANOS_PER_MILLI: i128 = 1_000_000;
-const NANOS_PER_MICRO: i128 = 1_000;
-const SECS_PER_MINUTE: i128 = 60;
-const MINS_PER_HOUR: i128 = 60;
-const HOURS_PER_DAY: i128 = 24;
+const NANOS_PER_SEC: i64 = 1_000_000_000;
+const NANOS_PER_MILLI: i64 = 1_000_000;
+const NANOS_PER_MICRO: i64 = 1_000;
+const SECS_PER_MINUTE: i64 = 60;
+const MINS_PER_HOUR: i64 = 60;
+const HOURS_PER_DAY: i64 = 24;
 
 #[cfg(test)]
 mod test {
@@ -136,7 +134,7 @@ mod test {
     #[case("1d", NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)]
     #[case("1day", NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)]
     #[case("1days", NANOS_PER_SEC * SECS_PER_MINUTE * MINS_PER_HOUR * HOURS_PER_DAY)]
-    fn test_duration_parse(#[case] input: &str, #[case] expected: i128) {
+    fn test_duration_parse(#[case] input: &str, #[case] expected: i64) {
         let duration = Duration::parse_from_duration(input).unwrap();
         assert_eq!(duration.as_nanos(), expected);
         let instant = Instant::parse_from_duration(input).unwrap();
@@ -147,7 +145,7 @@ mod test {
     #[case::trimming("  1s  ", NANOS_PER_SEC)]
     #[case::case_insensitivity("1S", NANOS_PER_SEC)]
     #[case::uppercase("1SEC", NANOS_PER_SEC)]
-    fn test_duration_parse_edge_cases(#[case] input: &str, #[case] expected: i128) {
+    fn test_duration_parse_edge_cases(#[case] input: &str, #[case] expected: i64) {
         let duration = Duration::parse_from_duration(input).unwrap();
         assert_eq!(duration.as_nanos(), expected);
     }

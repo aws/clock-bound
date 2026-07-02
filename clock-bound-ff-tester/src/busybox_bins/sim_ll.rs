@@ -1,5 +1,4 @@
 //! Simulation tests against ClockBound's Link Local
-#![expect(clippy::cast_possible_truncation)]
 
 use std::sync::Arc;
 
@@ -60,9 +59,9 @@ pub fn main() {
         assert_eq!(param.tsc_count, tsc_midpoint, "Failure at idx {idx}");
         assert!(
             approx::abs_diff_eq!(
-                param.time.into_estimate().as_picos() as i64,
-                ref_clock_midpoint.as_picos() as i64,
-                epsilon = 1000
+                param.time.into_estimate().as_nanos(),
+                ref_clock_midpoint.as_nanos(),
+                epsilon = 1
             ),
             "Failure at idx {idx}. parameters not expected: {param:#?}\nexpected\t{}\ngot\t\t{}",
             ref_clock_midpoint.get(),

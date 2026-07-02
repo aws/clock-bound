@@ -48,6 +48,7 @@ pub struct SystemClockMeasurement {
 
 impl SystemClockMeasurement {
     /// Create a new [`SystemClockMeasurement`]
+    #[allow(clippy::cast_possible_wrap)]
     pub fn now() -> Self {
         let pre = read_timestamp_counter_begin();
         let system_time = RealTime.get_time();
@@ -55,7 +56,7 @@ impl SystemClockMeasurement {
         let tsc = pre.midpoint(post);
         Self {
             system_time,
-            tsc: TscCount::new(tsc.into()),
+            tsc: TscCount::new(tsc as i64),
         }
     }
 }

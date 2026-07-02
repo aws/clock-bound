@@ -1,3 +1,4 @@
+#![allow(clippy::cast_possible_wrap)]
 use clock_bound::daemon::io::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 pub use clock_bound_client_generic::{ClockBoundClientClock, TimeAndBoundAndStatus};
 use clock_bound_client_generic::{ClockBoundClientError, ClockStatus};
@@ -147,8 +148,8 @@ impl PhcReader {
         let clock_post = clock.get_time();
         let phc_ceb = self.ceb_reader.read();
 
-        let tsc_pre = TscCount::new(tsc_pre.into());
-        let tsc_post = TscCount::new(tsc_post.into());
+        let tsc_pre = TscCount::new(tsc_pre as i64);
+        let tsc_post = TscCount::new(tsc_post as i64);
 
         let ref_clock = Self::build_response_from_phc_read(phc_time, phc_ceb);
         let exchange_metadata = if ref_clock.is_err() {
@@ -192,8 +193,8 @@ impl PhcReader {
         let clock_post = clock.get_time_and_bound_and_status();
         let phc_ceb = self.ceb_reader.read();
 
-        let tsc_pre = TscCount::new(tsc_pre.into());
-        let tsc_post = TscCount::new(tsc_post.into());
+        let tsc_pre = TscCount::new(tsc_pre as i64);
+        let tsc_post = TscCount::new(tsc_post as i64);
 
         let clock_pre = Self::build_response_from_clock_bound_client_read(clock_pre);
         let ref_clock = Self::build_response_from_phc_read(phc_time, phc_ceb);

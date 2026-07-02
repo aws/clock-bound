@@ -179,13 +179,10 @@ impl<T: ShmWrite> ClockStateWriter<T> {
     fn write_shm0(&mut self, clock_parameters: &ClockParameters, clock_status: ClockStatus) {
         // XXX: here as_of is the CLOCK_MONOTONIC_COARSE timestamp taken *before* the clock
         // parameters were computed.
-        //
-        // Unwrap safety: unlikely to fail for any value for the distant future,
-        // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
-        let as_of = TimeSpec::try_from(clock_parameters.as_of_monotonic).unwrap();
+        let as_of = TimeSpec::from(clock_parameters.as_of_monotonic);
         let void_after = as_of + TimeSpec::new(1000, 0);
 
-        let bound_nsec = i64::try_from(clock_parameters.clock_error_bound.as_nanos()).unwrap();
+        let bound_nsec = clock_parameters.clock_error_bound.as_nanos();
 
         // The shared memory segment layout V2 (for ClockBound 2.0 clients) does not have a field
         // to distinguish between the growth of the CEB due to the hardware worse case, from the
@@ -221,11 +218,10 @@ impl<T: ShmWrite> ClockStateWriter<T> {
     ///
     /// Writes the latest supported layout version (V3) of the shared memory segment.
     fn write_shm1(&mut self, clock_parameters: &ClockParameters, clock_status: ClockStatus) {
-        let bound_nsec = i64::try_from(clock_parameters.clock_error_bound.as_nanos()).unwrap();
+        let bound_nsec = clock_parameters.clock_error_bound.as_nanos();
 
-        // Unwrap safety: unlikely to fail for any value for the distant future,
-        // `i128` -> `i64` conversion would fail at 9_223_372_036_854_775_807 seconds
-        let as_of = TimeSpec::try_from(clock_parameters.time).unwrap();
+        // The conversion is infallible since we use i64 nanoseconds internally
+        let as_of = TimeSpec::from(clock_parameters.time);
         let void_after = as_of + TimeSpec::new(1000, 0);
 
         #[allow(clippy::cast_possible_truncation)]
@@ -263,9 +259,9 @@ mod tests {
     /// Helper function to create a test ClockParameters
     #[bon::builder]
     fn create_test_clock_parameters(
-        clock_error_bound_nanos: i128,
-        tsc_count: i128,
-        time_nanos: i128,
+        clock_error_bound_nanos: i64,
+        tsc_count: i64,
+        time_nanos: i64,
     ) -> ClockParameters {
         ClockParameters {
             tsc_count: TscCount::new(tsc_count),
@@ -376,32 +372,6 @@ mod tests {
             .disruption_marker(disruption_marker)
             .build();
         clock_state_writer.handle_clock_parameters_shm0(&clock_parameters, clock_status);
-    }
-
-    #[test]
-    #[should_panic]
-    fn handle_clock_parameters_shm0_panic_on_overflow_error_bound() {
-        let clock_parameters = create_test_clock_parameters()
-            .clock_error_bound_nanos(i64::MAX as i128 + 1) // overflowing CEB
-            .tsc_count(1000)
-            .time_nanos(1_000_000_000)
-            .call();
-        let clock_disruption_support_enabled = false;
-        let max_drift_ppb = 0;
-        let disruption_marker = 0;
-        let mut shm_writer_0 = MockShmWriter::new();
-        shm_writer_0.expect_write().never();
-        let mut shm_writer_1 = MockShmWriter::new();
-        shm_writer_1.expect_write().never();
-        let mut clock_state_writer = ClockStateWriter::builder()
-            .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .shm_writer_0(shm_writer_0)
-            .shm_writer_1(shm_writer_1)
-            .max_drift_ppb(max_drift_ppb)
-            .disruption_marker(disruption_marker)
-            .build();
-        clock_state_writer
-            .handle_clock_parameters_shm0(&clock_parameters, ClockStatus::Synchronized);
     }
 
     #[test]

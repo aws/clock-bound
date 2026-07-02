@@ -74,6 +74,6 @@ impl PtpReader {
             ptp_sys_offset_extended2(self.phc_device_fd, &raw mut self.ptp_sys_offset_extended)
         }?;
         let phc = self.ptp_sys_offset_extended.ts[0][1];
-        Ok(Instant::from_time(phc.sec.into(), phc.nsec))
+        Ok(Instant::from_time(phc.sec, phc.nsec))
     }
 }
