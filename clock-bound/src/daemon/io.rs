@@ -18,8 +18,8 @@ use crate::daemon::io::ntp::DaemonInfo;
 use crate::daemon::selected_clock::SelectedClockSource;
 use crate::daemon::{async_ring_buffer, event};
 
-mod imds;
-use imds::InstanceType;
+mod dmi;
+use dmi::InstanceType;
 
 mod link_local;
 use link_local::LinkLocal;
@@ -199,8 +199,9 @@ impl SourceIO {
 
     /// Initializes the IO task for sampling the VMClock shared memory file.
     ///
-    /// A VMClock object will not be created if the daemon is running on a unsupported instance
-    /// type, the shared memory file is not found or if IMDS fails to provide instance metadata.
+    /// A VMClock object will not be created if the daemon is running on an unsupported instance
+    /// type, the shared memory file is not found, or if the instance type cannot be determined
+    /// from the local DMI tables.
     ///
     /// # Panics
     /// - When the vmclock device can not be constructed using the provided shared memory path.
@@ -212,17 +213,14 @@ impl SourceIO {
             self.vmclock = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
                 // Not all instance types are able to use vmclock. Before attempting to create the
-                // vmclock object the instance is first determined to be viable.
-
-                // NOTE: There are scenarios when the vmclock should be created, but
-                // is not -- IMDS timeouts, droplet live updates and IMDS queries too close instance
-                // launch will result in no vmclock runner, even when the user might expect
-                // it to.
-                //
-                // Future work is required to disambiguate and handle these failure modes as well as identify
-                // and handle vmclock runner creation on non EC2 instances.
-                let instance_type = match InstanceType::get_from_imds().await {
-                    Ok(it) => it,
+                // vmclock object the instance is first determined to be viable, using the local
+                // DMI/SMBIOS tables to identify the instance type.
+                let instance_type = match InstanceType::get_from_dmi() {
+                    Ok(Some(it)) => it,
+                    Ok(None) => {
+                        info!("Not an EC2 instance. VMClock not enabled.");
+                        return;
+                    }
                     Err(e) => {
                         warn!(?e, "EC2 instance type not determined. VMClock not enabled.");
                         return;
