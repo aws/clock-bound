@@ -233,10 +233,8 @@ pub fn autoconfigure_phc_reader() -> Result<PhcReader, PhcError> {
         let ptp_device_file = match File::open(ptp_device_path.clone()) {
             Ok(file) => file,
             Err(e) => {
-                let error_detail = format!(
-                    "Failed to open PTP device file: {:?} {:?}",
-                    &ptp_device_path, e
-                );
+                let error_detail =
+                    format!("Failed to open PTP device file: {ptp_device_path:?} {e:?}");
                 return Err(PhcError::Io(io::Error::new(e.kind(), error_detail)));
             }
         };

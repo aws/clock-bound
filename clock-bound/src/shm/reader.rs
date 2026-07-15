@@ -101,7 +101,7 @@ impl Drop for MmapGuard {
         // it.
         unsafe {
             let ret = libc::munmap(self.segment, self.segsize);
-            assert!(ret == 0);
+            assert_eq!(0, ret);
         }
     }
 }

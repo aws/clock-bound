@@ -41,3 +41,6 @@ publish = false
 repository = "https://github.com/aws/clock-bound"
 version = "3.0.0-alpha.2"
 
+
+[profile.release]
+panic = "abort"

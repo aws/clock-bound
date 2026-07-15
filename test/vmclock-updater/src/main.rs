@@ -83,7 +83,7 @@ fn main() {
     let mut vmclock_shm_writer = match VMClockShmWriter::new(vmclock_shm_path) {
         Ok(writer) => writer,
         Err(e) => {
-            eprintln!("VMClockShmWriter::new() failed. {:?}", &e);
+            eprintln!("VMClockShmWriter::new() failed. {e:?}");
             process::exit(1);
         }
     };
@@ -104,8 +104,7 @@ fn main() {
             Ok(vmclock_clock_status) => vmclock_clock_status,
             Err(e) => {
                 eprintln!(
-                    "Failed to convert clock_status argument '{:?}' to a VMClockClockStatus. {:?}",
-                    clock_status_string, &e
+                    "Failed to convert clock_status argument '{clock_status_string:?}' to a VMClockClockStatus. {e:?}"
                 );
                 process::exit(1);
             }

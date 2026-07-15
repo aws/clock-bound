@@ -31,10 +31,10 @@ fn main() {
 
         println!(
             "When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {:?}.",
-            &now_result.earliest.tv_sec(),
-            &now_result.earliest.tv_nsec(),
-            &now_result.latest.tv_sec(),
-            &now_result.latest.tv_nsec(),
+            now_result.earliest.tv_sec(),
+            now_result.earliest.tv_nsec(),
+            now_result.latest.tv_sec(),
+            now_result.latest.tv_nsec(),
             format_clock_status(&now_result.clock_status)
         );
 
