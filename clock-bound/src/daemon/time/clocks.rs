@@ -1,36 +1,6 @@
 //! Clocks used in ClockBound
-use crate::daemon::{
-    clock_parameters::ClockParameters,
-    io::tsc::ReadTsc,
-    time::{Instant, TscCount, inner::Clock, instant::Utc},
-};
+use crate::daemon::time::{Instant, inner::Clock, instant::Utc};
 use nix::time::{ClockId, clock_gettime};
-
-/// Wrapper around reads of the internal clock tracked by the ClockBound `ClockSyncAlgorithm`.
-pub struct ClockBound<T> {
-    clock_parameters: ClockParameters,
-    read_tsc: T,
-}
-impl<T> ClockBound<T> {
-    /// Create a new `ClockBound` clock
-    pub fn new(clock_parameters: ClockParameters, read_tsc: T) -> Self {
-        Self {
-            clock_parameters,
-            read_tsc,
-        }
-    }
-}
-
-impl<T: ReadTsc> Clock<Utc> for ClockBound<T> {
-    /// Get the current `Instant` by reading `ClockParameters`
-    #[allow(clippy::cast_possible_wrap)]
-    fn get_time(&self) -> Instant {
-        let current_tsc = TscCount::new(self.read_tsc.read_tsc() as i64);
-        // TODO: disregarding overflow of TSC, that will take a while, but worth thinking of
-        self.clock_parameters.time
-            + ((current_tsc - self.clock_parameters.tsc_count) * self.clock_parameters.period)
-    }
-}
 
 /// Wrapper around `CLOCK_REALTIME` reads, which provides a UTC timestamp.
 /// `CLOCK_REALTIME` is steered by userspace clock corrections of phase and frequency (e.g. that's our job),
@@ -48,44 +18,85 @@ impl Clock<Utc> for RealTime {
     }
 }
 
-/// Wrapper around `CLOCK_MONOTONIC_RAW` reads, which provides a UTC timestamp.
-///
-/// `CLOCK_MONOTONIC_RAW` is controlled solely in the kernel, unaffected by phase and frequency corrections.
-/// It simply has its rate of change aligned to that specified by the arch counter frequency hardware spec, so it
-/// may be slow or fast depending on the state of the underlying oscillator.
-pub struct MonotonicRaw;
-impl Clock<Utc> for MonotonicRaw {
-    /// Get the current `Instant` by reading `CLOCK_MONOTONIC_RAW`
+pub struct MonotonicCoarse;
+impl Clock<Utc> for MonotonicCoarse {
+    /// Get the current `Instant` by reading `CLOCK_MONOTONIC_COARSE`
+    /// (falls back to `CLOCK_MONOTONIC` on macOS where COARSE is unavailable)
     ///
     /// # Panics
     /// Panics if `clock_gettime` call fails (if pointer allocated for the call is invalid, or `ClockId` supplied is invalid or unavailable on the system)
     fn get_time(&self) -> Instant {
         // Unwrap safety: `nix` crate supplies valid pointer and `ClockId` so the `clock_gettime` call should not be able to fail
-        let now = clock_gettime(ClockId::CLOCK_MONOTONIC_RAW).unwrap();
+        #[cfg(not(target_os = "macos"))]
+        let now = clock_gettime(ClockId::CLOCK_MONOTONIC_COARSE).unwrap();
+        #[cfg(target_os = "macos")]
+        let now = clock_gettime(ClockId::CLOCK_MONOTONIC).unwrap();
         Instant::from_timespec(now)
     }
 }
 
-pub struct MonotonicCoarse;
-impl Clock<Utc> for MonotonicCoarse {
-    /// Get the current `Instant` by reading `CLOCK_MONOTONIC_COARSE`
+// ClockBound<T> and MonotonicRaw are only used by the daemon (clock_state component).
+// They depend on io::tsc::ReadTsc which is daemon-gated.
+#[cfg(feature = "daemon")]
+mod daemon_clocks {
+    use super::{Clock, ClockId, Instant, Utc, clock_gettime};
+    use crate::daemon::{clock_parameters::ClockParameters, io::tsc::ReadTsc, time::TscCount};
+
+    /// Wrapper around reads of the internal clock tracked by the ClockBound `ClockSyncAlgorithm`.
+    pub struct ClockBound<T> {
+        clock_parameters: ClockParameters,
+        read_tsc: T,
+    }
+    impl<T> ClockBound<T> {
+        /// Create a new `ClockBound` clock
+        pub fn new(clock_parameters: ClockParameters, read_tsc: T) -> Self {
+            Self {
+                clock_parameters,
+                read_tsc,
+            }
+        }
+    }
+
+    impl<T: ReadTsc> Clock<Utc> for ClockBound<T> {
+        /// Get the current `Instant` by reading `ClockParameters`
+        #[allow(clippy::cast_possible_wrap)]
+        fn get_time(&self) -> Instant {
+            let current_tsc = TscCount::new(self.read_tsc.read_tsc() as i64);
+            // TODO: disregarding overflow of TSC, that will take a while, but worth thinking of
+            self.clock_parameters.time
+                + ((current_tsc - self.clock_parameters.tsc_count) * self.clock_parameters.period)
+        }
+    }
+
+    /// Wrapper around `CLOCK_MONOTONIC_RAW` reads, which provides a UTC timestamp.
     ///
-    /// # Panics
-    /// Panics if `clock_gettime` call fails (if pointer allocated for the call is invalid, or `ClockId` supplied is invalid or unavailable on the system)
-    fn get_time(&self) -> Instant {
-        // Unwrap safety: `nix` crate supplies valid pointer and `ClockId` so the `clock_gettime` call should not be able to fail
-        let now = clock_gettime(ClockId::CLOCK_MONOTONIC_COARSE).unwrap();
-        Instant::from_timespec(now)
+    /// `CLOCK_MONOTONIC_RAW` is controlled solely in the kernel, unaffected by phase and frequency corrections.
+    /// It simply has its rate of change aligned to that specified by the arch counter frequency hardware spec, so it
+    /// may be slow or fast depending on the state of the underlying oscillator.
+    pub struct MonotonicRaw;
+    impl Clock<Utc> for MonotonicRaw {
+        /// Get the current `Instant` by reading `CLOCK_MONOTONIC_RAW`
+        ///
+        /// # Panics
+        /// Panics if `clock_gettime` call fails (if pointer allocated for the call is invalid, or `ClockId` supplied is invalid or unavailable on the system)
+        fn get_time(&self) -> Instant {
+            // Unwrap safety: `nix` crate supplies valid pointer and `ClockId` so the `clock_gettime` call should not be able to fail
+            let now = clock_gettime(ClockId::CLOCK_MONOTONIC_RAW).unwrap();
+            Instant::from_timespec(now)
+        }
     }
 }
+#[cfg(feature = "daemon")]
+pub use daemon_clocks::{ClockBound, MonotonicRaw};
 
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
 
     use crate::daemon::{
+        clock_parameters::ClockParameters,
         io::tsc::MockReadTsc,
-        time::{Duration, tsc::Period},
+        time::{Duration, TscCount, tsc::Period},
     };
 
     use super::*;
@@ -103,6 +114,7 @@ mod tests {
     }
 
     // Naively show that CLOCK_MONOTONIC_RAW is monotonic (and hope that it's raw)
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn test_monotonic_raw() {
         let monotonic_raw = MonotonicRaw;

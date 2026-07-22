@@ -7,5 +7,5 @@ pub mod shm;
 
 pub mod vmclock;
 
-#[cfg(feature = "daemon")]
+#[cfg(any(feature = "daemon", feature = "algorithm"))]
 pub mod daemon;

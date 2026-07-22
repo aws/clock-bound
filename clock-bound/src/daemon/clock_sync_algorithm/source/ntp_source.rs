@@ -1,13 +1,21 @@
 //! NTP Source source
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_sync_algorithm::ff;
 use crate::daemon::event;
-use crate::daemon::io::ntp::AWS_TEMP_PUBLIC_TIME_ADDRESSES;
 use crate::daemon::time::Duration;
 use crate::daemon::time::tsc::Skew;
+
+/// AWS public time service addresses (time.aws.com)
+// FIXME: This duplicates the definition in daemon/io/ntp.rs. The algorithm should not
+// depend on the daemon IO module, but both need these addresses. Consolidate once we refactor
+// source identity to be passed in from the IO layer at construction time.
+const AWS_TEMP_PUBLIC_TIME_ADDRESSES: [SocketAddr; 2] = [
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(166, 117, 111, 42)), 123),
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(3, 33, 186, 244)), 123),
+];
 
 /// A NTP Server reference clock source
 ///

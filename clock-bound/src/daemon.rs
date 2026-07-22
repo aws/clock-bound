@@ -1,12 +1,6 @@
 //! Clock Synchronization Daemon
 
-pub mod async_ring_buffer;
-
-pub mod io;
-
 pub mod clock_parameters;
-
-pub mod clock_state;
 
 pub mod clock_sync_algorithm;
 
@@ -16,31 +10,43 @@ pub mod event;
 
 pub mod receiver_stream;
 
-pub mod subscriber;
-
 pub mod selected_clock;
 
-use std::sync::Arc;
+#[cfg(feature = "daemon")]
+pub mod async_ring_buffer;
 
-use crate::daemon::{
-    clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source::NtpSource},
-    io::ClockDisruptionEvent,
-    io::ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
-    receiver_stream::{ReceiverStream, RoutableEvent},
-    selected_clock::SelectedClockSource,
-    time::tsc::Skew,
+#[cfg(feature = "daemon")]
+pub mod io;
+
+#[cfg(feature = "daemon")]
+pub mod clock_state;
+
+pub mod subscriber;
+
+// --- Everything below is only needed for the full daemon ---
+
+#[cfg(feature = "daemon")]
+use {
+    crate::daemon::{
+        async_ring_buffer::Sender,
+        clock_parameters::ClockParameters,
+        clock_state::ClockState,
+        clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source::NtpSource},
+        io::{
+            ClockDisruptionEvent,
+            ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
+        },
+        receiver_stream::{ReceiverStream, RoutableEvent},
+        selected_clock::SelectedClockSource,
+        time::tsc::Skew,
+    },
+    crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH,
+    rand::{RngCore, rng},
+    std::sync::Arc,
+    tokio::sync::watch,
+    tokio_util::{sync::CancellationToken, task::TaskTracker},
+    tracing::{error, info},
 };
-use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
-
-use crate::daemon::{
-    async_ring_buffer::Sender, clock_parameters::ClockParameters, clock_state::ClockState,
-};
-use tokio_util::task::TaskTracker;
-
-use rand::{RngCore, rng};
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
 
 /// The maximum dispersion growth every second
 ///
@@ -52,10 +58,13 @@ use tracing::{error, info};
 /// updated measurement the clock error bound will increase by 15 microseconds.
 ///
 /// This number is based on CPU spec sheet error tolerances
+#[cfg(feature = "daemon")]
 pub(crate) const MAX_DISPERSION_GROWTH_PPB: u32 = 15_000;
 
+#[cfg(feature = "daemon")]
 const MAX_DISPERSION_GROWTH: Skew = Skew::from_ppb(MAX_DISPERSION_GROWTH_PPB as f64);
 
+#[cfg(feature = "daemon")]
 pub struct Daemon {
     io_front_end: io::SourceIO,
     clock_sync_algorithm: ClockSyncAlgorithm,
@@ -65,6 +74,7 @@ pub struct Daemon {
     clock_state_handle: ClockStateHandle,
 }
 
+#[cfg(feature = "daemon")]
 impl Daemon {
     /// Construct and initialize a new daemon
     /// FIXME: Make this function not async. (Currently required for the io.run methods)
@@ -292,6 +302,7 @@ impl Daemon {
     }
 }
 
+#[cfg(feature = "daemon")]
 struct ClockStateHandle {
     clock_state: Option<ClockState>,
     tx: Sender<ClockParameters>,

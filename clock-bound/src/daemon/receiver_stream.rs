@@ -3,24 +3,28 @@
 //! This module implements the logic needed to retrieve `event::Event` objects from provisioned IO components
 //! and return `RoutableEvent` objects.
 
-use futures::StreamExt;
-use futures::{
-    Stream,
-    stream::{SelectAll, once, select_all},
+#[cfg(feature = "daemon")]
+use {
+    super::io::ntp::NTPSourceReceiver,
+    crate::daemon::async_ring_buffer::{BufferClosedError, Receiver},
+    futures::StreamExt,
+    futures::{
+        Stream,
+        stream::{SelectAll, once, select_all},
+    },
+    rand::seq::SliceRandom,
+    std::collections::HashMap,
+    std::pin::Pin,
+    thiserror::Error,
+    tracing::info,
 };
-use rand::seq::SliceRandom;
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use thiserror::Error;
-use tracing::info;
 
-use crate::daemon::async_ring_buffer::{BufferClosedError, Receiver};
+use std::net::SocketAddr;
+
 use crate::daemon::event::{self, TscRtt};
 use crate::daemon::time::TscCount;
 
-use super::io::ntp::NTPSourceReceiver;
-
+#[cfg(feature = "daemon")]
 #[derive(Debug, Error)]
 pub enum ReceiverStreamError {
     #[error("Failed to initialize ReceiverStream.")]
@@ -28,9 +32,11 @@ pub enum ReceiverStreamError {
 }
 
 /// Type to hold the stream produced from each `SourceIO` components receiver
+#[cfg(feature = "daemon")]
 type EventStream<'a> =
     Pin<Box<dyn Stream<Item = Result<RoutableEvent, BufferClosedError>> + 'a + Send>>;
 
+#[cfg(feature = "daemon")]
 #[derive(Debug, bon::Builder)]
 pub struct ReceiverStream {
     #[builder(default)]
@@ -41,6 +47,7 @@ pub struct ReceiverStream {
 
 /// `ReceiverStream` provides methods for aggregating the events delivered
 ///  to ring buffers associated to separate `SourceIO` time sources.
+#[cfg(feature = "daemon")]
 impl ReceiverStream {
     /// Adds a new ntp source to the `ntp_sources`
     pub fn add_ntp_source(&mut self, source: NTPSourceReceiver) {

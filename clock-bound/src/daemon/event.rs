@@ -7,8 +7,12 @@ pub use ntp::{Ntp, NtpData, Stratum, TryFromU8Error, ValidStratumLevel};
 mod phc;
 pub use phc::{Phc, PhcData};
 
-use crate::daemon::io::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
-use crate::daemon::time::{Clock, TscCount, TscDiff, clocks::RealTime};
+use crate::daemon::time::{TscCount, TscDiff};
+#[cfg(feature = "daemon")]
+use {
+    crate::daemon::io::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end},
+    crate::daemon::time::{Clock, clocks::RealTime},
+};
 
 /// A time synchronization event handled by ClockBound
 pub enum Event {
@@ -48,6 +52,7 @@ pub struct SystemClockMeasurement {
 
 impl SystemClockMeasurement {
     /// Create a new [`SystemClockMeasurement`]
+    #[cfg(feature = "daemon")]
     #[allow(clippy::cast_possible_wrap)]
     pub fn now() -> Self {
         let pre = read_timestamp_counter_begin();

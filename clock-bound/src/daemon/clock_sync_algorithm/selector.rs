@@ -83,7 +83,7 @@ pub struct SourceParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceInfo {
     /// Link Local
-    LinkLocal(Stratum),
+    LinkLocal(SocketAddr, Stratum),
     /// NTP Source,
     NtpSource(SocketAddr, Stratum),
     /// PHC

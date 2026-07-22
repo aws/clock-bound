@@ -11,16 +11,13 @@ pub mod ff;
 
 mod ring_buffer;
 
-use std::{
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-};
+use std::{net::SocketAddr, sync::Arc};
 
 pub use ring_buffer::RingBuffer;
 
 use crate::daemon::{
-    clock_parameters::ClockParameters, event, io::ntp::LINK_LOCAL_ADDRESS,
-    receiver_stream::RoutableEvent, selected_clock::SelectedClockSource, subscriber::PRIMER_TARGET,
+    clock_parameters::ClockParameters, event, receiver_stream::RoutableEvent,
+    selected_clock::SelectedClockSource, subscriber::PRIMER_TARGET,
 };
 
 pub mod source;
@@ -150,10 +147,11 @@ impl ClockSyncAlgorithm {
     ) -> Option<(&ClockParameters, SourceInfo)> {
         // associated method to help borrow checker
         let stratum = event.data().stratum;
+        let address = SocketAddr::from(link_local.source_address());
 
         link_local
             .feed(event)
-            .map(|params| (params, SourceInfo::LinkLocal(stratum)))
+            .map(|params| (params, SourceInfo::LinkLocal(address, stratum)))
     }
 
     /// Feed event into ntp source
@@ -182,10 +180,7 @@ impl ClockSyncAlgorithm {
     fn update_selected_clock(selected_clock: &Arc<SelectedClockSource>, source_info: SourceInfo) {
         // associated method to help borrow checker
         match source_info {
-            SourceInfo::LinkLocal(stratum) => {
-                selected_clock.set_to_server(IpAddr::V4(*LINK_LOCAL_ADDRESS.ip()), stratum);
-            }
-            SourceInfo::NtpSource(address, stratum) => {
+            SourceInfo::LinkLocal(address, stratum) | SourceInfo::NtpSource(address, stratum) => {
                 selected_clock.set_to_server(address.ip(), stratum);
             }
             SourceInfo::Phc => selected_clock.set_to_phc(),
@@ -284,7 +279,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case(SourceInfo::LinkLocal(Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("169.254.169.123").unwrap().into()), Stratum::TWO)]
+    #[case(SourceInfo::LinkLocal("169.254.169.123:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("169.254.169.123").unwrap().into()), Stratum::TWO)]
     #[case(SourceInfo::NtpSource("169.254.169.101:123".parse().unwrap(), Stratum::ONE), ClockSource::Server(Ipv4Addr::from_str("169.254.169.101").unwrap().into()), Stratum::ONE)]
     #[case(SourceInfo::NtpSource("[2001:db8::1:1234]:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("199.132.19.175").unwrap().into()), Stratum::TWO)]
     #[case(SourceInfo::Phc, ClockSource::Phc, Stratum::Unspecified)]

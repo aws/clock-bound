@@ -10,6 +10,7 @@ use std::{
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
+#[cfg(target_os = "linux")]
 use libc::timeval;
 use nix::sys::time::TimeSpec;
 use serde::{Deserialize, Serialize};
@@ -598,6 +599,11 @@ impl<T: NanoType + Copy> Diff<T> {
     /// `tv_usec`, and so we do that to be consistent with our `clock_adjust` offset resolution.
     /// Thus, this does not return a correct `timeval` by the specifications of the fields themselves, but instead
     /// a `timeval` in the context of an `adjtimex` call with `ADJ_NANO` set.
+    ///
+    /// Gated to Linux: this function is specific to the Linux `adjtimex`/`ntp_adjtime` interface,
+    /// and assumes `timeval.tv_usec` is `i64` (`suseconds_t = c_long` on 64-bit Linux). This does
+    /// not hold on macOS (i32), 32-bit Linux (i32), or several BSDs.
+    #[cfg(target_os = "linux")]
     pub fn to_timeval_nanos(self) -> timeval {
         let mut tv = timeval {
             tv_sec: self.as_seconds_trunc(),

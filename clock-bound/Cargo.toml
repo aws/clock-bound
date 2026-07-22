@@ -91,6 +91,12 @@ daemon = [
   "nix/time",
   "tracing-subscriber/env-filter",
 ]
+algorithm = [
+  "dep:serde",
+  "dep:thiserror",
+  "dep:tracing-appender",
+  "tracing-subscriber/env-filter",
+] # clock sync algorithm only, no daemon I/O or clock adjustment
 test-side-by-side = [
 ] # run without changing system clock. And compare against system clock
 time-string-parse = ["dep:nom"]

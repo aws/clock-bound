@@ -6,6 +6,7 @@
 pub mod clocks;
 pub mod inner;
 pub mod instant;
+#[cfg(feature = "daemon")]
 pub mod timex;
 pub mod tsc;
 

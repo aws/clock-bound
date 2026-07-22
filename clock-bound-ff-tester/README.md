@@ -4,6 +4,21 @@
 
 This crate contains code for testing the feed-forward clock synchronization algorithm through simulation and replay.
 
+## Building
+
+The ff-tester depends on the `clock-bound` crate with the `algorithm` feature (not `daemon`),
+which allows it to compile on any platform including macOS:
+
+```bash
+cargo build -p clock-bound-ff-tester
+cargo test -p clock-bound-ff-tester
+```
+
+Note: use `-p clock-bound-ff-tester` rather than `--bin`, as other workspace members may pull in
+the `daemon` feature which requires Linux.
+
+## Overview
+
 ClockBound's clock synchronization algorithm tracks the time by using input events (NTP Packet responses,
 PHC reads) to output the current estimate. Notably, there are no IO calls done within the
 clock sync algorithm. No tsc reads nor system clock syscalls. No mocks either. It is basically a black box with inputs, outputs, and 
