@@ -1,10 +1,10 @@
-//! Link Local test executable.
+//! Amazon Time Sync test executable.
 //!
-//! This executable tests that the link local runner is able to send and receive packets from the
-//! link local address and that the polling rate is roughly once a second.
+//! This executable tests that the Amazon Time Sync runner is able to send and receive packets from
+//! the Amazon Time Sync address and that the polling rate is roughly once a second.
 
 use clock_bound::daemon::event::{Ntp, Stratum, ValidStratumLevel};
-use clock_bound::daemon::io::{SourceIO, ntp::LINK_LOCAL_BURST_INTERVAL_DURATION};
+use clock_bound::daemon::io::{SourceIO, ntp::AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION};
 use clock_bound::daemon::selected_clock::{ClockSource, SelectedClockSource};
 use clock_bound::daemon::{
     async_ring_buffer::{self, BufferClosedError, Receiver},
@@ -26,7 +26,7 @@ use vmclock::{VMClockContent, write_vmclock_content};
 
 /// Time out for waiting on source polling task to produce an NTP event
 ///
-/// On instances that aren't able to connect to link local the runner will run infinitely.
+/// On instances that aren't able to connect to the Amazon Time Sync endpoint the runner will run infinitely.
 const TIMEOUT_SECS: u64 = 8; // Should yield 3 or more polls
 
 #[tokio::main(flavor = "current_thread")]
@@ -42,7 +42,7 @@ async fn main() {
     test_polls_with_selected_clock_source_combos(&receiver, &selected_clock).await;
 }
 
-/// Set up link local source io for testing
+/// Set up Amazon Time Sync source io for testing
 async fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
     let (sender, receiver) = async_ring_buffer::create(1);
 
@@ -55,12 +55,12 @@ async fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
     let selected_clock = Arc::new(SelectedClockSource::default());
 
     let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info);
-    sourceio.create_link_local(sender).await;
+    sourceio.create_amazon_time_sync(sender).await;
     sourceio.spawn_all();
     (receiver, selected_clock, sourceio)
 }
 
-/// Set up link local source io for testing
+/// Set up VMClock source io for testing
 async fn setup_with_vmclock(vmclock_shm_path: &str, sourceio: &mut SourceIO) {
     sourceio.create_vmclock(vmclock_shm_path).await;
     sourceio.spawn_all();
@@ -73,7 +73,7 @@ async fn test_normal_polling_rate(receiver: &Receiver<Ntp>) {
     // Clear any previous packets from buffer
     while let Ok(Ok(_)) = timeout(Duration::from_millis(100), receiver.recv()).await {}
 
-    // Poll the link local receiver
+    // Poll the Amazon Time Sync receiver
     let polling_rate = measure_polling_rate(receiver, Duration::from_secs(20)).await;
 
     println!("Polling rate avg: {polling_rate:?}");
@@ -88,7 +88,7 @@ async fn test_startup_polling_rate(receiver: &Receiver<Ntp>) {
 
     println!("Burst Polling rate avg: {polling_rate:?}");
     assert!(
-        polling_rate.abs_diff(LINK_LOCAL_BURST_INTERVAL_DURATION)
+        polling_rate.abs_diff(AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION)
             < time::Duration::from_millis(100)
     );
     println!("Burst poll rate test PASSED");
@@ -133,7 +133,7 @@ async fn test_clock_disruption_polling_rate(receiver: &Receiver<Ntp>, sourceio: 
     println!("Clock disruption polling rate avg: {clock_disruption_polling_rate:?}");
     println!("Clock disruption polling duration: {polling_duration:?}");
     assert!(
-        clock_disruption_polling_rate.abs_diff(LINK_LOCAL_BURST_INTERVAL_DURATION)
+        clock_disruption_polling_rate.abs_diff(AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION)
             < time::Duration::from_millis(100)
     );
 
@@ -156,7 +156,7 @@ async fn measure_polling_rate(receiver: &Receiver<Ntp>, sampling_period: Duratio
     let mut polling_rate = time::Duration::from_secs(0);
     let mut count = 0;
     loop {
-        // On instances that aren't able to connect to link local the runner will run infinitely.
+        // On instances that aren't able to connect to the Amazon Time Sync endpoint the runner will run infinitely.
         // To address this we timeout if an NTP event has not been received.
         let lap_start = time::Instant::now();
         let ntpevent = timeout(Duration::from_secs(5), receiver.recv())

@@ -36,8 +36,8 @@ pub mod source;
 /// TODO
 #[derive(Debug, Clone, bon::Builder)]
 pub struct ClockSyncAlgorithm {
-    /// The link-local reference clock's ff algorithm
-    link_local: source::LinkLocal,
+    /// The Amazon Time Sync reference clock's ff algorithm
+    amazon_time_sync: source::AmazonTimeSync,
     // A Vector of ff algorithms for ntp source reference clocks
     pub ntp_sources: Vec<source::NtpSource>,
     /// The PHC device
@@ -106,7 +106,9 @@ impl ClockSyncAlgorithm {
     fn feed_inner(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
         // First route the event to the correct inner source
         let alg_output = match routable_event {
-            RoutableEvent::LinkLocal(event) => Self::feed_link_local(&mut self.link_local, event),
+            RoutableEvent::AmazonTimeSync(event) => {
+                Self::feed_amazon_time_sync(&mut self.amazon_time_sync, event)
+            }
             RoutableEvent::NtpSource(sender_address, event) => {
                 Self::feed_ntp_source(&mut self.ntp_sources, sender_address, event)
             }
@@ -140,18 +142,18 @@ impl ClockSyncAlgorithm {
         output
     }
 
-    /// Feed event into the link local
-    fn feed_link_local(
-        link_local: &mut source::LinkLocal,
+    /// Feed event into the Amazon Time Sync source
+    fn feed_amazon_time_sync(
+        amazon_time_sync: &mut source::AmazonTimeSync,
         event: event::Ntp,
     ) -> Option<(&ClockParameters, SourceInfo)> {
         // associated method to help borrow checker
         let stratum = event.data().stratum;
-        let address = SocketAddr::from(link_local.source_address());
+        let address = SocketAddr::from(amazon_time_sync.source_address());
 
-        link_local
+        amazon_time_sync
             .feed(event)
-            .map(|params| (params, SourceInfo::LinkLocal(address, stratum)))
+            .map(|params| (params, SourceInfo::AmazonTimeSync(address, stratum)))
     }
 
     /// Feed event into ntp source
@@ -180,7 +182,8 @@ impl ClockSyncAlgorithm {
     fn update_selected_clock(selected_clock: &Arc<SelectedClockSource>, source_info: SourceInfo) {
         // associated method to help borrow checker
         match source_info {
-            SourceInfo::LinkLocal(address, stratum) | SourceInfo::NtpSource(address, stratum) => {
+            SourceInfo::AmazonTimeSync(address, stratum)
+            | SourceInfo::NtpSource(address, stratum) => {
                 selected_clock.set_to_server(address.ip(), stratum);
             }
             SourceInfo::Phc => selected_clock.set_to_phc(),
@@ -197,7 +200,7 @@ impl ClockSyncAlgorithm {
         //
         // This makes it a compilation error if we add a new field this Self without handling it here
         let Self {
-            link_local,
+            amazon_time_sync,
             ntp_sources,
             phc,
             selected_clock,
@@ -205,7 +208,7 @@ impl ClockSyncAlgorithm {
         } = self;
 
         selected_clock.set_to_none();
-        link_local.handle_disruption();
+        amazon_time_sync.handle_disruption();
         for source in ntp_sources {
             source.handle_disruption();
         }
@@ -255,10 +258,10 @@ mod tests {
             .build()
             .unwrap();
 
-        let event = RoutableEvent::LinkLocal(event);
+        let event = RoutableEvent::AmazonTimeSync(event);
 
         let mut csa = ClockSyncAlgorithm::builder()
-            .link_local(source::LinkLocal::new(Skew::from_ppm(15.0)))
+            .amazon_time_sync(source::AmazonTimeSync::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
             .selector(Selector::new(Skew::from_ppm(15.0)))
@@ -279,7 +282,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case(SourceInfo::LinkLocal("169.254.169.123:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("169.254.169.123").unwrap().into()), Stratum::TWO)]
+    #[case(SourceInfo::AmazonTimeSync("169.254.169.123:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("169.254.169.123").unwrap().into()), Stratum::TWO)]
     #[case(SourceInfo::NtpSource("169.254.169.101:123".parse().unwrap(), Stratum::ONE), ClockSource::Server(Ipv4Addr::from_str("169.254.169.101").unwrap().into()), Stratum::ONE)]
     #[case(SourceInfo::NtpSource("[2001:db8::1:1234]:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("199.132.19.175").unwrap().into()), Stratum::TWO)]
     #[case(SourceInfo::Phc, ClockSource::Phc, Stratum::Unspecified)]

@@ -5,7 +5,7 @@ members = [
   "clock-bound-ff-tester",
   "examples/client/rust",
   "test/clock-bound-vmclock-client-test",
-  "test/link-local",
+  "test/amazon-time-sync",
   "test/ntp-source",
   "test/phc",
   "test/vmclock-updater",

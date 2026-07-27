@@ -70,7 +70,7 @@ pub fn repro_events_from_log_file(file_path: impl AsRef<Path>) -> anyhow::Result
 
 /// Convert a log file at `file_path` into a `ff-tester` scenario
 ///
-/// Returns a Scenario, and the output from every call into `ClockSyncAlgorithm::feed_link_local`
+/// Returns a Scenario, and the output from every call into `ClockSyncAlgorithm::feed_amazon_time_sync`
 ///
 /// Automatically detects whether the log uses the legacy femtosecond format or the
 /// current nanosecond format by inspecting the first feed event. Legacy values are

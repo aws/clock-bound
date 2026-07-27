@@ -93,9 +93,11 @@ impl Daemon {
         let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
         let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
 
-        // Initialize link-local event buffer and IO component.
-        let (link_local_tx, link_local_rx) = async_ring_buffer::create(2);
-        io_front_end.create_link_local(link_local_tx).await;
+        // Initialize Amazon Time Sync event buffer and IO component.
+        let (amazon_time_sync_tx, amazon_time_sync_rx) = async_ring_buffer::create(2);
+        io_front_end
+            .create_amazon_time_sync(amazon_time_sync_tx)
+            .await;
 
         // Initialize ntp source event buffer and IO component.
         let ntp_sources =
@@ -135,7 +137,7 @@ impl Daemon {
 
         // Initialize clock sync algorithm.
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
-            .link_local(clock_sync_algorithm::source::LinkLocal::new(
+            .amazon_time_sync(clock_sync_algorithm::source::AmazonTimeSync::new(
                 MAX_DISPERSION_GROWTH,
             ))
             .ntp_sources(ntp_sources)
@@ -146,7 +148,7 @@ impl Daemon {
 
         // Initializing receiver stream with IO ring buffer receivers
         let receiver_stream: ReceiverStream = ReceiverStream::builder()
-            .link_local(link_local_rx)
+            .amazon_time_sync(amazon_time_sync_rx)
             .ntp_sources(ntp_source_event_receivers.into_iter().collect())
             .maybe_phc(phc_rx)
             .build();

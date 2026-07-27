@@ -21,8 +21,8 @@ use crate::daemon::{async_ring_buffer, event};
 mod dmi;
 use dmi::InstanceType;
 
-mod link_local;
-use link_local::LinkLocal;
+mod amazon_time_sync;
+use amazon_time_sync::AmazonTimeSync;
 
 mod ntp_source;
 use ntp_source::NTPSource;
@@ -40,8 +40,8 @@ use vmclock::VMClock;
 /// `SourceIO` contains the interface from which new IO tasks can be spawned, as well as an interface
 /// to send control commands to the specific IO tasks.
 pub struct SourceIO {
-    /// The link local source.
-    link_local: Option<Source<LinkLocal>>,
+    /// The Amazon Time Sync source.
+    amazon_time_sync: Option<Source<AmazonTimeSync>>,
     /// Mapping between the socket ip-address and the ntp io source
     ntp_sources: HashMap<SocketAddr, Source<NTPSource>>,
     /// The PHC source.
@@ -71,7 +71,7 @@ impl SourceIO {
         task_tracker.close();
 
         SourceIO {
-            link_local: None,
+            amazon_time_sync: None,
             ntp_sources: HashMap::new(),
             phc: None,
             vmclock: None,
@@ -82,17 +82,20 @@ impl SourceIO {
         }
     }
 
-    /// Initializes the IO task for sampling the Link Local NTP source.
+    /// Initializes the IO task for sampling the Amazon Time Sync NTP source.
     ///
     /// # Panics
     /// - If not called within the `tokio` runtime.
     /// - If socket binding fails.
-    pub async fn create_link_local(&mut self, event_sender: async_ring_buffer::Sender<event::Ntp>) {
-        info!("Creating link local source.");
+    pub async fn create_amazon_time_sync(
+        &mut self,
+        event_sender: async_ring_buffer::Sender<event::Ntp>,
+    ) {
+        info!("Creating Amazon Time Sync source.");
 
-        debug!(?self.link_local, "Current source entry status");
-        if self.link_local.is_none() {
-            self.link_local = {
+        debug!(?self.amazon_time_sync, "Current source entry status");
+        if self.amazon_time_sync.is_none() {
+            self.amazon_time_sync = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
                 let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
 
@@ -100,7 +103,7 @@ impl SourceIO {
                     .await
                     .unwrap();
 
-                let link_local = LinkLocal::construct(
+                let amazon_time_sync = AmazonTimeSync::construct(
                     socket,
                     event_sender,
                     ctrl_receiver,
@@ -108,13 +111,13 @@ impl SourceIO {
                     self.selected_clock.clone(),
                 );
                 Some(Source {
-                    state: SourceState::Initialized(link_local),
+                    state: SourceState::Initialized(amazon_time_sync),
                     ctrl_sender,
                 })
             };
         }
 
-        info!("Source link local update complete.");
+        info!("Source Amazon Time Sync update complete.");
     }
 
     /// Initializes the IO task for sampling a specific NTP Server source.
@@ -206,7 +209,7 @@ impl SourceIO {
     /// # Panics
     /// - When the vmclock device can not be constructed using the provided shared memory path.
     pub async fn create_vmclock(&mut self, vmclock_shm_path: &str) {
-        info!("Creating link local source.");
+        info!("Creating VMClock source.");
 
         info!(?self.vmclock, "Current source entry status.");
         if self.vmclock.is_none() {
@@ -273,22 +276,24 @@ impl SourceIO {
     /// skipped. Spawning will occur in an arbitrary order.
     pub fn spawn_all(&mut self) {
         self.task_tracker.reopen();
-        // Spawn link local source
+        // Spawn Amazon Time Sync source
         if let Some(Source {
             state,
             ctrl_sender: _,
-        }) = &mut self.link_local
+        }) = &mut self.amazon_time_sync
         {
-            debug!("Attempting to spawn link local source.");
-            if let SourceState::Initialized(mut link_local) = state.transition_to_running() {
+            debug!("Attempting to spawn Amazon Time Sync source.");
+            if let SourceState::Initialized(mut amazon_time_sync) = state.transition_to_running() {
                 self.task_tracker
-                    .spawn(async move { link_local.run().await });
-                debug!("Successfully spawned link local source.");
+                    .spawn(async move { amazon_time_sync.run().await });
+                debug!("Successfully spawned Amazon Time Sync source.");
             } else {
-                warn!("Attempted to spawn a link local source when one is currently running.");
+                warn!(
+                    "Attempted to spawn a Amazon Time Sync source when one is currently running."
+                );
             }
         } else {
-            debug!("Could not spawn a link local source. No source data provided.");
+            debug!("Could not spawn a Amazon Time Sync source. No source data provided.");
         }
 
         // Spawn PHC source
@@ -346,15 +351,18 @@ impl SourceIO {
     /// io tasks and then waits for all io tasks to exit.
     pub async fn shutdown_all(&mut self) {
         info!("Starting shutdown of SourceIO components.");
-        // Shutdown link local source
+        // Shutdown Amazon Time Sync source
         if let Some(Source {
             state: _,
             ctrl_sender,
-        }) = &mut self.link_local
+        }) = &mut self.amazon_time_sync
         {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
-                Ok(()) => info!("Successfully sent shutdown signal to link local source."),
-                Err(e) => warn!(?e, "Failed to send shutdown signal to link local source."),
+                Ok(()) => info!("Successfully sent shutdown signal to Amazon Time Sync source."),
+                Err(e) => warn!(
+                    ?e,
+                    "Failed to send shutdown signal to Amazon Time Sync source."
+                ),
             }
         }
 
@@ -457,31 +465,31 @@ mod tests {
             .await
             .unwrap();
 
-        let link_local = LinkLocal::construct(
+        let amazon_time_sync = AmazonTimeSync::construct(
             socket,
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
             Arc::new(SelectedClockSource::default()),
         );
-        let current_state = SourceState::Initialized(link_local);
+        let current_state = SourceState::Initialized(amazon_time_sync);
         assert!(current_state.is_initialized())
     }
 
     #[test]
     fn source_state_is_running() {
-        let current_state = SourceState::<LinkLocal>::Running;
+        let current_state = SourceState::<AmazonTimeSync>::Running;
         assert!(current_state.is_running())
     }
 
     #[test]
     fn source_state_is_transitions() {
-        let mut current_state = SourceState::<LinkLocal>::Running;
+        let mut current_state = SourceState::<AmazonTimeSync>::Running;
         assert!(current_state.transition_to_running().is_running())
     }
 
     #[tokio::test]
-    async fn source_io_verify_link_local_creation() {
+    async fn source_io_verify_amazon_time_sync_creation() {
         let (event_sender, _) = async_ring_buffer::create::<event::Ntp>(1);
 
         let info = DaemonInfo {
@@ -491,8 +499,8 @@ mod tests {
         };
 
         let mut source_io = SourceIO::construct(Arc::new(SelectedClockSource::default()), info);
-        source_io.create_link_local(event_sender).await;
+        source_io.create_amazon_time_sync(event_sender).await;
 
-        assert!(source_io.link_local.is_some())
+        assert!(source_io.amazon_time_sync.is_some())
     }
 }

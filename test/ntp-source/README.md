@@ -1,4 +1,4 @@
-# Test program: link-local-test
+# Test program: ntp-source-test
 
 This directory contains the source code for a test program written to
 validate the implementation of the `NTPSource` runner. The `NTPSource`

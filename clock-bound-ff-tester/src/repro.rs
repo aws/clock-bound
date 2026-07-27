@@ -138,8 +138,8 @@ impl ReproEvent {
 
         for event in events {
             match event {
-                RoutableEvent::LinkLocal(event) => {
-                    event_types.push("LinkLocal".to_string());
+                RoutableEvent::AmazonTimeSync(event) => {
+                    event_types.push("AmazonTimeSync".to_string());
                     tsc_pres.push(event.tsc_pre().get());
                     tsc_posts.push(event.tsc_post().get());
                     server_recv_times.push(Some(event.data().server_recv_time.as_nanos()));
@@ -280,8 +280,8 @@ pub fn tester_event_from_cb_phc(event: &event::Phc, source_id: String) -> v1::Ev
 
 pub fn tester_event_from_routable(event: &RoutableEvent) -> v1::Event {
     match event {
-        RoutableEvent::LinkLocal(event) => {
-            tester_event_from_cb_ntp(event, String::from("link_local"))
+        RoutableEvent::AmazonTimeSync(event) => {
+            tester_event_from_cb_ntp(event, String::from("amazon_time_sync"))
         }
         RoutableEvent::NtpSource(addr, event) => tester_event_from_cb_ntp(event, addr.to_string()),
         RoutableEvent::Phc(event) => tester_event_from_cb_phc(event, String::from("ptp_ena")),
@@ -304,7 +304,7 @@ pub fn routable_from_tester_event(event: v1::Event) -> RoutableEvent {
                 .tsc_post(event.client_tsc_post_time)
                 .build()
                 .unwrap();
-            RoutableEvent::LinkLocal(event)
+            RoutableEvent::AmazonTimeSync(event)
         }
         v1::EventKind::Phc(phc) => {
             let event = event::Phc::builder()

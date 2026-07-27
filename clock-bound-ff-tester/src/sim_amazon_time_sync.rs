@@ -1,6 +1,6 @@
-//! Code dedicated to generating Link Local simulations and testing them against ClockBound
+//! Code dedicated to generating Amazon Time Sync simulations and testing them against ClockBound
 //!
-//! This is a constrained environment where there is only Link Local data.
+//! This is a constrained environment where there is only Amazon Time Sync data.
 
 use clock_bound::daemon::{
     clock_parameters::ClockParameters,
@@ -24,30 +24,30 @@ use crate::{
     time::{EstimateDuration, TrueDuration, TrueInstant},
 };
 
-pub struct TestLinkLocal {
+pub struct TestAmazonTimeSync {
     pub algorithm: ClockSyncAlgorithm,
 }
 
-impl TestLinkLocal {
+impl TestAmazonTimeSync {
     pub fn new(algorithm: ClockSyncAlgorithm) -> Self {
         Self { algorithm }
     }
 
     /// Run a whole scenario against a clock sync algorithm.
     ///
-    /// Returns a list of outputs from the inner `feed_link_local` function call
+    /// Returns a list of outputs from the inner `feed_amazon_time_sync` function call
     pub fn run(&mut self, scenario: &Scenario) -> Vec<Option<ClockParameters>> {
         let Scenario::V1(scenario) = scenario;
         scenario
             .events
             .iter()
-            .map(tester_event_to_link_local)
+            .map(tester_event_to_amazon_time_sync)
             .map(|e| self.algorithm.feed(e.clone()).cloned())
             .collect()
     }
 
     pub fn feed_ntp(&mut self, event: &Event) -> Option<&ClockParameters> {
-        let ntp = tester_event_to_link_local(event);
+        let ntp = tester_event_to_amazon_time_sync(event);
         self.algorithm.feed(ntp)
     }
 }
@@ -83,7 +83,7 @@ pub fn perfect_symmetric(scenario_duration: TrueDuration) -> Scenario {
     generator.create_scenario(full_model)
 }
 
-fn tester_event_to_link_local(e: &Event) -> RoutableEvent {
+fn tester_event_to_amazon_time_sync(e: &Event) -> RoutableEvent {
     use crate::time::CbBridge;
     let EventKind::Ntp(n) = &e.variants else {
         panic!("Expected NTP event, found {e:?}");
@@ -102,7 +102,7 @@ fn tester_event_to_link_local(e: &Event) -> RoutableEvent {
         .build()
         .unwrap();
 
-    RoutableEvent::LinkLocal(event)
+    RoutableEvent::AmazonTimeSync(event)
 }
 
 // now-ish. Oct 27 2025
@@ -113,7 +113,7 @@ mod tests {
     use std::sync::Arc;
 
     use clock_bound::daemon::{
-        clock_sync_algorithm::{Selector, source::LinkLocal},
+        clock_sync_algorithm::{Selector, source::AmazonTimeSync},
         selected_clock::SelectedClockSource,
         time::tsc::Skew,
     };
@@ -124,9 +124,9 @@ mod tests {
 
     #[test]
     fn perfect_does_not_panic() {
-        let mut tester = TestLinkLocal::new(
+        let mut tester = TestAmazonTimeSync::new(
             ClockSyncAlgorithm::builder()
-                .link_local(LinkLocal::new(Skew::from_ppm(15.0)))
+                .amazon_time_sync(AmazonTimeSync::new(Skew::from_ppm(15.0)))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
                 .selector(Selector::new(Skew::from_ppm(15.0)))
@@ -139,9 +139,9 @@ mod tests {
 
     #[test]
     fn alg_is_perfect_under_perfect_conditions() {
-        let mut tester = TestLinkLocal::new(
+        let mut tester = TestAmazonTimeSync::new(
             ClockSyncAlgorithm::builder()
-                .link_local(LinkLocal::new(Skew::from_ppm(15.0)))
+                .amazon_time_sync(AmazonTimeSync::new(Skew::from_ppm(15.0)))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
                 .selector(Selector::new(Skew::from_ppm(15.0)))

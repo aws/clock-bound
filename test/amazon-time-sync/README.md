@@ -1,8 +1,8 @@
-# Test program: link-local-test
+# Test program: amazon-time-sync-test
 
 This directory contains the source code for a test program written to
-validate the implementation of the link local NTP runner. The link local
-NTP runner sends NTP packets to the AWS link local NTP address. 
+validate the implementation of the Amazon Time Sync NTP runner. The Amazon
+Time Sync NTP runner sends NTP packets to the AWS Amazon Time Sync address.
 
 ## Prerequisites
 
@@ -22,14 +22,14 @@ Run the following commands to run the test program.
 
 ```sh
 cd target/release/
-./link-local-test
+./amazon-time-sync-test
 ```
 
 
 The output should look something like the following:
 
 ```sh
-$ ./link-local-test
+$ ./amazon-time-sync-test
 Lets get a NTP packet!
 It looks like we got an ntp packet 
 Some(

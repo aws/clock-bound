@@ -16,7 +16,7 @@ use crate::{
         Scenario,
         v1::{Event, EventKind},
     },
-    sim_ll::NOW_ISH,
+    sim_amazon_time_sync::NOW_ISH,
     simulation::{
         self,
         delay::{Delay, TimeUnit},
@@ -114,7 +114,7 @@ mod tests {
     use clock_bound::daemon::{
         clock_sync_algorithm::{
             Selector,
-            source::{self, LinkLocal},
+            source::{self, AmazonTimeSync},
         },
         selected_clock::SelectedClockSource,
         time::tsc::Skew,
@@ -127,7 +127,7 @@ mod tests {
         let skew = Skew::from_ppm(15.0);
         let mut tester = TestPhc::new(
             ClockSyncAlgorithm::builder()
-                .link_local(LinkLocal::new(skew))
+                .amazon_time_sync(AmazonTimeSync::new(skew))
                 .ntp_sources(vec![])
                 .phc(source::Phc::new("path".into(), skew))
                 .selected_clock(Arc::new(SelectedClockSource::default()))
@@ -144,7 +144,7 @@ mod tests {
         let skew = Skew::from_ppm(15.0);
         let mut tester = TestPhc::new(
             ClockSyncAlgorithm::builder()
-                .link_local(LinkLocal::new(skew))
+                .amazon_time_sync(AmazonTimeSync::new(skew))
                 .ntp_sources(vec![])
                 .phc(source::Phc::new("path".into(), skew))
                 .selected_clock(Arc::new(SelectedClockSource::default()))

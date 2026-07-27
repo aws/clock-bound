@@ -33,7 +33,7 @@ pub struct Cli {
 pub fn main(args: Cli) -> anyhow::Result<()> {
     let max_dispersion = Skew::from_ppm(15.0);
     let mut alg = ClockSyncAlgorithm::builder()
-        .link_local(source::LinkLocal::new(max_dispersion))
+        .amazon_time_sync(source::AmazonTimeSync::new(max_dispersion))
         .ntp_sources(vec![])
         .phc(source::Phc::new("/dev/ptp0".into(), max_dispersion))
         .selected_clock(Arc::new(SelectedClockSource::default()))

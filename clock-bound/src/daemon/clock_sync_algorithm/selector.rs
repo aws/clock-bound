@@ -82,8 +82,8 @@ pub struct SourceParams {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceInfo {
-    /// Link Local
-    LinkLocal(SocketAddr, Stratum),
+    /// Amazon Time Sync
+    AmazonTimeSync(SocketAddr, Stratum),
     /// NTP Source,
     NtpSource(SocketAddr, Stratum),
     /// PHC

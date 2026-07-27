@@ -1,4 +1,4 @@
-//! Link Local IO Source
+//! Amazon Time Sync IO Source
 
 use std::{num::Wrapping, sync::Arc};
 use thiserror::Error;
@@ -11,8 +11,9 @@ use tokio::{
 use tracing::{debug, info};
 
 use super::ntp::{
-    LINK_LOCAL_ADDRESS, LINK_LOCAL_BURST_DURATION, LINK_LOCAL_BURST_INTERVAL_DURATION,
-    LINK_LOCAL_INTERVAL_DURATION, LINK_LOCAL_TIMEOUT, packet,
+    AMAZON_TIME_SYNC_ADDRESS, AMAZON_TIME_SYNC_BURST_DURATION,
+    AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION, AMAZON_TIME_SYNC_INTERVAL_DURATION,
+    AMAZON_TIME_SYNC_TIMEOUT, packet,
 };
 use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
@@ -25,7 +26,7 @@ use crate::daemon::{
 use packet::Packet;
 
 #[derive(Debug, Error)]
-pub enum LinkLocalError {
+pub enum AmazonTimeSyncError {
     #[error("IO failure.")]
     Io(#[from] io::Error),
     #[error("Failed to parse NTP packet.")]
@@ -40,20 +41,22 @@ pub enum LinkLocalError {
     SocketClear(#[source] io::Error),
 }
 
-impl From<SamplePacketError> for LinkLocalError {
+impl From<SamplePacketError> for AmazonTimeSyncError {
     fn from(value: SamplePacketError) -> Self {
         match value {
-            SamplePacketError::Io(e) => LinkLocalError::Io(e),
-            SamplePacketError::Timeout(e) => LinkLocalError::Timeout(e),
-            SamplePacketError::TscOrder { pre, post } => LinkLocalError::TscOrder { pre, post },
-            SamplePacketError::SocketClear(e) => LinkLocalError::SocketClear(e),
+            SamplePacketError::Io(e) => AmazonTimeSyncError::Io(e),
+            SamplePacketError::Timeout(e) => AmazonTimeSyncError::Timeout(e),
+            SamplePacketError::TscOrder { pre, post } => {
+                AmazonTimeSyncError::TscOrder { pre, post }
+            }
+            SamplePacketError::SocketClear(e) => AmazonTimeSyncError::SocketClear(e),
         }
     }
 }
 
-/// Contains the data needed to run the link local runner.
+/// Contains the data needed to run the Amazon Time Sync runner.
 #[derive(Debug)]
-pub struct LinkLocal {
+pub struct AmazonTimeSync {
     socket: UdpSocket,
     event_sender: async_ring_buffer::Sender<event::Ntp>,
     ctrl_receiver: mpsc::Receiver<ControlRequest>,
@@ -65,11 +68,11 @@ pub struct LinkLocal {
     transmit_counter: Wrapping<u64>,
 }
 
-impl LinkLocal {
-    /// Constructs a new `LinkLocal` with using given parameters.
+impl AmazonTimeSync {
+    /// Constructs a new `AmazonTimeSync` with using given parameters.
     ///
     /// NOTE:
-    /// The `LinkLocal` object will start in burst mode. The timer for burst mode begins when the object is constructed,
+    /// The `AmazonTimeSync` object will start in burst mode. The timer for burst mode begins when the object is constructed,
     /// NOT when the run loop begins.
     pub fn construct(
         socket: UdpSocket,
@@ -78,29 +81,29 @@ impl LinkLocal {
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         selected_clock: Arc<SelectedClockSource>,
     ) -> Self {
-        let mut link_local_interval = interval(LINK_LOCAL_BURST_INTERVAL_DURATION);
-        link_local_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        LinkLocal {
+        let mut ats_interval = interval(AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION);
+        ats_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        AmazonTimeSync {
             socket,
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
             ntp_buffer: [0u8; Packet::MIN_SIZE],
-            interval: link_local_interval,
+            interval: ats_interval,
             mode: Mode::burst(),
             selected_clock,
             transmit_counter: Wrapping(0),
         }
     }
 
-    /// Samples the Link local source.
+    /// Samples the Amazon Time Sync source.
     ///
     /// When sampling from a NTP source we first collect the current time stamp counter
     /// value. We then send a NTP request and await for a response. Once we receive a
     /// response we again collect the current time stamp counter value. After we've
     /// collected the NTP sample we construct the `Event` and push that event through
     /// to the ring buffer.
-    async fn sample(&mut self) -> Result<event::Ntp, LinkLocalError> {
+    async fn sample(&mut self) -> Result<event::Ntp, AmazonTimeSyncError> {
         let counter = self.transmit_counter.0;
         self.transmit_counter += 1;
         let (source, stratum) = self.selected_clock.get_with_client_stratum();
@@ -113,9 +116,9 @@ impl LinkLocal {
 
         let ntp_event = ntp::sample_packet(
             &self.socket,
-            LINK_LOCAL_ADDRESS.into(),
+            AMAZON_TIME_SYNC_ADDRESS.into(),
             &mut self.ntp_buffer,
-            LINK_LOCAL_TIMEOUT,
+            AMAZON_TIME_SYNC_TIMEOUT,
             counter,
         )
         .await?;
@@ -123,19 +126,19 @@ impl LinkLocal {
         Ok(ntp_event)
     }
 
-    /// NTP Link Local task runner.
+    /// NTP Amazon Time Sync task runner.
     ///
-    /// Samples NTP packets from the AWS EC2 internal Link Local address.
+    /// Samples NTP packets from the AWS EC2 Amazon Time Sync address.
     ///
     /// The function runs in two modes a normal mode and a burst mode.
     ///
-    /// While in burst mode the link local source is polled more frequently,
-    /// [`LINK_LOCAL_BURST_INTERVAL_DURATION`].
+    /// While in burst mode the Amazon Time Sync source is polled more frequently,
+    /// [`AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION`].
     /// Burst mode is triggered when:
     /// - a clock disruption signal is received.
     /// - ...
     ///
-    /// Burst mode is active for a set amount of time, [`LINK_LOCAL_BURST_DURATION`], before
+    /// Burst mode is active for a set amount of time, [`AMAZON_TIME_SYNC_BURST_DURATION`], before
     /// transitioning back to normal mode.
     ///
     /// # Panics
@@ -143,9 +146,9 @@ impl LinkLocal {
     ///
     /// # Errors
     /// Returns error if loop exits unexpectedly
-    pub async fn run(&mut self) -> Result<(), LinkLocalError> {
+    pub async fn run(&mut self) -> Result<(), AmazonTimeSyncError> {
         // Sampling loop
-        info!("Starting link local sampling loop.");
+        info!("Starting Amazon Time Sync sampling loop.");
         loop {
             tokio::select! {
                 biased; // priority order is disruption, commands, and ticks
@@ -178,7 +181,7 @@ impl LinkLocal {
 
             }
         }
-        info!("Link local runner exiting.");
+        info!("Amazon Time Sync runner exiting.");
         Ok(())
     }
 
@@ -186,24 +189,24 @@ impl LinkLocal {
         let ntp_event = match self.sample().await {
             Ok(ntp_event) => ntp_event,
             Err(e) => {
-                debug!(?e, "Failed to sample link local source.");
+                debug!(?e, "Failed to sample Amazon Time Sync source.");
                 return;
             }
         };
 
         match self.event_sender.send(ntp_event.clone()) {
-            Ok(()) => debug!(?ntp_event, "Successfully sent Link Local IO event."),
+            Ok(()) => debug!(?ntp_event, "Successfully sent Amazon Time Sync IO event."),
             Err(SendError::Disrupted(_)) => {
                 tracing::info!("Trying to send when there was a disruption event.");
             }
             Err(SendError::BufferClosed(e)) => {
-                tracing::error!(?e, "link local Channel closed not supported in alpha");
-                panic!("Link local unable to communicate with daemon. {e:?}");
+                tracing::error!(?e, "Amazon Time Sync channel closed not supported in alpha");
+                panic!("Amazon Time Sync unable to communicate with daemon. {e:?}");
             }
         }
 
         if let Mode::Burst(start_time) = self.mode
-            && start_time.elapsed() >= LINK_LOCAL_BURST_DURATION
+            && start_time.elapsed() >= AMAZON_TIME_SYNC_BURST_DURATION
         {
             self.transition_to_normal_mode();
             info!("Transitioning from `Burst` mode to `Normal` mode.");
@@ -213,15 +216,15 @@ impl LinkLocal {
     /// Handles a clock disruption event
     ///
     /// Changes the source's mode to [`Mode::Burst`] and the polling frequency to
-    /// [`BURST_INTERVAL_DURATION`].
+    /// [`AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION`].
     fn handle_disruption(&mut self) {
-        let LinkLocal {
+        let AmazonTimeSync {
             socket: _socket,
             event_sender,
             ctrl_receiver: _ctrl_receiver,
             clock_disruption_receiver,
             ntp_buffer: _ntp_buffer,
-            interval: ll_interval,
+            interval: ats_interval,
             mode,
             selected_clock: _selected_clock,
             transmit_counter: _,
@@ -231,22 +234,22 @@ impl LinkLocal {
         if val.disruption_marker.is_some() {
             event_sender.handle_disruption();
             *mode = Mode::burst();
-            *ll_interval = interval(LINK_LOCAL_BURST_INTERVAL_DURATION);
-            ll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            ll_interval.reset_immediately();
+            *ats_interval = interval(AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION);
+            ats_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            ats_interval.reset_immediately();
         }
     }
 
     /// Changes the source's mode to [`Mode::Normal`] and changes polling frequency to
-    /// [`LINK_LOCAL_INTERVAL_DURATION`].
+    /// [`AMAZON_TIME_SYNC_INTERVAL_DURATION`].
     fn transition_to_normal_mode(&mut self) {
-        let LinkLocal {
+        let AmazonTimeSync {
             socket: _socket,
             event_sender: _event_sender,
             ctrl_receiver: _ctrl_receiver,
             clock_disruption_receiver: _clock_disruption_receiver,
             ntp_buffer: _ntp_buffer,
-            interval: ll_interval,
+            interval: ats_interval,
             mode,
             selected_clock: _selected_clock,
             transmit_counter: _,
@@ -255,12 +258,12 @@ impl LinkLocal {
         *mode = Mode::Normal;
         // `tokio::time::interval` first tick completes immediately,
         // which would cause us to immediately handle that tick, and poll the NTP server again.
-        // To avoid that behavior, we set the interval to start ahead by at least `LINK_LOCAL_INTERVAL_DURATION`.
-        *ll_interval = interval_at(
-            Instant::now() + LINK_LOCAL_INTERVAL_DURATION,
-            LINK_LOCAL_INTERVAL_DURATION,
+        // To avoid that behavior, we set the interval to start ahead by at least `AMAZON_TIME_SYNC_INTERVAL_DURATION`.
+        *ats_interval = interval_at(
+            Instant::now() + AMAZON_TIME_SYNC_INTERVAL_DURATION,
+            AMAZON_TIME_SYNC_INTERVAL_DURATION,
         );
-        ll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        ats_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     }
 }
 
@@ -291,8 +294,8 @@ mod tests {
     use super::*;
     use crate::daemon::io::ntp;
 
-    async fn create_link_local() -> (
-        LinkLocal,
+    async fn create_amazon_time_sync() -> (
+        AmazonTimeSync,
         watch::Sender<ClockDisruptionEvent>,
         Arc<SelectedClockSource>,
     ) {
@@ -308,7 +311,7 @@ mod tests {
 
         let selected_clock = Arc::new(SelectedClockSource::default());
         (
-            LinkLocal::construct(
+            AmazonTimeSync::construct(
                 socket,
                 event_sender,
                 ctrl_receiver,
@@ -322,23 +325,26 @@ mod tests {
 
     #[tokio::test]
     async fn validate_to_burst_mode() {
-        let (mut link_local, _, _) = create_link_local().await;
-        link_local.handle_disruption();
+        let (mut amazon_time_sync, _, _) = create_amazon_time_sync().await;
+        amazon_time_sync.handle_disruption();
 
-        assert!(matches!(link_local.mode, Mode::Burst(_)));
+        assert!(matches!(amazon_time_sync.mode, Mode::Burst(_)));
         assert_eq!(
-            link_local.interval.period(),
-            LINK_LOCAL_BURST_INTERVAL_DURATION
+            amazon_time_sync.interval.period(),
+            AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION
         );
     }
 
     #[tokio::test]
     async fn validate_to_normal_mode() {
-        let (mut link_local, _, _) = create_link_local().await;
-        link_local.handle_disruption();
-        link_local.transition_to_normal_mode();
+        let (mut amazon_time_sync, _, _) = create_amazon_time_sync().await;
+        amazon_time_sync.handle_disruption();
+        amazon_time_sync.transition_to_normal_mode();
 
-        assert!(matches!(link_local.mode, Mode::Normal));
-        assert_eq!(link_local.interval.period(), LINK_LOCAL_INTERVAL_DURATION);
+        assert!(matches!(amazon_time_sync.mode, Mode::Normal));
+        assert_eq!(
+            amazon_time_sync.interval.period(),
+            AMAZON_TIME_SYNC_INTERVAL_DURATION
+        );
     }
 }

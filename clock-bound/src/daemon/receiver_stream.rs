@@ -41,7 +41,7 @@ type EventStream<'a> =
 pub struct ReceiverStream {
     #[builder(default)]
     ntp_sources: HashMap<SocketAddr, Receiver<event::Ntp>>,
-    link_local: Receiver<event::Ntp>,
+    amazon_time_sync: Receiver<event::Ntp>,
     phc: Option<Receiver<event::Phc>>,
 }
 
@@ -74,9 +74,10 @@ impl ReceiverStream {
             })));
         }
 
-        // Add the link_local receiver to the streams
+        // Add the Amazon Time Sync receiver to the streams
         streams.push(Box::pin(
-            once(self.link_local.recv()).map(|result| result.map(RoutableEvent::LinkLocal)),
+            once(self.amazon_time_sync.recv())
+                .map(|result| result.map(RoutableEvent::AmazonTimeSync)),
         ));
 
         // Add PHC if it's available
@@ -89,7 +90,7 @@ impl ReceiverStream {
         // Shuffles vector to avoid unfair treatment of any preloaded events.
         // Context: Without this shuffle, if events are loaded into the buffer before `recv` is called,
         // those events will be returned in the order that their relative stream is added to the `streams` vector.
-        // Ex: In the "receiver_stream_test()" function the `RoutableEvent::LinkLocalEvent` will always be received second,
+        // Ex: In the "receiver_stream_test()" function the `RoutableEvent::AmazonTimeSync` will always be received second,
         // although it was sent by through it's relative buffer first)
         //
         // In the case that an actor produces events faster than we can poll,
@@ -123,12 +124,12 @@ impl ReceiverStream {
     /// This struct should loop through all receivers and clear the buffers when possible
     pub fn handle_disruption(&mut self) {
         let Self {
-            link_local,
+            amazon_time_sync,
             ntp_sources,
             phc,
         } = self;
 
-        link_local.handle_disruption();
+        amazon_time_sync.handle_disruption();
         for source in ntp_sources.values_mut() {
             source.handle_disruption();
         }
@@ -141,7 +142,8 @@ impl ReceiverStream {
 
 #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RoutableEvent {
-    LinkLocal(event::Ntp),
+    #[serde(alias = "LinkLocal")]
+    AmazonTimeSync(event::Ntp),
     NtpSource(SocketAddr, event::Ntp),
     Phc(event::Phc),
 }
@@ -151,7 +153,7 @@ impl RoutableEvent {
     #[cfg(not(test))]
     pub fn system_clock(&self) -> Option<&crate::daemon::event::SystemClockMeasurement> {
         match self {
-            RoutableEvent::LinkLocal(data) | RoutableEvent::NtpSource(_, data) => {
+            RoutableEvent::AmazonTimeSync(data) | RoutableEvent::NtpSource(_, data) => {
                 data.system_clock()
             }
             RoutableEvent::Phc(data) => data.system_clock(),
@@ -162,14 +164,18 @@ impl RoutableEvent {
 impl TscRtt for RoutableEvent {
     fn tsc_pre(&self) -> TscCount {
         match self {
-            RoutableEvent::LinkLocal(data) | RoutableEvent::NtpSource(_, data) => data.tsc_pre(),
+            RoutableEvent::AmazonTimeSync(data) | RoutableEvent::NtpSource(_, data) => {
+                data.tsc_pre()
+            }
             RoutableEvent::Phc(data) => data.tsc_pre(),
         }
     }
 
     fn tsc_post(&self) -> TscCount {
         match self {
-            RoutableEvent::LinkLocal(data) | RoutableEvent::NtpSource(_, data) => data.tsc_post(),
+            RoutableEvent::AmazonTimeSync(data) | RoutableEvent::NtpSource(_, data) => {
+                data.tsc_post()
+            }
             RoutableEvent::Phc(data) => data.tsc_post(),
         }
     }
@@ -186,13 +192,13 @@ mod tests {
 
     #[tokio::test]
     async fn receiver_stream() {
-        let (link_local_tx, link_local_rx) = create(1);
+        let (amazon_time_sync_tx, amazon_time_sync_rx) = create(1);
 
         let (ntp_source_tx, ntp_source_rx) = create(1);
         let dummy_ntp_source_ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 123);
 
         let mut rx_stream = ReceiverStream::builder()
-            .link_local(link_local_rx)
+            .amazon_time_sync(amazon_time_sync_rx)
             .ntp_sources(HashMap::from([(dummy_ntp_source_ip, ntp_source_rx)]))
             .build();
 
@@ -209,18 +215,18 @@ mod tests {
             .build()
             .unwrap();
 
-        link_local_tx.send(dummy_ntp_data.clone()).unwrap();
+        amazon_time_sync_tx.send(dummy_ntp_data.clone()).unwrap();
         ntp_source_tx.send(dummy_ntp_data.clone()).unwrap();
         let num_events = 2;
         let mut counter = 0;
 
         for _ in 0..num_events {
             match rx_stream.recv().await.unwrap() {
-                RoutableEvent::LinkLocal(data) => {
+                RoutableEvent::AmazonTimeSync(data) => {
                     counter += 1;
                     assert_eq!(
-                        RoutableEvent::LinkLocal(dummy_ntp_data.clone()),
-                        RoutableEvent::LinkLocal(data)
+                        RoutableEvent::AmazonTimeSync(dummy_ntp_data.clone()),
+                        RoutableEvent::AmazonTimeSync(data)
                     );
                 }
                 RoutableEvent::NtpSource(ip, data) => {
@@ -244,11 +250,11 @@ mod tests {
 
     #[tokio::test]
     async fn phc_stream() {
-        let (_link_local_tx, link_local_rx) = create(1);
+        let (_amazon_time_sync_tx, amazon_time_sync_rx) = create(1);
         let (phc_tx, phc_rx) = create(1);
 
         let mut rx_stream = ReceiverStream::builder()
-            .link_local(link_local_rx)
+            .amazon_time_sync(amazon_time_sync_rx)
             .phc(phc_rx)
             .build();
 
@@ -274,13 +280,15 @@ mod tests {
 
     #[test]
     fn add_ntp_source() {
-        let (_, link_local_rx) = create(1);
+        let (_, amazon_time_sync_rx) = create(1);
 
         let (_, ntp_source_rx) = create(1);
         let dummy_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 123);
         let dummy_ntp_source_receiver: NTPSourceReceiver = (dummy_address, ntp_source_rx);
 
-        let mut rx_stream = ReceiverStream::builder().link_local(link_local_rx).build();
+        let mut rx_stream = ReceiverStream::builder()
+            .amazon_time_sync(amazon_time_sync_rx)
+            .build();
 
         assert!(rx_stream.ntp_sources.is_empty());
 
@@ -291,14 +299,14 @@ mod tests {
 
     #[test]
     fn remove_ntp_source() {
-        let (_, link_local_rx) = create(1);
+        let (_, amazon_time_sync_rx) = create(1);
         let (_, ntp_source_rx) = create(1);
 
         let dummy_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 123);
         let dummy_ntp_source_receiver: NTPSourceReceiver = (dummy_address, ntp_source_rx);
 
         let mut rx_stream = ReceiverStream::builder()
-            .link_local(link_local_rx)
+            .amazon_time_sync(amazon_time_sync_rx)
             .ntp_sources(HashMap::from([dummy_ntp_source_receiver]))
             .build();
 

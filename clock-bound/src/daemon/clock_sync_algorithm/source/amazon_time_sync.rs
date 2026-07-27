@@ -1,4 +1,4 @@
-//! Link local source
+//! Amazon Time Sync source
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -8,40 +8,40 @@ use crate::daemon::event;
 use crate::daemon::time::Duration;
 use crate::daemon::time::tsc::Skew;
 
-/// Link-local NTP endpoint address (Amazon Time Sync Service on EC2)
+/// Amazon Time Sync NTP endpoint address (Amazon Time Sync Service on EC2)
 // FIXME: This duplicates the definition in daemon/io/ntp.rs. The algorithm should not
 // depend on the daemon IO module, but both need this address. Consolidate once we refactor
 // source identity to be passed in from the IO layer at construction time.
-pub const LINK_LOCAL_ADDRESS: SocketAddrV4 =
+pub const AMAZON_TIME_SYNC_ADDRESS: SocketAddrV4 =
     SocketAddrV4::new(Ipv4Addr::new(169, 254, 169, 123), 123);
 
-/// A Link Local reference clock source
+/// An Amazon Time Sync reference clock source
 ///
 /// Wraps around an NTP feed-forward clock-sync algorithm
 #[derive(Debug, Clone, PartialEq)]
-pub struct LinkLocal {
+pub struct AmazonTimeSync {
     source_address: SocketAddrV4,
     inner: ff::Ntp,
 }
 
-impl LinkLocal {
+impl AmazonTimeSync {
     const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-    /// Create a new Link Local reference clock source
+    /// Create a new Amazon Time Sync reference clock source
     pub fn new(max_dispersion: Skew) -> Self {
         Self {
-            source_address: LINK_LOCAL_ADDRESS,
+            source_address: AMAZON_TIME_SYNC_ADDRESS,
             inner: ff::Ntp::new(Self::POLL_INTERVAL, max_dispersion),
         }
     }
 
-    /// The source address of this link-local endpoint
+    /// The source address of this Amazon Time Sync endpoint
     pub fn source_address(&self) -> SocketAddrV4 {
         self.source_address
     }
 
-    /// Feed an event into the link local NTP clock-sync algorithm
-    #[tracing::instrument(level = "info", skip_all, fields(source = "link_local"))]
+    /// Feed an event into the Amazon Time Sync NTP clock-sync algorithm
+    #[tracing::instrument(level = "info", skip_all, fields(source = "amazon_time_sync"))]
     pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {
         self.inner.feed(event)
     }

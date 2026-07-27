@@ -21,15 +21,15 @@ use crate::daemon::{
     time::TscCount,
 };
 
-pub const LINK_LOCAL_BURST_DURATION: Duration = Duration::from_secs(1);
+pub const AMAZON_TIME_SYNC_BURST_DURATION: Duration = Duration::from_secs(1);
 /// The amount of time between source polls when in burst mode.
-pub const LINK_LOCAL_BURST_INTERVAL_DURATION: Duration = Duration::from_millis(50);
+pub const AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION: Duration = Duration::from_millis(50);
 
 pub const UNSPECIFIED_SOCKET_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
-pub const LINK_LOCAL_ADDRESS: SocketAddrV4 =
+pub const AMAZON_TIME_SYNC_ADDRESS: SocketAddrV4 =
     SocketAddrV4::new(Ipv4Addr::new(169, 254, 169, 123), 123);
-pub const LINK_LOCAL_INTERVAL_DURATION: Duration = Duration::from_secs(2);
-pub const LINK_LOCAL_TIMEOUT: Duration = Duration::from_millis(100);
+pub const AMAZON_TIME_SYNC_INTERVAL_DURATION: Duration = Duration::from_secs(2);
+pub const AMAZON_TIME_SYNC_TIMEOUT: Duration = Duration::from_millis(100);
 pub const AWS_TEMP_PUBLIC_TIME_ADDRESSES: [SocketAddr; 2] = [
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(166, 117, 111, 42)), 123),
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(3, 33, 186, 244)), 123),

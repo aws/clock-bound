@@ -182,13 +182,13 @@ impl NTPSource {
         };
 
         match self.event_sender.send(ntp_event.clone()) {
-            Ok(()) => debug!(?ntp_event, "Successfully sent Link Local IO event."),
+            Ok(()) => debug!(?ntp_event, "Successfully sent NTP Source IO event."),
             Err(SendError::Disrupted(_)) => {
                 tracing::info!("Trying to send when there was a disruption event.");
             }
             Err(SendError::BufferClosed(e)) => {
-                tracing::error!(?e, "link local Channel closed not supported in alpha");
-                panic!("Link local unable to communicate with daemon. {e:?}");
+                tracing::error!(?e, "NTP Source channel closed not supported in alpha");
+                panic!("NTP Source unable to communicate with daemon. {e:?}");
             }
         }
     }

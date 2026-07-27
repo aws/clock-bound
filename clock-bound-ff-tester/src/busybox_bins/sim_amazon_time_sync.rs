@@ -1,10 +1,10 @@
-//! Simulation tests against ClockBound's Link Local
+//! Simulation tests against ClockBound's Amazon Time Sync
 
 use std::sync::Arc;
 
 use crate::{
     events::{Scenario, v1::EventKind},
-    sim_ll::{self, TestLinkLocal},
+    sim_amazon_time_sync::{self, TestAmazonTimeSync},
     time::{CbBridge, Skew, TrueDuration},
 };
 use clock_bound::daemon::{
@@ -25,16 +25,16 @@ pub fn main() {
         )
         .init();
 
-    let mut tester = TestLinkLocal::new(
+    let mut tester = TestAmazonTimeSync::new(
         ClockSyncAlgorithm::builder()
-            .link_local(source::LinkLocal::new(Skew::from_ppm(15.0)))
+            .amazon_time_sync(source::AmazonTimeSync::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
             .selector(Selector::new(Skew::from_ppm(15.0)))
             .build(),
     );
 
-    let scenario = sim_ll::perfect_symmetric(TrueDuration::from_days(14));
+    let scenario = sim_amazon_time_sync::perfect_symmetric(TrueDuration::from_days(14));
     let Scenario::V1(scenario) = scenario;
     let mut events = scenario.events.iter().enumerate();
     let (_, first_event) = events.next().unwrap();

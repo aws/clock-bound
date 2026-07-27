@@ -19,7 +19,7 @@ pub enum Commands {
     PrimerLogToParquet(bins::primer_log_to_parquet::Cli),
     ReproReplay(bins::repro_replay::Cli),
     ScenarioGenerator(bins::scenario_generator::Cli),
-    SimLl,
+    SimAmazonTimeSync,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
         Commands::PrimerLogToParquet(cli) => bins::primer_log_to_parquet::main(cli)?,
         Commands::ReproReplay(cli) => bins::repro_replay::main(cli)?,
         Commands::ScenarioGenerator(cli) => bins::scenario_generator::main(cli)?,
-        Commands::SimLl => bins::sim_ll::main(),
+        Commands::SimAmazonTimeSync => bins::sim_amazon_time_sync::main(),
     }
 
     Ok(())

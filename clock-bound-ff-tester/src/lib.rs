@@ -6,7 +6,7 @@ pub mod simulation;
 
 pub mod time;
 
-pub mod sim_ll;
+pub mod sim_amazon_time_sync;
 pub mod sim_phc;
 
 pub mod busybox_bins;

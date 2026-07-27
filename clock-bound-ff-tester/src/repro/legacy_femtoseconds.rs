@@ -119,8 +119,8 @@ mod tests {
             serde_json::from_str(&convert_time_fields(input.to_owned(), EVENT_TIME_FIELDS))
                 .unwrap();
 
-        let RoutableEvent::LinkLocal(ntp) = &event else {
-            panic!("expected LinkLocal");
+        let RoutableEvent::AmazonTimeSync(ntp) = &event else {
+            panic!("expected AmazonTimeSync");
         };
         assert_eq!(ntp.tsc_pre().get(), 635_623_413_319_024);
         assert_eq!(ntp.data().server_recv_time.get(), 1_762_449_800_677_131_039);
@@ -158,8 +158,8 @@ mod tests {
         let input = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
         let event = parse_legacy_event(input.to_owned()).unwrap();
 
-        let RoutableEvent::LinkLocal(ntp) = &event else {
-            panic!("expected LinkLocal");
+        let RoutableEvent::AmazonTimeSync(ntp) = &event else {
+            panic!("expected AmazonTimeSync");
         };
         // TSC values unchanged
         assert_eq!(ntp.tsc_pre().get(), 635_623_413_319_024);

@@ -1,6 +1,6 @@
 [package]
-name = "link-local"
-description = "A test program that attempts to sample NTP packets from link local."
+name = "amazon-time-sync"
+description = "A test program that attempts to sample NTP packets from the Amazon Time Sync Service."
 license = "Apache-2.0"
 publish = false
 
@@ -13,7 +13,7 @@ repository.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "link-local-test"
+name = "amazon-time-sync-test"
 path = "src/main.rs"
 
 [dependencies]
