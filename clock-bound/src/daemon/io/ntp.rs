@@ -2,7 +2,7 @@
 
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
 };
 use tokio::{net::UdpSocket, time, time::Duration};
 
@@ -30,10 +30,7 @@ pub const AMAZON_TIME_SYNC_ADDRESS: SocketAddrV4 =
     SocketAddrV4::new(Ipv4Addr::new(169, 254, 169, 123), 123);
 pub const AMAZON_TIME_SYNC_INTERVAL_DURATION: Duration = Duration::from_secs(2);
 pub const AMAZON_TIME_SYNC_TIMEOUT: Duration = Duration::from_millis(100);
-pub const AWS_TEMP_PUBLIC_TIME_ADDRESSES: [SocketAddr; 2] = [
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(166, 117, 111, 42)), 123),
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(3, 33, 186, 244)), 123),
-];
+
 pub const NTP_SOURCE_INTERVAL_DURATION: Duration = Duration::from_secs(16);
 pub const NTP_SOURCE_TIMEOUT: Duration = Duration::from_millis(100);
 

@@ -13,6 +13,9 @@ pub mod receiver_stream;
 pub mod selected_clock;
 
 #[cfg(feature = "daemon")]
+pub mod source_mutator;
+
+#[cfg(feature = "daemon")]
 pub mod async_ring_buffer;
 
 #[cfg(feature = "daemon")]
@@ -27,21 +30,22 @@ pub mod subscriber;
 
 #[cfg(feature = "daemon")]
 use {
-    crate::daemon::{
-        async_ring_buffer::Sender,
-        clock_parameters::ClockParameters,
-        clock_state::ClockState,
-        clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source::NtpSource},
-        io::{
-            ClockDisruptionEvent,
-            ntp::{DaemonInfo, NTPSourceReceiver, NTPSourceSender},
+    crate::{
+        daemon::{
+            async_ring_buffer::Sender,
+            clock_parameters::ClockParameters,
+            clock_state::ClockState,
+            clock_sync_algorithm::{ClockSyncAlgorithm, Selector},
+            io::{ClockDisruptionEvent, ntp::DaemonInfo},
+            receiver_stream::{ReceiverStream, RoutableEvent},
+            selected_clock::SelectedClockSource,
+            source_mutator::SourceMutator,
+            time::tsc::Skew,
         },
-        receiver_stream::{ReceiverStream, RoutableEvent},
-        selected_clock::SelectedClockSource,
-        time::tsc::Skew,
+        vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH,
     },
-    crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH,
     rand::{RngCore, rng},
+    std::net::{IpAddr, Ipv4Addr, SocketAddr},
     std::sync::Arc,
     tokio::sync::watch,
     tokio_util::{sync::CancellationToken, task::TaskTracker},
@@ -63,6 +67,13 @@ pub(crate) const MAX_DISPERSION_GROWTH_PPB: u32 = 15_000;
 
 #[cfg(feature = "daemon")]
 const MAX_DISPERSION_GROWTH: Skew = Skew::from_ppb(MAX_DISPERSION_GROWTH_PPB as f64);
+
+/// AWS public time service addresses (time.aws.com)
+#[cfg(feature = "daemon")]
+pub const AWS_TEMP_PUBLIC_TIME_ADDRESSES: [SocketAddr; 2] = [
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(166, 117, 111, 42)), 123),
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(3, 33, 186, 244)), 123),
+];
 
 #[cfg(feature = "daemon")]
 pub struct Daemon {
@@ -93,19 +104,28 @@ impl Daemon {
         let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
         let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
 
-        // Initialize Amazon Time Sync event buffer and IO component.
-        let (amazon_time_sync_tx, amazon_time_sync_rx) = async_ring_buffer::create(2);
-        io_front_end
-            .create_amazon_time_sync(amazon_time_sync_tx)
-            .await;
+        let mut receiver_stream = ReceiverStream::default();
+        let mut clock_sync_algorithm = ClockSyncAlgorithm::builder()
+            .selected_clock(selected_clock.clone())
+            .selector(Selector::new(MAX_DISPERSION_GROWTH))
+            .build();
 
-        // Initialize ntp source event buffer and IO component.
-        let ntp_sources =
-            clock_sync_algorithm::source::NtpSource::create_time_aws_sources(MAX_DISPERSION_GROWTH);
-        let (ntp_source_event_senders, ntp_source_event_receivers) =
-            Self::init_ntp_source_buffers(2, &ntp_sources);
-        for source in ntp_source_event_senders {
-            io_front_end.create_ntp_source(source).await;
+        let mut source_mutator = SourceMutator::new(
+            &mut io_front_end,
+            &mut clock_sync_algorithm,
+            &mut receiver_stream,
+        );
+
+        // Add clock sources
+        // TODO: gate this on platform autodetection
+        source_mutator
+            .set_amazon_time_sync(MAX_DISPERSION_GROWTH)
+            .await;
+        source_mutator.set_phc(MAX_DISPERSION_GROWTH).await;
+        for socket_addr in AWS_TEMP_PUBLIC_TIME_ADDRESSES {
+            source_mutator
+                .add_ntp_source(socket_addr, MAX_DISPERSION_GROWTH)
+                .await;
         }
 
         // Initialize vmclock IO component.
@@ -116,42 +136,6 @@ impl Daemon {
             .map(|vmclock| vmclock.last_disruption_marker())
             .unwrap_or_default();
         let clock_disruption_support_enabled = io_front_end.vmclock().is_some();
-
-        // Initialize PHC event buffer and IO component.
-        let (phc_tx, phc_rx) = async_ring_buffer::create(2);
-        io_front_end.create_phc(phc_tx).await;
-
-        // Note: Failure to create a PHC IO component here is considered non-fatal,
-        // we will continue without using the device as an clock sync input.
-        let phc = io_front_end.phc().map(|io_phc| {
-            clock_sync_algorithm::source::Phc::new(
-                io_phc.device_path().to_owned(),
-                MAX_DISPERSION_GROWTH,
-            )
-        });
-        let phc_rx = if io_front_end.phc_exists() {
-            Some(phc_rx)
-        } else {
-            None
-        };
-
-        // Initialize clock sync algorithm.
-        let clock_sync_algorithm = ClockSyncAlgorithm::builder()
-            .amazon_time_sync(clock_sync_algorithm::source::AmazonTimeSync::new(
-                MAX_DISPERSION_GROWTH,
-            ))
-            .ntp_sources(ntp_sources)
-            .maybe_phc(phc)
-            .selected_clock(selected_clock.clone())
-            .selector(Selector::new(MAX_DISPERSION_GROWTH))
-            .build();
-
-        // Initializing receiver stream with IO ring buffer receivers
-        let receiver_stream: ReceiverStream = ReceiverStream::builder()
-            .amazon_time_sync(amazon_time_sync_rx)
-            .ntp_sources(ntp_source_event_receivers.into_iter().collect())
-            .maybe_phc(phc_rx)
-            .build();
 
         // Initialize the Clock State component
         let (clock_state_tx, clock_state) = {
@@ -275,32 +259,6 @@ impl Daemon {
             clock_sync_algorithm.handle_disruption();
             receiver_stream.handle_disruption();
         }
-    }
-
-    /// Takes in a vector of `source::NTPSource` structs and returns the `async_ring_buffer` senders and receivers
-    /// for each `ntp_source`'s IO event delivery.
-    /// # Parameters
-    /// - `ntp_source_buffer_size`: The size of ring buffer to create for each source
-    /// - `ntp_source_vec`: a pointer to a vector of `source::NTPSource`
-    ///
-    /// # Returns
-    /// - A tuple containing two lists:
-    /// > 1. `sender_vec`: Vector of `NTPSourceSender`
-    /// > 2. `receiver_vec`: Vector of `NTPSourceReceiver`
-    fn init_ntp_source_buffers(
-        ntp_source_buffer_size: usize,
-        ntp_source_vec: &Vec<NtpSource>,
-    ) -> (Vec<NTPSourceSender>, Vec<NTPSourceReceiver>) {
-        let mut sender_vec: Vec<NTPSourceSender> = Vec::new();
-        let mut receiver_vec: Vec<NTPSourceReceiver> = Vec::new();
-
-        for source in ntp_source_vec {
-            let (tx, rx) = async_ring_buffer::create(ntp_source_buffer_size);
-            sender_vec.push((source.socket_address(), tx));
-            receiver_vec.push((source.socket_address(), rx));
-        }
-
-        (sender_vec, receiver_vec)
     }
 }
 

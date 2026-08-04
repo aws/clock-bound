@@ -3,13 +3,11 @@
 //! This executable tests that the NTP Server runner is able to send and receive packets from the
 //! specified NTP Server address and that the polling rate is roughly once a second.
 
+use clock_bound::daemon::AWS_TEMP_PUBLIC_TIME_ADDRESSES;
 use clock_bound::daemon::async_ring_buffer::{self, BufferClosedError, Receiver};
 use clock_bound::daemon::event::{Ntp, Stratum, ValidStratumLevel};
 use clock_bound::daemon::io::ntp::NTPSourceSender;
-use clock_bound::daemon::io::{
-    SourceIO,
-    ntp::{AWS_TEMP_PUBLIC_TIME_ADDRESSES, DaemonInfo},
-};
+use clock_bound::daemon::io::{SourceIO, ntp::DaemonInfo};
 use clock_bound::daemon::selected_clock::{ClockSource, SelectedClockSource};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;

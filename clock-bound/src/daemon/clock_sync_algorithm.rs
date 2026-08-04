@@ -37,8 +37,9 @@ pub mod source;
 #[derive(Debug, Clone, bon::Builder)]
 pub struct ClockSyncAlgorithm {
     /// The Amazon Time Sync reference clock's ff algorithm
-    amazon_time_sync: source::AmazonTimeSync,
+    amazon_time_sync: Option<source::AmazonTimeSync>,
     // A Vector of ff algorithms for ntp source reference clocks
+    #[builder(default)]
     pub ntp_sources: Vec<source::NtpSource>,
     /// The PHC device
     ///
@@ -51,6 +52,41 @@ pub struct ClockSyncAlgorithm {
 }
 
 impl ClockSyncAlgorithm {
+    /// Set the Amazon Time Sync source used by the clock sync algorithm
+    ///
+    /// # Panics
+    ///
+    /// Panics if an Amazon Time Sync source has already been set.
+    pub fn set_amazon_time_sync(&mut self, source: source::AmazonTimeSync) {
+        assert!(self.amazon_time_sync.is_none());
+        self.amazon_time_sync = Some(source);
+    }
+
+    /// Amazon Time Sync getter
+    pub fn amazon_time_sync(&self) -> Option<&source::AmazonTimeSync> {
+        self.amazon_time_sync.as_ref()
+    }
+
+    /// Add a new NTP source to the clock sync algorithm
+    pub fn add_ntp_source(&mut self, source: source::NtpSource) {
+        self.ntp_sources.push(source);
+    }
+
+    /// Set the PHC source used by the clock sync algorithm
+    ///
+    /// # Panics
+    ///
+    /// Panics if a PHC source has already been set.
+    pub fn set_phc(&mut self, phc: source::Phc) {
+        assert!(self.phc.is_none());
+        self.phc = Some(phc);
+    }
+
+    /// PHC getter
+    pub fn phc(&self) -> Option<&source::Phc> {
+        self.phc.as_ref()
+    }
+
     /// Logs into the reproducibility logs that the app has started
     ///
     /// Can be used to break-up application restarts when scanning logs
@@ -107,7 +143,8 @@ impl ClockSyncAlgorithm {
         // First route the event to the correct inner source
         let alg_output = match routable_event {
             RoutableEvent::AmazonTimeSync(event) => {
-                Self::feed_amazon_time_sync(&mut self.amazon_time_sync, event)
+                let amazon_time_sync = self.amazon_time_sync.as_mut()?;
+                Self::feed_amazon_time_sync(amazon_time_sync, event)
             }
             RoutableEvent::NtpSource(sender_address, event) => {
                 Self::feed_ntp_source(&mut self.ntp_sources, sender_address, event)
@@ -208,7 +245,9 @@ impl ClockSyncAlgorithm {
         } = self;
 
         selected_clock.set_to_none();
-        amazon_time_sync.handle_disruption();
+        if let Some(amazon_time_sync) = amazon_time_sync {
+            amazon_time_sync.handle_disruption();
+        }
         for source in ntp_sources {
             source.handle_disruption();
         }

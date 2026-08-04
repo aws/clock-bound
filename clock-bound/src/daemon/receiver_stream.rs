@@ -37,11 +37,11 @@ type EventStream<'a> =
     Pin<Box<dyn Stream<Item = Result<RoutableEvent, BufferClosedError>> + 'a + Send>>;
 
 #[cfg(feature = "daemon")]
-#[derive(Debug, bon::Builder)]
+#[derive(Debug, Default, bon::Builder)]
 pub struct ReceiverStream {
     #[builder(default)]
     ntp_sources: HashMap<SocketAddr, Receiver<event::Ntp>>,
-    amazon_time_sync: Receiver<event::Ntp>,
+    amazon_time_sync: Option<Receiver<event::Ntp>>,
     phc: Option<Receiver<event::Phc>>,
 }
 
@@ -62,6 +62,36 @@ impl ReceiverStream {
         }
     }
 
+    /// Set the amazon time sync source used by the receiver stream
+    ///
+    /// # Panics
+    ///
+    /// Panics if an Amazon Time Sync receiver has already been set.
+    pub fn set_amazon_time_sync(&mut self, source: Receiver<event::Ntp>) {
+        assert!(self.amazon_time_sync.is_none());
+        self.amazon_time_sync = Some(source);
+    }
+
+    /// Amazon time sync getter
+    pub fn amazon_time_sync(&self) -> Option<&Receiver<event::Ntp>> {
+        self.amazon_time_sync.as_ref()
+    }
+
+    /// Set the phc source used by the receiver stream
+    ///
+    /// # Panics
+    ///
+    /// Panics if a PHC receiver has already been set.
+    pub fn set_phc(&mut self, source: Receiver<event::Phc>) {
+        assert!(self.phc.is_none());
+        self.phc = Some(source);
+    }
+
+    /// Phc getter
+    pub fn phc(&self) -> Option<&Receiver<event::Phc>> {
+        self.phc.as_ref()
+    }
+
     /// Creates an aggregated stream of results from all `SourceIO` component `Receivers`.
     fn get_aggregate_stream(&mut self) -> SelectAll<EventStream<'_>> {
         let mut streams: Vec<EventStream<'_>> = Vec::new();
@@ -75,10 +105,12 @@ impl ReceiverStream {
         }
 
         // Add the Amazon Time Sync receiver to the streams
-        streams.push(Box::pin(
-            once(self.amazon_time_sync.recv())
-                .map(|result| result.map(RoutableEvent::AmazonTimeSync)),
-        ));
+        if let Some(amazon_time_sync) = &mut self.amazon_time_sync {
+            streams.push(Box::pin(
+                once(amazon_time_sync.recv())
+                    .map(|result| result.map(RoutableEvent::AmazonTimeSync)),
+            ));
+        }
 
         // Add PHC if it's available
         if let Some(phc_receiver) = &mut self.phc {
@@ -129,7 +161,10 @@ impl ReceiverStream {
             phc,
         } = self;
 
-        amazon_time_sync.handle_disruption();
+        if let Some(amazon_time_sync) = amazon_time_sync {
+            amazon_time_sync.handle_disruption();
+        }
+
         for source in ntp_sources.values_mut() {
             source.handle_disruption();
         }
