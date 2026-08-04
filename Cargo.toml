@@ -15,6 +15,7 @@ members = [
   "test/clock-bound-client-generic",
   "test/clock-bound-now",
   "test/clock-bound-phc-offset",
+  "test/shmv3-error-bound-validation",
 ]
 resolver = "3"
 

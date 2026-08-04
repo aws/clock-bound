@@ -3451,6 +3451,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "shmv3-error-bound-validation"
+version = "3.0.0-alpha.2"
+dependencies = [
+ "clap",
+ "clock-bound",
+ "nix",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
