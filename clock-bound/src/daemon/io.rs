@@ -18,7 +18,7 @@ use crate::daemon::io::ntp::DaemonInfo;
 use crate::daemon::selected_clock::SelectedClockSource;
 use crate::daemon::{async_ring_buffer, event};
 
-mod dmi;
+pub mod dmi;
 use dmi::InstanceType;
 
 mod amazon_time_sync;
