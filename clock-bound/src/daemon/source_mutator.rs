@@ -56,8 +56,12 @@ impl<'a> SourceMutator<'a> {
         self.receiver_stream.set_phc(rx);
         self.io_front_end.create_phc(tx).await;
 
-        #[expect(clippy::missing_panics_doc, reason = "built in line above")]
-        let phc = self.io_front_end.phc().unwrap();
+        let Some(phc) = self.io_front_end.phc() else {
+            tracing::info!(
+                "PHC device was not initialized. Not installing into clock sync algorithm"
+            );
+            return;
+        };
         let phc_path = phc.device_path().to_owned();
 
         self.clock_sync_algorithm
