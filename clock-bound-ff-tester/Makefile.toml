@@ -1,1 +1,11 @@
 extend = "../Makefile.toml"
+
+[tasks.build]
+description = "Build without polars (heavy dep, feature-gated)"
+command = "cargo"
+args = ["build", "--verbose"]
+
+[tasks.build-release]
+description = "Release build without polars (heavy dep, feature-gated)"
+command = "cargo"
+args = ["build", "--verbose", "--release"]

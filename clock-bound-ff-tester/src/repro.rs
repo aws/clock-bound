@@ -6,6 +6,7 @@ pub use log_parse::{repro_events_from_log_file, repro_events_from_reader};
 
 use std::{borrow::Borrow, io::Write};
 
+#[cfg(feature = "polars")]
 use polars::prelude as pl;
 
 use crate::events::v1;
@@ -31,6 +32,7 @@ pub enum ReproEvent {
     Disruption,
 }
 
+#[cfg(feature = "polars")]
 impl ReproEvent {
     /// Convert event into a [polars dataframe](pl::DataFrame)
     ///
@@ -434,6 +436,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "polars")]
     fn to_dataframe_does_not_panic() {
         let example_log = include_str!("repro/test_11_06_2025.log");
 

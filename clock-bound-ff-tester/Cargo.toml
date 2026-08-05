@@ -27,7 +27,7 @@ polars = { version = "0.52.0", features = [
   "timezones",
   "dtype-full",
   "parquet",
-] }
+], optional = true }
 rand = "0.8.5"
 # rand_chacha used by statsrs
 rand_chacha = "0.3.1"
@@ -42,6 +42,9 @@ tracing-subscriber = { version = "0.3", features = [
   "env-filter",
 ] }
 tracing = "0.1.41"
+
+[features]
+polars = ["dep:polars"]
 
 [dev-dependencies]
 mockall = "0.13.1"
