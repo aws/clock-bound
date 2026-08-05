@@ -13,29 +13,32 @@ pub(crate) mod test_assets {
     // Helper struct to implement TscRtt for testing
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct TestEvent {
-        pub tsc_pre: u64,
-        pub tsc_post: u64,
+        pub counter_pre: u64,
+        pub counter_post: u64,
     }
 
     impl TscRtt for TestEvent {
-        fn tsc_post(&self) -> TscCount {
-            TscCount::new(self.tsc_post as i64)
+        fn counter_post(&self) -> TscCount {
+            TscCount::new(self.counter_post as i64)
         }
 
-        fn tsc_pre(&self) -> TscCount {
-            TscCount::new(self.tsc_pre as i64)
+        fn counter_pre(&self) -> TscCount {
+            TscCount::new(self.counter_pre as i64)
         }
     }
 
     impl TestEvent {
-        pub fn new(tsc_pre: u64, tsc_post: u64) -> Self {
-            Self { tsc_pre, tsc_post }
+        pub fn new(counter_pre: u64, counter_post: u64) -> Self {
+            Self {
+                counter_pre,
+                counter_post,
+            }
         }
 
-        pub fn pre_and_rtt(tsc_pre: u64, rtt: u64) -> Self {
+        pub fn pre_and_rtt(counter_pre: u64, rtt: u64) -> Self {
             Self {
-                tsc_pre,
-                tsc_post: tsc_pre + rtt,
+                counter_pre,
+                counter_post: counter_pre + rtt,
             }
         }
     }

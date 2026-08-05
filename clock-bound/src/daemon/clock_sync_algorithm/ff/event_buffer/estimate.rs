@@ -53,11 +53,11 @@ use crate::daemon::{
 pub struct Estimate<T> {
     /// The inner storage
     inner: RingBuffer<T>,
-    /// The `tsc_post` of the last event we added to the ring buffer
+    /// The `counter_post` of the last event we added to the ring buffer
     ///
     /// Value is `Some` if there are values in `self.inner` OR
     /// this has been initialized in an early [`Estimate::feed`] call
-    last_tsc_post: Option<TscCount>,
+    last_counter_post: Option<TscCount>,
 }
 
 impl<T> Estimate<T> {
@@ -68,15 +68,15 @@ impl<T> Estimate<T> {
     pub fn new() -> Self {
         Self {
             inner: RingBuffer::new(Self::CAPACITY),
-            last_tsc_post: None,
+            last_counter_post: None,
         }
     }
 
-    /// get the `last_tsc_post`
+    /// get the `last_counter_post`
     ///
     /// None if no data was ever in the paired `Local` on feed
-    pub fn last_tsc_post(&self) -> Option<TscCount> {
-        self.last_tsc_post
+    pub fn last_counter_post(&self) -> Option<TscCount> {
+        self.last_counter_post
     }
 
     /// get the length
@@ -94,8 +94,8 @@ impl<T> Estimate<T> {
         self.inner.iter()
     }
 
-    fn push(&mut self, event: T, now_tsc_post: TscCount) {
-        self.last_tsc_post = Some(now_tsc_post);
+    fn push(&mut self, event: T, now_counter_post: TscCount) {
+        self.last_counter_post = Some(now_counter_post);
         self.inner.push(event);
     }
 
@@ -103,17 +103,17 @@ impl<T> Estimate<T> {
     pub fn handle_disruption(&mut self) {
         let Self {
             inner,
-            last_tsc_post,
+            last_counter_post,
         } = self;
         inner.clear();
-        *last_tsc_post = None;
+        *last_counter_post = None;
     }
 }
 
 impl<T: TscRtt + Clone> Estimate<T> {
     /// Feed the ring buffer IF the SKM window expired
     ///
-    /// Given a [`Local`] ring buffer that has been [`Estimate::feed`] with an event at `now_event_tsc_post`,
+    /// Given a [`Local`] ring buffer that has been [`Estimate::feed`] with an event at `now_event_counter_post`,
     /// update the [`Estimate`] ring buffer if the SKM window has expired
     ///
     /// Returns `Some` with the updated value if an event was fed in. `None` otherwise.
@@ -132,17 +132,17 @@ impl<T: TscRtt + Clone> Estimate<T> {
     pub fn feed(&mut self, local: &Local<T>, period_estimate: Period) -> Option<&T> {
         // bail out if local is empty.
         let head = local.as_ref().head()?;
-        let now_event_tsc_post = head.tsc_post();
+        let now_event_counter_post = head.counter_post();
 
-        let Some(last_tsc_post) = self.last_tsc_post else {
+        let Some(last_counter_post) = self.last_counter_post else {
             // We are not initialized. Initialize and bail out.
             // unwrap okay. local confirmed as not empty above
-            let tail_tsc_post = local.as_ref().tail().unwrap().tsc_post();
-            self.last_tsc_post = Some(tail_tsc_post);
+            let tail_counter_post = local.as_ref().tail().unwrap().counter_post();
+            self.last_counter_post = Some(tail_counter_post);
             return None;
         };
 
-        let diff = now_event_tsc_post - last_tsc_post;
+        let diff = now_event_counter_post - last_counter_post;
         let duration = diff * period_estimate;
 
         if duration < local.window() {
@@ -156,7 +156,7 @@ impl<T: TscRtt + Clone> Estimate<T> {
             let mut rev_iter = local.iter().rev().peekable();
 
             if let Some(event) = rev_iter.peek()
-                && event.tsc_post() == now_event_tsc_post
+                && event.counter_post() == now_event_counter_post
             {
                 // if this is the value we just added skip
                 rev_iter.next();
@@ -169,14 +169,14 @@ impl<T: TscRtt + Clone> Estimate<T> {
                 tracing::warn!(
                     "only the latest value found in Local estimate buffer. We are likely starving."
                 );
-                self.last_tsc_post = Some(now_event_tsc_post);
+                self.last_counter_post = Some(now_event_counter_post);
                 // unwrap ok. local is not empty
                 self.inner.push(local.as_ref().head().unwrap().clone());
                 return self.inner.head();
             };
 
             // push and store this value
-            self.last_tsc_post = Some(now_event_tsc_post);
+            self.last_counter_post = Some(now_event_counter_post);
             self.inner.push(min_rtt_event.clone());
             self.inner.head()
         }
@@ -206,7 +206,7 @@ mod tests {
         let estimate: Estimate<Event> = Estimate::new();
         assert!(estimate.is_empty());
         assert_eq!(estimate.len(), 0);
-        assert!(estimate.last_tsc_post().is_none());
+        assert!(estimate.last_counter_post().is_none());
     }
 
     #[test]
@@ -217,7 +217,7 @@ mod tests {
 
         assert!(!estimate.is_empty());
         assert_eq!(estimate.len(), 1);
-        assert_eq!(estimate.last_tsc_post(), Some(TscCount::new(1000)));
+        assert_eq!(estimate.last_counter_post(), Some(TscCount::new(1000)));
     }
 
     #[test]
@@ -399,7 +399,7 @@ mod tests {
         ];
 
         for event in &events {
-            estimate.push(event.clone(), event.tsc_post());
+            estimate.push(event.clone(), event.counter_post());
         }
 
         let collected: Vec<_> = estimate.iter().collect();
@@ -407,7 +407,7 @@ mod tests {
 
         // Verify ordering from oldest to newest
         for (i, event) in collected.iter().enumerate() {
-            assert_eq!(event.tsc_post(), events[i].tsc_post());
+            assert_eq!(event.counter_post(), events[i].counter_post());
         }
     }
 
@@ -422,15 +422,15 @@ mod tests {
         ];
 
         for event in &events {
-            estimate.push(event.clone(), event.tsc_post());
+            estimate.push(event.clone(), event.counter_post());
         }
 
         assert_eq!(estimate.len(), 3);
-        assert!(estimate.last_tsc_post.is_some());
+        assert!(estimate.last_counter_post.is_some());
 
         estimate.handle_disruption();
 
         assert_eq!(estimate.len(), 0);
-        assert!(estimate.last_tsc_post.is_none());
+        assert!(estimate.last_counter_post.is_none());
     }
 }

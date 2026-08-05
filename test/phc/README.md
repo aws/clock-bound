@@ -49,10 +49,10 @@ Lets get PHC samples!
 PHC event received.
 Ok(
     Phc {
-        tsc_pre: TscCount(
+        counter_pre: TscCount(
             1425415815539165,
         ),
-        tsc_post: TscCount(
+        counter_post: TscCount(
             1425415815545741,
         ),
         data: PhcData {

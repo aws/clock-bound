@@ -125,8 +125,8 @@ impl ReproEvent {
         use polars::prelude::*;
         let capacity = events.len();
         let mut event_types = Vec::with_capacity(capacity);
-        let mut tsc_pres = Vec::with_capacity(capacity);
-        let mut tsc_posts = Vec::with_capacity(capacity);
+        let mut counter_pres = Vec::with_capacity(capacity);
+        let mut counter_posts = Vec::with_capacity(capacity);
         let mut server_recv_times = Vec::with_capacity(capacity);
         let mut server_send_times = Vec::with_capacity(capacity);
         let mut root_delays = Vec::with_capacity(capacity);
@@ -140,8 +140,8 @@ impl ReproEvent {
             match event {
                 RoutableEvent::AmazonTimeSync(event) => {
                     event_types.push("AmazonTimeSync".to_string());
-                    tsc_pres.push(event.tsc_pre().get());
-                    tsc_posts.push(event.tsc_post().get());
+                    counter_pres.push(event.counter_pre().get());
+                    counter_posts.push(event.counter_post().get());
                     server_recv_times.push(Some(event.data().server_recv_time.as_nanos()));
                     server_send_times.push(Some(event.data().server_send_time.as_nanos()));
                     root_delays.push(Some(event.data().root_delay.as_nanos()));
@@ -153,8 +153,8 @@ impl ReproEvent {
                 }
                 RoutableEvent::Phc(event) => {
                     event_types.push("Phc".to_string());
-                    tsc_pres.push(event.tsc_pre().get());
-                    tsc_posts.push(event.tsc_post().get());
+                    counter_pres.push(event.counter_pre().get());
+                    counter_posts.push(event.counter_post().get());
                     server_recv_times.push(None);
                     server_send_times.push(None);
                     root_delays.push(None);
@@ -166,8 +166,8 @@ impl ReproEvent {
                 }
                 RoutableEvent::NtpSource(addr, event) => {
                     event_types.push("NtpSource".to_string());
-                    tsc_pres.push(event.tsc_pre().get());
-                    tsc_posts.push(event.tsc_post().get());
+                    counter_pres.push(event.counter_pre().get());
+                    counter_posts.push(event.counter_post().get());
                     server_recv_times.push(Some(event.data().server_recv_time.as_nanos()));
                     server_send_times.push(Some(event.data().server_send_time.as_nanos()));
                     root_delays.push(Some(event.data().root_delay.as_nanos()));
@@ -181,8 +181,8 @@ impl ReproEvent {
         }
         let df = df!(
             "type" => event_types,
-            "tsc_pre" => tsc_pres,
-            "tsc_post" => tsc_posts,
+            "counter_pre" => counter_pres,
+            "counter_post" => counter_posts,
             "server_recv_time" => server_recv_times,
             "server_send_time" => server_send_times,
             "root_delay" => root_delays,
@@ -260,8 +260,8 @@ pub fn tester_event_from_cb_ntp(event: &event::Ntp, source_id: String) -> v1::Ev
             client_system_times: None,
             source_id,
         }),
-        client_tsc_pre_time: event.tsc_pre(),
-        client_tsc_post_time: event.tsc_post(),
+        client_tsc_pre_time: event.counter_pre(),
+        client_tsc_post_time: event.counter_post(),
     }
 }
 
@@ -273,8 +273,8 @@ pub fn tester_event_from_cb_phc(event: &event::Phc, source_id: String) -> v1::Ev
             source_id,
             client_system_times: None,
         }),
-        client_tsc_pre_time: event.tsc_pre(),
-        client_tsc_post_time: event.tsc_post(),
+        client_tsc_pre_time: event.counter_pre(),
+        client_tsc_post_time: event.counter_post(),
     }
 }
 
@@ -300,8 +300,8 @@ pub fn routable_from_tester_event(event: v1::Event) -> RoutableEvent {
                     root_dispersion: Duration::from_estimate(ntp.root_dispersion),
                     stratum: clock_bound::daemon::event::Stratum::TWO,
                 })
-                .tsc_pre(event.client_tsc_pre_time)
-                .tsc_post(event.client_tsc_post_time)
+                .counter_pre(event.client_tsc_pre_time)
+                .counter_post(event.client_tsc_post_time)
                 .build()
                 .unwrap();
             RoutableEvent::AmazonTimeSync(event)
@@ -312,8 +312,8 @@ pub fn routable_from_tester_event(event: v1::Event) -> RoutableEvent {
                     time: Instant::from_estimate(phc.phc_time),
                     clock_error_bound: Duration::from_estimate(phc.clock_error_bound.unwrap()),
                 })
-                .tsc_pre(event.client_tsc_pre_time)
-                .tsc_post(event.client_tsc_post_time)
+                .counter_pre(event.client_tsc_pre_time)
+                .counter_post(event.client_tsc_post_time)
                 .build()
                 .unwrap();
             RoutableEvent::Phc(event)
@@ -340,8 +340,8 @@ mod tests {
                 root_dispersion: 4.into(),
                 stratum: Stratum::TWO,
             })
-            .tsc_pre(TscCount::new(500))
-            .tsc_post(TscCount::new(600))
+            .counter_pre(TscCount::new(500))
+            .counter_post(TscCount::new(600))
             .build()
             .unwrap();
 
@@ -369,8 +369,8 @@ mod tests {
                 time: 1.into(),
                 clock_error_bound: 2.into(),
             })
-            .tsc_pre(TscCount::new(500))
-            .tsc_post(TscCount::new(600))
+            .counter_pre(TscCount::new(500))
+            .counter_post(TscCount::new(600))
             .build()
             .unwrap();
 

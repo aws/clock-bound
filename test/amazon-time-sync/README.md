@@ -34,11 +34,11 @@ Lets get a NTP packet!
 It looks like we got an ntp packet 
 Some(
     Event {
-        tsc_pre: Time {
+        counter_pre: Time {
             instant: 1755135610916260,
             _marker: PhantomData<clock_bound::daemon::time::tsc::Tsc>,
         },
-        tsc_post: Time {
+        counter_post: Time {
             instant: 1755135611903996,
             _marker: PhantomData<clock_bound::daemon::time::tsc::Tsc>,
         },

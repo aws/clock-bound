@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn convert_ntp_event_json() {
-        let input = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
+        let input = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
         let event: RoutableEvent =
             serde_json::from_str(&convert_time_fields(input.to_owned(), EVENT_TIME_FIELDS))
                 .unwrap();
@@ -122,14 +122,14 @@ mod tests {
         let RoutableEvent::AmazonTimeSync(ntp) = &event else {
             panic!("expected AmazonTimeSync");
         };
-        assert_eq!(ntp.tsc_pre().get(), 635_623_413_319_024);
+        assert_eq!(ntp.counter_pre().get(), 635_623_413_319_024);
         assert_eq!(ntp.data().server_recv_time.get(), 1_762_449_800_677_131_039);
         assert_eq!(ntp.data().root_delay.get(), 30_517);
     }
 
     #[test]
     fn convert_phc_event_json() {
-        let input = r#"{"Phc":{"tsc_pre":302084682318463,"tsc_post":302084682325383,"data":{"time":1766995198825456232000000,"clock_error_bound":23239000000}}}"#;
+        let input = r#"{"Phc":{"counter_pre":302084682318463,"counter_post":302084682325383,"data":{"time":1766995198825456232000000,"clock_error_bound":23239000000}}}"#;
         let event: RoutableEvent =
             serde_json::from_str(&convert_time_fields(input.to_owned(), EVENT_TIME_FIELDS))
                 .unwrap();
@@ -137,7 +137,7 @@ mod tests {
         let RoutableEvent::Phc(phc) = &event else {
             panic!("expected Phc");
         };
-        assert_eq!(phc.tsc_pre().get(), 302_084_682_318_463);
+        assert_eq!(phc.counter_pre().get(), 302_084_682_318_463);
         assert_eq!(phc.data().time.get(), 1_766_995_198_825_456_232);
         assert_eq!(phc.data().clock_error_bound.get(), 23_239);
     }
@@ -155,14 +155,14 @@ mod tests {
 
     #[test]
     fn parse_legacy_event_end_to_end() {
-        let input = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
+        let input = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
         let event = parse_legacy_event(input.to_owned()).unwrap();
 
         let RoutableEvent::AmazonTimeSync(ntp) = &event else {
             panic!("expected AmazonTimeSync");
         };
         // TSC values unchanged
-        assert_eq!(ntp.tsc_pre().get(), 635_623_413_319_024);
+        assert_eq!(ntp.counter_pre().get(), 635_623_413_319_024);
         // Time values divided by 1_000_000
         assert_eq!(ntp.data().server_recv_time.get(), 1_762_449_800_677_131_039);
     }

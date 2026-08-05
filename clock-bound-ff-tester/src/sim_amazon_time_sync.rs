@@ -90,8 +90,8 @@ fn tester_event_to_amazon_time_sync(e: &Event) -> RoutableEvent {
     };
 
     let event = event::Ntp::builder()
-        .tsc_pre(e.client_tsc_pre_time)
-        .tsc_post(e.client_tsc_post_time)
+        .counter_pre(e.client_tsc_pre_time)
+        .counter_post(e.client_tsc_post_time)
         .ntp_data(event::NtpData {
             server_recv_time: Instant::from_estimate(n.server_system_recv_time),
             server_send_time: Instant::from_estimate(n.server_system_send_time),

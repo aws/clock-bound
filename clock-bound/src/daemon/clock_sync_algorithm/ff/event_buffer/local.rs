@@ -121,10 +121,10 @@ impl<T: TscRtt + Debug> Local<T> {
     /// The value could be rejected if it is older (via TSC checks) than previous values.
     fn push_if_newer(&mut self, event: T) -> Result<(), FeedError<T>> {
         if let Some(last) = self.inner.head()
-            && event.tsc_post() <= last.tsc_post()
+            && event.counter_post() <= last.counter_post()
         {
             return Err(FeedError::Old {
-                latest_tsc: last.tsc_post(),
+                latest_tsc: last.counter_post(),
                 event,
             });
         }
@@ -143,7 +143,7 @@ impl<T: TscRtt + Debug> Local<T> {
         let Some(head) = self.inner.head() else {
             return; // we empty
         };
-        let now_post_tsc = head.tsc_post();
+        let now_post_tsc = head.counter_post();
 
         // We need to calculate the corresponding TSC for an SKM window ago
         let cutoff_tsc = now_post_tsc - (self.window / period);
@@ -241,7 +241,7 @@ mod tests {
 
         // Should only retain events within last 1024 seconds
         for event in buffer.iter() {
-            assert!(event.tsc_post().get() >= 500_000_000_000);
+            assert!(event.counter_post().get() >= 500_000_000_000);
         }
     }
 
@@ -258,7 +258,7 @@ mod tests {
         // Buffer should only contain last 3 events
         assert_eq!(buffer.iter().count(), 3);
         for (i, event) in buffer.iter().enumerate() {
-            assert_eq!(event.tsc_pre().get(), ((i + 2) * 100) as i64);
+            assert_eq!(event.counter_pre().get(), ((i + 2) * 100) as i64);
         }
     }
 

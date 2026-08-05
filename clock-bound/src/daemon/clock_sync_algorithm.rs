@@ -285,8 +285,8 @@ mod tests {
         // Most logs are permeable to change. Make sure that we log a json event.
 
         let event = event::Ntp::builder()
-            .tsc_pre(TscCount::new(500))
-            .tsc_post(TscCount::new(1000))
+            .counter_pre(TscCount::new(500))
+            .counter_post(TscCount::new(1000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1),
                 server_send_time: Instant::from_days(2),

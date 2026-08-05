@@ -197,21 +197,21 @@ impl RoutableEvent {
 }
 
 impl TscRtt for RoutableEvent {
-    fn tsc_pre(&self) -> TscCount {
+    fn counter_pre(&self) -> TscCount {
         match self {
             RoutableEvent::AmazonTimeSync(data) | RoutableEvent::NtpSource(_, data) => {
-                data.tsc_pre()
+                data.counter_pre()
             }
-            RoutableEvent::Phc(data) => data.tsc_pre(),
+            RoutableEvent::Phc(data) => data.counter_pre(),
         }
     }
 
-    fn tsc_post(&self) -> TscCount {
+    fn counter_post(&self) -> TscCount {
         match self {
             RoutableEvent::AmazonTimeSync(data) | RoutableEvent::NtpSource(_, data) => {
-                data.tsc_post()
+                data.counter_post()
             }
-            RoutableEvent::Phc(data) => data.tsc_post(),
+            RoutableEvent::Phc(data) => data.counter_post(),
         }
     }
 }
@@ -238,8 +238,8 @@ mod tests {
             .build();
 
         let dummy_ntp_data = Ntp::builder()
-            .tsc_pre(TscCount::new(1))
-            .tsc_post(TscCount::new(2))
+            .counter_pre(TscCount::new(1))
+            .counter_post(TscCount::new(2))
             .ntp_data(NtpData {
                 server_recv_time: Instant::new(1),
                 server_send_time: Instant::new(2),
@@ -294,8 +294,8 @@ mod tests {
             .build();
 
         let phc_data = event::Phc::builder()
-            .tsc_pre(TscCount::new(1))
-            .tsc_post(TscCount::new(2))
+            .counter_pre(TscCount::new(1))
+            .counter_post(TscCount::new(2))
             .data(PhcData {
                 clock_error_bound: Duration::from_micros(20),
                 time: Instant::from_days(3),

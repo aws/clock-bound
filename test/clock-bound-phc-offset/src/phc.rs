@@ -65,10 +65,10 @@ impl From<Instant> for BasicClockTime {
 #[derive(Debug, serde::Serialize)]
 pub struct BasicClockRefComparison {
     clock_pre: BasicClockTime,
-    tsc_pre: TscCount,
+    counter_pre: TscCount,
     ref_clock: Result<TimeAndBoundAndStatus, ClockReadError>,
     exchange_metadata: Option<ExchangeMetadata>,
-    tsc_post: TscCount,
+    counter_post: TscCount,
     clock_post: BasicClockTime,
 }
 
@@ -77,10 +77,10 @@ pub struct BasicClockRefComparison {
 #[derive(Debug, serde::Serialize)]
 pub struct ClockBoundClientRefComparison {
     clock_pre: Result<TimeAndBoundAndStatus, ClockReadError>,
-    tsc_pre: TscCount,
+    counter_pre: TscCount,
     ref_clock: Result<TimeAndBoundAndStatus, ClockReadError>,
     exchange_metadata: Option<ExchangeMetadata>,
-    tsc_post: TscCount,
+    counter_post: TscCount,
     clock_post: Result<TimeAndBoundAndStatus, ClockReadError>,
 }
 
@@ -142,14 +142,14 @@ impl PhcReader {
         clock: &T,
     ) -> BasicClockRefComparison {
         let clock_pre = clock.get_time();
-        let tsc_pre = read_timestamp_counter_begin();
+        let counter_pre = read_timestamp_counter_begin();
         let phc_time = self.get_time();
-        let tsc_post = read_timestamp_counter_end();
+        let counter_post = read_timestamp_counter_end();
         let clock_post = clock.get_time();
         let phc_ceb = self.ceb_reader.read();
 
-        let tsc_pre = TscCount::new(tsc_pre as i64);
-        let tsc_post = TscCount::new(tsc_post as i64);
+        let counter_pre = TscCount::new(counter_pre as i64);
+        let counter_post = TscCount::new(counter_post as i64);
 
         let ref_clock = Self::build_response_from_phc_read(phc_time, phc_ceb);
         let exchange_metadata = if ref_clock.is_err() {
@@ -158,7 +158,7 @@ impl PhcReader {
             let mid = clock_pre.midpoint(clock_post);
             let offset = mid - ref_clock.clone().unwrap().time;
             let rtt_clock = clock_post - clock_pre;
-            let rtt_tsc = tsc_post - tsc_pre;
+            let rtt_tsc = counter_post - counter_pre;
 
             Some(ExchangeMetadata {
                 offset,
@@ -169,10 +169,10 @@ impl PhcReader {
 
         BasicClockRefComparison {
             clock_pre: BasicClockTime::from(clock_pre),
-            tsc_pre,
+            counter_pre,
             ref_clock,
             exchange_metadata,
-            tsc_post,
+            counter_post,
             clock_post: BasicClockTime::from(clock_post),
         }
     }
@@ -187,14 +187,14 @@ impl PhcReader {
         clock: &mut T,
     ) -> ClockBoundClientRefComparison {
         let clock_pre = clock.get_time_and_bound_and_status();
-        let tsc_pre = read_timestamp_counter_begin();
+        let counter_pre = read_timestamp_counter_begin();
         let phc_time = self.get_time();
-        let tsc_post = read_timestamp_counter_end();
+        let counter_post = read_timestamp_counter_end();
         let clock_post = clock.get_time_and_bound_and_status();
         let phc_ceb = self.ceb_reader.read();
 
-        let tsc_pre = TscCount::new(tsc_pre as i64);
-        let tsc_post = TscCount::new(tsc_post as i64);
+        let counter_pre = TscCount::new(counter_pre as i64);
+        let counter_post = TscCount::new(counter_post as i64);
 
         let clock_pre = Self::build_response_from_clock_bound_client_read(clock_pre);
         let ref_clock = Self::build_response_from_phc_read(phc_time, phc_ceb);
@@ -210,7 +210,7 @@ impl PhcReader {
                 .midpoint(clock_post.clone().unwrap().time);
             let offset = mid - ref_clock.clone().unwrap().time;
             let rtt_clock = clock_post.clone().unwrap().time - clock_pre.clone().unwrap().time;
-            let rtt_tsc = tsc_post - tsc_pre;
+            let rtt_tsc = counter_post - counter_pre;
 
             Some(ExchangeMetadata {
                 offset,
@@ -221,10 +221,10 @@ impl PhcReader {
 
         ClockBoundClientRefComparison {
             clock_pre,
-            tsc_pre,
+            counter_pre,
             ref_clock,
             exchange_metadata,
-            tsc_post,
+            counter_post,
             clock_post,
         }
     }

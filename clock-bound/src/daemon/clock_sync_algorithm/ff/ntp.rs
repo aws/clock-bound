@@ -293,7 +293,7 @@ impl Ntp {
             (oldest, newest)
         };
 
-        // calculate using the backward offset (tsc_post and server_send)
+        // calculate using the backward offset (counter_post and server_send)
         //
         // When it comes to the time period calculation, the most important factor is network path consistency.
         // We have 4 options for doing this right now.
@@ -313,7 +313,7 @@ impl Ntp {
         // TODO explore this a bit more.
         let p_estimate = oldest.calculate_period(newest);
 
-        let k = p_estimate * TscDiff::new(newest.tsc_post().get());
+        let k = p_estimate * TscDiff::new(newest.counter_post().get());
         let k = newest.data().server_send_time - k;
 
         tracing::debug!(
@@ -395,7 +395,7 @@ impl Ntp {
 
         assert!(!local.is_empty());
 
-        let now_post = local.as_ref().head().unwrap().tsc_post();
+        let now_post = local.as_ref().head().unwrap().counter_post();
         let skew = Skew::from_ratio(period_local, uncorrected_clock.p_estimate);
         let mut numerator = 0.0;
         let mut denominator = 0.0;
@@ -431,7 +431,7 @@ impl Ntp {
 
             let skew_correction_seconds = skew.get()
                 * uncorrected_clock.p_estimate.get()
-                * ((now_post - event.tsc_post()).get() as f64);
+                * ((now_post - event.counter_post()).get() as f64);
             let skew_correction_nsec = skew_correction_seconds * 1e9;
             tracing::trace!(?event, %weight, ?offset, skew_correction = ?Duration::from_seconds_f64(skew_correction_seconds), "theta iteration");
             numerator += weight * (offset_nsec + skew_correction_nsec);
@@ -480,8 +480,8 @@ mod tests {
         local
             .feed(
                 event::Ntp::builder()
-                    .tsc_pre(TscCount::new(0))
-                    .tsc_post(TscCount::new(1_000))
+                    .counter_pre(TscCount::new(0))
+                    .counter_post(TscCount::new(1_000))
                     .ntp_data(NtpData {
                         server_recv_time: Instant::from_days(1),
                         server_send_time: Instant::from_days(1) + Duration::from_micros(5),
@@ -503,8 +503,8 @@ mod tests {
         let mut local = event_buffer::Local::new(NonZeroUsize::new(2).unwrap());
 
         let old_event = event::Ntp::builder()
-            .tsc_pre(TscCount::new(0))
-            .tsc_post(TscCount::new(1_000_000))
+            .counter_pre(TscCount::new(0))
+            .counter_post(TscCount::new(1_000_000))
             .ntp_data(NtpData {
                 server_recv_time: Instant::from_days(1),
                 server_send_time: Instant::from_days(1) + Duration::from_micros(5),
@@ -517,8 +517,8 @@ mod tests {
 
         // new event is 100 seconds in the future with tsc at 1GHz
         let new_event = event::Ntp::builder()
-            .tsc_pre(TscCount::new(100_000_000_000))
-            .tsc_post(TscCount::new(100_001_000_000))
+            .counter_pre(TscCount::new(100_000_000_000))
+            .counter_post(TscCount::new(100_001_000_000))
             .ntp_data(NtpData {
                 server_recv_time: Instant::from_days(1) + Duration::from_secs(100),
                 server_send_time: Instant::from_days(1)
@@ -541,8 +541,8 @@ mod tests {
     fn calculate_uncorrected_local_has_single_value() {
         let mut local = Local::new(NonZeroUsize::new(1).unwrap());
         let event = event::Ntp::builder()
-            .tsc_pre(TscCount::new(100))
-            .tsc_post(TscCount::new(110))
+            .counter_pre(TscCount::new(100))
+            .counter_post(TscCount::new(110))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1),
                 server_send_time: Instant::from_days(1) + Duration::from_micros(10),
@@ -567,8 +567,8 @@ mod tests {
         let mut local = Local::new(NonZeroUsize::new(2).unwrap());
         let server_send_time = Instant::from_days(1) + Duration::from_nanos(900);
         let event1 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1) + Duration::from_nanos(100),
                 server_send_time,
@@ -580,8 +580,8 @@ mod tests {
             .unwrap();
 
         let event2 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(1)
@@ -603,7 +603,7 @@ mod tests {
         let result = Ntp::calculate_uncorrected_clock(&local, &estimate).unwrap();
 
         approx::assert_abs_diff_eq!(result.p_estimate.get(), 1e-9);
-        let expected = server_send_time - Duration::from_secs(1) - Duration::from_micros(1); // account for tsc_post time of 1_000_001_000 at 1GHz period
+        let expected = server_send_time - Duration::from_secs(1) - Duration::from_micros(1); // account for counter_post time of 1_000_001_000 at 1GHz period
         assert_eq!(result.k, expected,);
     }
 
@@ -612,8 +612,8 @@ mod tests {
         // Create 2 points that are 1 second apart and the TSC is roughly 1 GHz
         let mut local = Local::new(NonZeroUsize::new(2).unwrap());
         let local_event = event::Ntp::builder()
-            .tsc_pre(TscCount::new(2_000_000_000_000))
-            .tsc_post(TscCount::new(2_000_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000_000))
+            .counter_post(TscCount::new(2_000_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(1999)
@@ -631,8 +631,8 @@ mod tests {
         local.feed(local_event).unwrap();
 
         let estimate_event_1 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1) + Duration::from_nanos(100),
                 server_send_time: Instant::from_days(1) + Duration::from_nanos(900),
@@ -645,8 +645,8 @@ mod tests {
 
         // larger RTT
         let estimate_event_2 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000_000))
-            .tsc_post(TscCount::new(1_000_000_002_000))
+            .counter_pre(TscCount::new(1_000_000_000_000))
+            .counter_post(TscCount::new(1_000_000_002_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(1000)
@@ -692,8 +692,8 @@ mod tests {
 
         let mut local = Local::new(NonZeroUsize::new(2).unwrap());
         let event1 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(1)
@@ -709,8 +709,8 @@ mod tests {
             .unwrap();
 
         let event2 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(2)
@@ -754,8 +754,8 @@ mod tests {
 
         let mut local = Local::new(NonZeroUsize::new(2).unwrap());
         let event1 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(1)
@@ -771,8 +771,8 @@ mod tests {
             .unwrap();
 
         let event2 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(2)
@@ -807,8 +807,8 @@ mod tests {
         let mut ff = Ntp::new(Duration::from_secs(50), Skew::from_ppm(15.0));
 
         let event1 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(1)
@@ -824,8 +824,8 @@ mod tests {
             .unwrap();
 
         let event2 = event::Ntp::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1)
                     + Duration::from_secs(2)

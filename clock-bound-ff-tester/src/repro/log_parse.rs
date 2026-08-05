@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn detect_current_format() {
-        let event_str = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
+        let event_str = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
         assert_eq!(
             LogFormat::detect_from_event_str(event_str),
             LogFormat::Current
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn detect_femtosecond_format() {
-        let event_str = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
+        let event_str = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
         assert_eq!(
             LogFormat::detect_from_event_str(event_str),
             LogFormat::Femtoseconds
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn detect_phc_femtosecond_format() {
-        let event_str = r#"{"Phc":{"tsc_pre":302084682318463,"tsc_post":302084682325383,"data":{"time":1766995198825456232000000,"clock_error_bound":23239000000}}}"#;
+        let event_str = r#"{"Phc":{"counter_pre":302084682318463,"counter_post":302084682325383,"data":{"time":1766995198825456232000000,"clock_error_bound":23239000000}}}"#;
         assert_eq!(
             LogFormat::detect_from_event_str(event_str),
             LogFormat::Femtoseconds
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn current_format_event_parses_directly() {
-        let input = r#"{"LinkLocal":{"tsc_pre":635623413319024,"tsc_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
+        let input = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
         assert_eq!(LogFormat::detect_from_event_str(input), LogFormat::Current);
         let _event: RoutableEvent = serde_json::from_str(input).unwrap();
     }
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(events.len(), 13);
 
         // verify that it's deserialized and sorted
-        let is_sorted = events.is_sorted_by_key(|e| e.tsc_pre());
+        let is_sorted = events.is_sorted_by_key(|e| e.counter_pre());
         assert!(is_sorted);
     }
 }

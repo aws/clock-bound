@@ -25,19 +25,19 @@ pub enum Event {
 /// Simple abstraction around types that have a TSC read before and after reference clock reads
 pub trait TscRtt {
     /// The TSC read before sending an event request
-    fn tsc_pre(&self) -> TscCount;
+    fn counter_pre(&self) -> TscCount;
 
     /// The TSC read after receiving an event response
-    fn tsc_post(&self) -> TscCount;
+    fn counter_post(&self) -> TscCount;
 
     /// The TSC round-trip-time of an event
     fn rtt(&self) -> TscDiff {
-        self.tsc_post() - self.tsc_pre()
+        self.counter_post() - self.counter_pre()
     }
 
     /// The TSC midpoint
     fn tsc_midpoint(&self) -> TscCount {
-        self.tsc_pre().midpoint(self.tsc_post())
+        self.counter_pre().midpoint(self.counter_post())
     }
 }
 

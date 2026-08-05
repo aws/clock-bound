@@ -95,8 +95,8 @@ fn tester_phc_event_to_cb(e: &Event) -> RoutableEvent {
     };
 
     let event = event::Phc::builder()
-        .tsc_pre(e.client_tsc_pre_time)
-        .tsc_post(e.client_tsc_post_time)
+        .counter_pre(e.client_tsc_pre_time)
+        .counter_post(e.client_tsc_post_time)
         .data(event::PhcData {
             time: Instant::from_estimate(p.phc_time),
             clock_error_bound: Duration::from_estimate(p.clock_error_bound.unwrap()),

@@ -92,8 +92,8 @@ mod test {
         },
         // Second event (identical)
         event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1),
                 server_send_time: Instant::from_days(1) + Duration::from_micros(1),
@@ -119,8 +119,8 @@ mod test {
         },
         // Second event with worse RTT
         event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_002_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_002_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1),
                 server_send_time: Instant::from_days(1) + Duration::from_micros(1),
@@ -146,8 +146,8 @@ mod test {
         },
         // Second event (newer, 1 second later)
         event::Ntp::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1) + Duration::from_secs(1),
                 server_send_time: Instant::from_days(1) + Duration::from_secs(1) + Duration::from_micros(1),
@@ -173,8 +173,8 @@ mod test {
         },
         // Second event
         event::Ntp::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_003_300))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_003_300))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1),
                 server_send_time: Instant::from_days(1) + Duration::from_micros(1),
@@ -200,8 +200,8 @@ mod test {
         },
         // Second event
         event::Ntp::builder()
-            .tsc_pre(TscCount::new(5_000_000_000))
-            .tsc_post(TscCount::new(5_000_003_300))
+            .counter_pre(TscCount::new(5_000_000_000))
+            .counter_post(TscCount::new(5_000_003_300))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1),
                 server_send_time: Instant::from_days(1) + Duration::from_micros(1),
@@ -250,8 +250,8 @@ mod test {
         },
         // Second event (new, 10 seconds later)
         event::Ntp::builder()
-            .tsc_pre(TscCount::new(11_000_000_000))
-            .tsc_post(TscCount::new(11_000_001_500))
+            .counter_pre(TscCount::new(11_000_000_000))
+            .counter_post(TscCount::new(11_000_001_500))
             .ntp_data(event::NtpData {
                 server_recv_time: Instant::from_days(1) + Duration::from_secs(10),
                 server_send_time: Instant::from_days(1) + Duration::from_secs(10) + Duration::from_micros(1),

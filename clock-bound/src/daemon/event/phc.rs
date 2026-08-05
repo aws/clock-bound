@@ -9,13 +9,15 @@ use super::TscRtt;
 
 /// Contains the PHC and time stamp counter samples to be used by the synchronization algorithm
 ///
-/// `tsc_post` must be greater than `tsc_pre`.
+/// `counter_post` must be greater than `counter_pre`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Phc {
     /// TSC value before reading reference clock
-    tsc_pre: TscCount,
+    #[serde(alias = "tsc_pre")] // for backwards compatibility on ff-tester repro
+    counter_pre: TscCount,
     /// TSC value after reading reference clock
-    tsc_post: TscCount,
+    #[serde(alias = "tsc_post")] // for backwards compatibility on ff-tester repro
+    counter_post: TscCount,
     /// PHC reference clock info
     data: PhcData,
     #[cfg(not(test))]
@@ -27,21 +29,21 @@ pub struct Phc {
 impl Phc {
     /// Construct a [`Phc`]
     ///
-    /// Returns `None` if `tsc_post <= tsc_pre`
+    /// Returns `None` if `counter_post <= counter_pre`
     #[builder]
     pub fn new(
-        tsc_pre: TscCount,
-        tsc_post: TscCount,
+        counter_pre: TscCount,
+        counter_post: TscCount,
         data: PhcData,
         #[cfg(not(test))] system_clock: Option<super::SystemClockMeasurement>,
     ) -> Option<Self> {
-        if tsc_post <= tsc_pre {
+        if counter_post <= counter_pre {
             return None;
         }
 
         Some(Self {
-            tsc_pre,
-            tsc_post,
+            counter_pre,
+            counter_post,
             data,
             #[cfg(not(test))]
             system_clock,
@@ -50,14 +52,14 @@ impl Phc {
 }
 
 impl Phc {
-    /// `tsc_pre` getter
-    pub fn tsc_pre(&self) -> TscCount {
-        self.tsc_pre
+    /// `counter_pre` getter
+    pub fn counter_pre(&self) -> TscCount {
+        self.counter_pre
     }
 
-    /// `tsc_post` getter
-    pub fn tsc_post(&self) -> TscCount {
-        self.tsc_post
+    /// `counter_post` getter
+    pub fn counter_post(&self) -> TscCount {
+        self.counter_post
     }
 
     /// phc data getter
@@ -74,12 +76,12 @@ impl Phc {
     /// Calculate a period by using 2 PHC events using tsc midpoints
     ///
     /// PHC reads are characterized in ClockBound with each read having
-    /// - `tsc_pre`: The TSC reading before reading the PHC device
+    /// - `counter_pre`: The TSC reading before reading the PHC device
     /// - `time`: The PHC time reading
-    /// - `tsc_post`: The TSC reading after reading the PHC device
+    /// - `counter_post`: The TSC reading after reading the PHC device
     ///
     /// # Panics
-    /// Panics if the events are the same (specifically if the `tsc_post` values are equal)
+    /// Panics if the events are the same (specifically if the `counter_post` values are equal)
     pub fn calculate_period(&self, other: &Self) -> Period {
         (self.data().time - other.data().time) / (self.tsc_midpoint() - other.tsc_midpoint())
     }
@@ -99,7 +101,7 @@ impl Phc {
     /// # Panics
     /// Panics if the two events are equal
     pub fn calculate_period_with_error(&self, other: &Self) -> LocalPeriodAndError {
-        let (old, new) = if self.tsc_pre < other.tsc_pre {
+        let (old, new) = if self.counter_pre < other.counter_pre {
             (self, other)
         } else {
             (other, self)
@@ -160,12 +162,12 @@ impl Phc {
 }
 
 impl TscRtt for Phc {
-    fn tsc_pre(&self) -> TscCount {
-        self.tsc_pre
+    fn counter_pre(&self) -> TscCount {
+        self.counter_pre
     }
 
-    fn tsc_post(&self) -> TscCount {
-        self.tsc_post
+    fn counter_post(&self) -> TscCount {
+        self.counter_post
     }
 }
 
@@ -186,8 +188,8 @@ mod tests {
     #[test]
     fn phc_invalid() {
         let result = Phc::builder()
-            .tsc_post(TscCount::new(5))
-            .tsc_pre(TscCount::new(10)) // pre after post
+            .counter_post(TscCount::new(5))
+            .counter_pre(TscCount::new(10)) // pre after post
             .data(PhcData {
                 time: Instant::from_days(5),
                 clock_error_bound: Duration::from_micros(15),
@@ -200,8 +202,8 @@ mod tests {
     #[test]
     fn phc_valid() {
         let _result = Phc::builder()
-            .tsc_post(TscCount::new(10))
-            .tsc_pre(TscCount::new(5)) // pre before post
+            .counter_post(TscCount::new(10))
+            .counter_pre(TscCount::new(5)) // pre before post
             .data(PhcData {
                 time: Instant::from_days(5),
                 clock_error_bound: Duration::from_micros(15),
@@ -213,8 +215,8 @@ mod tests {
     #[rstest]
     #[case::minimal_delays(
         Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_002_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_002_000))
             .data(PhcData {
                 time: Instant::from_days(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(11),
@@ -226,8 +228,8 @@ mod tests {
     )]
     #[case::larger_rtt(
         Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_010_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_010_000))
             .data(PhcData {
                 time: Instant::from_days(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(30),
@@ -239,8 +241,8 @@ mod tests {
     )]
     #[case::period_scaling(
         Phc::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_002_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_002_000))
             .data(PhcData {
                 time: Instant::from_days(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(23),
@@ -265,8 +267,8 @@ mod tests {
 
     fn create_phc_event(pre: TscCount, post: TscCount, server_time: Instant) -> Phc {
         Phc::builder()
-            .tsc_pre(pre)
-            .tsc_post(post)
+            .counter_pre(pre)
+            .counter_post(post)
             .data(PhcData {
                 time: server_time,
                 clock_error_bound: Duration::from_nanos(0), // Not used in calculation           // Not used in calculation
@@ -314,8 +316,8 @@ mod tests {
     #[case(
         // Zero root delay and dispersion
         Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_002_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_002_000))
             .data(PhcData {
                 time: Instant::from_days(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_nanos(0),
@@ -328,8 +330,8 @@ mod tests {
     #[case(
         // Large root delay and dispersion
         Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .data(PhcData {
                 time: Instant::from_days(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_millis(2),
@@ -361,8 +363,8 @@ mod tests {
     #[case::client_ahead(
         // Test case where client is ahead of server
         Phc::builder()
-            .tsc_pre(TscCount::new(1000))
-            .tsc_post(TscCount::new(2000))
+            .counter_pre(TscCount::new(1000))
+            .counter_post(TscCount::new(2000))
             .data(PhcData {
                 time: Instant::from_millis(10500),
                 clock_error_bound: Duration::from_secs(0),
@@ -378,8 +380,8 @@ mod tests {
     #[case::client_behind(
         // Test case where client is behind server
         Phc::builder()
-            .tsc_pre(TscCount::new(1000))
-            .tsc_post(TscCount::new(2000))
+            .counter_pre(TscCount::new(1000))
+            .counter_post(TscCount::new(2000))
             .data(PhcData {
                 time: Instant::from_millis(50500),
                 clock_error_bound: Duration::from_secs(0),
@@ -395,8 +397,8 @@ mod tests {
     #[case::zero_offset(
         // Test case where client and server are synchronized
         Phc::builder()
-            .tsc_pre(TscCount::new(1000))
-            .tsc_post(TscCount::new(2000))
+            .counter_pre(TscCount::new(1000))
+            .counter_post(TscCount::new(2000))
             .data(PhcData {
                 time: Instant::from_millis(25000),
                 clock_error_bound: Duration::from_secs(0),
@@ -414,14 +416,14 @@ mod tests {
         #[case] uncorrected_clock: UncorrectedClock,
         #[case] expected_offset: Duration,
     ) {
-        let client_midpoint = phc_event.tsc_pre.midpoint(phc_event.tsc_post);
+        let client_midpoint = phc_event.counter_pre.midpoint(phc_event.counter_post);
         println!(
-            "tsc_pre: {:?}",
-            uncorrected_clock.time_at(phc_event.tsc_pre)
+            "counter_pre: {:?}",
+            uncorrected_clock.time_at(phc_event.counter_pre)
         );
         println!(
-            "tsc_post: {:?}",
-            uncorrected_clock.time_at(phc_event.tsc_post)
+            "counter_post: {:?}",
+            uncorrected_clock.time_at(phc_event.counter_post)
         );
         let client_midpoint = uncorrected_clock.time_at(client_midpoint);
         println!("client_midpoint: {client_midpoint:?}");
@@ -441,8 +443,8 @@ mod tests {
         error: Duration,
     ) -> Phc {
         Phc::builder()
-            .tsc_pre(pre)
-            .tsc_post(post)
+            .counter_pre(pre)
+            .counter_post(post)
             .data(PhcData {
                 time: server_time,
                 clock_error_bound: error,

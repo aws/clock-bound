@@ -116,12 +116,12 @@ impl<T: TscRtt> RingBuffer<T> {
             Quarter::Oldest => {
                 let start_idx = 0;
                 // unwraps okay. buffer isn't empty
-                let start_pre_tsc = self.tail().unwrap().tsc_pre();
-                let end_pre_tsc = self.head().unwrap().tsc_pre();
+                let start_pre_tsc = self.tail().unwrap().counter_pre();
+                let end_pre_tsc = self.head().unwrap().counter_pre();
                 let end_pre_tsc = start_pre_tsc + (end_pre_tsc - start_pre_tsc) / 4;
                 let mut end_idx = 0;
                 for event in self.iter() {
-                    if event.tsc_pre() > end_pre_tsc {
+                    if event.counter_pre() > end_pre_tsc {
                         break;
                     }
                     end_idx += 1;
@@ -131,12 +131,12 @@ impl<T: TscRtt> RingBuffer<T> {
             Quarter::Newest => {
                 let end_idx = self.len();
                 // unwraps okay. buffer isn't empty
-                let start_pre_tsc = self.tail().unwrap().tsc_pre();
-                let end_pre_tsc = self.head().unwrap().tsc_pre();
+                let start_pre_tsc = self.tail().unwrap().counter_pre();
+                let end_pre_tsc = self.head().unwrap().counter_pre();
                 let start_pre_tsc = end_pre_tsc - (end_pre_tsc - start_pre_tsc) / 4;
                 let mut start_idx = self.len();
                 for event in self.iter().rev() {
-                    if event.tsc_pre() < start_pre_tsc {
+                    if event.counter_pre() < start_pre_tsc {
                         break;
                     }
                     start_idx -= 1;
@@ -165,7 +165,7 @@ impl<T: TscRtt + Debug> RingBuffer<T> {
             // But I don't have a way of returning the dropped values without allocating.
             //
             // Logging at a debug level
-            if event.tsc_post() >= before {
+            if event.counter_post() >= before {
                 true
             } else {
                 tracing::debug!(?event, "Purging stale event");
@@ -404,7 +404,7 @@ mod tests {
 
         buffer.expunge_old(TscCount::new(250));
         assert_eq!(buffer.len(), 1);
-        assert_eq!(buffer.head().unwrap().tsc_post(), TscCount::new(330));
+        assert_eq!(buffer.head().unwrap().counter_post(), TscCount::new(330));
     }
 
     #[test]
@@ -451,7 +451,7 @@ mod tests {
         }
 
         assert_eq!(buffer.len(), 2);
-        assert_eq!(buffer.tail().unwrap().tsc_pre(), TscCount::new(200));
-        assert_eq!(buffer.head().unwrap().tsc_pre(), TscCount::new(300));
+        assert_eq!(buffer.tail().unwrap().counter_pre(), TscCount::new(200));
+        assert_eq!(buffer.head().unwrap().counter_pre(), TscCount::new(300));
     }
 }

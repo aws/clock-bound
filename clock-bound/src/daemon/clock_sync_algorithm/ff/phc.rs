@@ -295,7 +295,7 @@ impl Phc {
             (oldest, newest)
         };
 
-        // calculate using the backward offset (tsc_post and reference clock time)
+        // calculate using the backward offset (counter_post and reference clock time)
         //
         // When it comes to the time period calculation, the most important factor is network path consistency.
         // We have 4 options for doing this right now.
@@ -315,7 +315,7 @@ impl Phc {
         // TODO explore this a bit more.
         let p_estimate = oldest.calculate_period(newest);
 
-        let k = p_estimate * TscDiff::new(newest.tsc_post().get());
+        let k = p_estimate * TscDiff::new(newest.counter_post().get());
         let k = newest.data().time - k;
 
         tracing::debug!(
@@ -397,7 +397,7 @@ impl Phc {
 
         assert!(!local.is_empty());
 
-        let now_post = local.as_ref().head().unwrap().tsc_post();
+        let now_post = local.as_ref().head().unwrap().counter_post();
         let skew = Skew::from_ratio(period_local, uncorrected_clock.p_estimate);
         let mut numerator = 0.0;
         let mut denominator = 0.0;
@@ -433,7 +433,7 @@ impl Phc {
 
             let skew_correction_seconds = skew.get()
                 * uncorrected_clock.p_estimate.get()
-                * ((now_post - event.tsc_post()).get() as f64);
+                * ((now_post - event.counter_post()).get() as f64);
             let skew_correction_nsec = skew_correction_seconds * 1e9;
             numerator += weight * (offset_nsec + skew_correction_nsec);
             denominator += weight;
@@ -481,8 +481,8 @@ mod tests {
         local
             .feed(
                 event::Phc::builder()
-                    .tsc_pre(TscCount::new(0))
-                    .tsc_post(TscCount::new(1_000))
+                    .counter_pre(TscCount::new(0))
+                    .counter_post(TscCount::new(1_000))
                     .data(PhcData {
                         time: Instant::from_days(1) + Duration::from_nanos(2500),
                         clock_error_bound: Duration::from_nanos(1500),
@@ -501,8 +501,8 @@ mod tests {
         let mut local = event_buffer::Local::new(NonZeroUsize::new(2).unwrap());
 
         let old_event = event::Phc::builder()
-            .tsc_pre(TscCount::new(0))
-            .tsc_post(TscCount::new(1_000_000))
+            .counter_pre(TscCount::new(0))
+            .counter_post(TscCount::new(1_000_000))
             .data(PhcData {
                 time: Instant::from_days(1) + Duration::from_nanos(2500),
                 clock_error_bound: Duration::from_nanos(6350),
@@ -512,8 +512,8 @@ mod tests {
 
         // new event is 100 seconds in the future with tsc at 1GHz
         let new_event = event::Phc::builder()
-            .tsc_pre(TscCount::new(100_000_000_000))
-            .tsc_post(TscCount::new(100_001_000_000))
+            .counter_pre(TscCount::new(100_000_000_000))
+            .counter_post(TscCount::new(100_001_000_000))
             .data(PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(100) + Duration::from_nanos(2500),
                 clock_error_bound: Duration::from_nanos(6350),
@@ -531,8 +531,8 @@ mod tests {
     fn calculate_uncorrected_local_has_single_value() {
         let mut local = Local::new(NonZeroUsize::new(1).unwrap());
         let event = event::Phc::builder()
-            .tsc_pre(TscCount::new(100))
-            .tsc_post(TscCount::new(110))
+            .counter_pre(TscCount::new(100))
+            .counter_post(TscCount::new(110))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_micros(5),
                 clock_error_bound: Duration::from_micros(32),
@@ -554,8 +554,8 @@ mod tests {
         let mut local = Local::new(NonZeroUsize::new(2).unwrap());
         let ref_time = Instant::from_days(1) + Duration::from_nanos(500);
         let event1 = event::Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .data(event::PhcData {
                 time: ref_time,
                 clock_error_bound: Duration::from_micros(32),
@@ -564,8 +564,8 @@ mod tests {
             .unwrap();
 
         let event2 = event::Phc::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(32),
@@ -580,7 +580,7 @@ mod tests {
         let result = Phc::calculate_uncorrected_clock(&local, &estimate).unwrap();
 
         approx::assert_abs_diff_eq!(result.p_estimate.get(), 1e-9);
-        let expected = ref_time - Duration::from_secs(1) - Duration::from_nanos(1000); // account for tsc_post time of 1_000_001_000 at 1GHz period
+        let expected = ref_time - Duration::from_secs(1) - Duration::from_nanos(1000); // account for counter_post time of 1_000_001_000 at 1GHz period
         assert_eq!(result.k, expected);
     }
 
@@ -589,8 +589,8 @@ mod tests {
         // Create 2 points that are 1 second apart and the TSC is roughly 1 GHz
         let mut local = Local::new(NonZeroUsize::new(2).unwrap());
         let local_event = event::Phc::builder()
-            .tsc_pre(TscCount::new(2_000_000_000_000))
-            .tsc_post(TscCount::new(2_000_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000_000))
+            .counter_post(TscCount::new(2_000_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(1999) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(32),
@@ -601,8 +601,8 @@ mod tests {
         local.feed(local_event).unwrap();
 
         let estimate_event_1 = event::Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(32),
@@ -612,8 +612,8 @@ mod tests {
 
         // larger RTT
         let estimate_event_2 = event::Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000_000))
-            .tsc_post(TscCount::new(1_000_000_002_000))
+            .counter_pre(TscCount::new(1_000_000_000_000))
+            .counter_post(TscCount::new(1_000_000_002_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(1000) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(32),
@@ -652,8 +652,8 @@ mod tests {
 
         let mut local = Local::new(NonZeroUsize::new(2).unwrap());
         let event1 = event::Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(32),
@@ -662,8 +662,8 @@ mod tests {
             .unwrap();
 
         let event2 = event::Phc::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(2) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(32),
@@ -700,8 +700,8 @@ mod tests {
 
         let mut local = Local::new(NonZeroUsize::new(2).unwrap());
         let event1 = event::Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(42),
@@ -710,8 +710,8 @@ mod tests {
             .unwrap();
 
         let event2 = event::Phc::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(2) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(32),
@@ -739,8 +739,8 @@ mod tests {
         let mut ff = Phc::new(Duration::from_secs(20), Skew::from_ppm(15.0));
 
         let event1 = event::Phc::builder()
-            .tsc_pre(TscCount::new(1_000_000_000))
-            .tsc_post(TscCount::new(1_000_001_000))
+            .counter_pre(TscCount::new(1_000_000_000))
+            .counter_post(TscCount::new(1_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(1) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(42),
@@ -749,8 +749,8 @@ mod tests {
             .unwrap();
 
         let event2 = event::Phc::builder()
-            .tsc_pre(TscCount::new(2_000_000_000))
-            .tsc_post(TscCount::new(2_000_001_000))
+            .counter_pre(TscCount::new(2_000_000_000))
+            .counter_post(TscCount::new(2_000_001_000))
             .data(event::PhcData {
                 time: Instant::from_days(1) + Duration::from_secs(2) + Duration::from_nanos(500),
                 clock_error_bound: Duration::from_micros(32),

@@ -76,8 +76,8 @@ pub async fn sample_packet(
     #[allow(clippy::cast_possible_wrap)]
     let tsc_post = TscCount::new(received_timestamp as i64);
     let builder = event::Ntp::builder()
-        .tsc_pre(tsc_pre)
-        .tsc_post(tsc_post)
+        .counter_pre(tsc_pre)
+        .counter_post(tsc_post)
         .ntp_data(ntp_data);
 
     let ntp_event = {
