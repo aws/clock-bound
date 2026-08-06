@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use clock_bound::daemon::{Daemon, subscriber};
+use clock_bound::daemon::{Daemon, logging::subscriber};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};

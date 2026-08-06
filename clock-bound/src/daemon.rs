@@ -24,7 +24,7 @@ pub mod io;
 #[cfg(feature = "daemon")]
 pub mod clock_state;
 
-pub mod subscriber;
+pub mod logging;
 
 // --- Everything below is only needed for the full daemon ---
 

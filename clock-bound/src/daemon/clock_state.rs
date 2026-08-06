@@ -19,7 +19,7 @@ use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
 use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
 use crate::daemon::io::ClockDisruptionEvent;
 use crate::daemon::io::tsc::ReadTscImpl;
-use crate::daemon::subscriber::CLOCK_METRICS_TARGET;
+use crate::daemon::logging::CLOCK_METRICS_TARGET;
 use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse, MonotonicRaw, RealTime};
 use crate::daemon::time::{Clock, ClockExt, Duration};
 use crate::shm::{

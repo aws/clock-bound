@@ -12,8 +12,7 @@ use tracing_subscriber::{
     EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
-pub const PRIMER_TARGET: &str = "clock_bound::primer";
-pub const CLOCK_METRICS_TARGET: &str = "clock_bound::clock_metrics";
+use super::{CLOCK_METRICS_TARGET, PRIMER_TARGET};
 
 /// Initialize the tracing subscriber
 ///

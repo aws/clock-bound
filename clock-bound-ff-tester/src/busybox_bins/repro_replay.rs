@@ -43,7 +43,7 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
     let repro_events = repro::repro_events_from_log_file(&args.logfile)?;
 
     // needed to output new clock parameters
-    daemon::subscriber::init(args.output_dir);
+    daemon::logging::subscriber::init(args.output_dir);
 
     for event in repro_events {
         match event {

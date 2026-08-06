@@ -9,8 +9,8 @@ use crate::{
 };
 use clock_bound::daemon::{
     clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
+    logging::PRIMER_TARGET,
     selected_clock::SelectedClockSource,
-    subscriber::PRIMER_TARGET,
 };
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
