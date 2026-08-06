@@ -3,8 +3,6 @@
 //! This module implements the logic needed to retrieve time sync sample measurements, be it from NTP sources from
 //! over the internet, the PHC via Linux's `ioctl` interface or some other source.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -23,6 +21,8 @@ use dmi::InstanceType;
 
 mod amazon_time_sync;
 use amazon_time_sync::AmazonTimeSync;
+
+mod dns;
 
 mod ntp_source;
 use ntp_source::NTPSource;
@@ -61,8 +61,7 @@ pub struct SourceIO {
 impl SourceIO {
     /// Constructs a new `SourceIO` object and constructs the necessary resources.
     pub fn construct(selected_clock: Arc<SelectedClockSource>, daemon_info: DaemonInfo) -> Self {
-        let (sender, receiver) =
-            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
+        let (sender, _) = watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
 
         // Task tracker is closed on initialization. We only open it during calls to spawn
         // the IO tasks. This ensures that we don't introduce a deadlock if the shutdown function
@@ -75,7 +74,7 @@ impl SourceIO {
             ntp_sources: HashMap::new(),
             phc: None,
             vmclock: None,
-            clock_disruption_channels: ClockDisruptionChannels { sender, receiver },
+            clock_disruption_channels: ClockDisruptionChannels { sender },
             selected_clock,
             daemon_info,
             task_tracker,
@@ -408,7 +407,6 @@ impl SourceIO {
 /// Communication channels for sending and receiving clock disruption events.
 struct ClockDisruptionChannels {
     sender: watch::Sender<ClockDisruptionEvent>,
-    receiver: watch::Receiver<ClockDisruptionEvent>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -436,11 +434,13 @@ pub enum SourceState<T> {
 }
 
 impl<T> SourceState<T> {
-    fn is_initialized(&self) -> bool {
+    /// Returns true if the state is `Initialized`.
+    pub fn is_initialized(&self) -> bool {
         matches!(self, SourceState::Initialized(_))
     }
 
-    fn is_running(&self) -> bool {
+    /// Returns true if the state is `Running`.
+    pub fn is_running(&self) -> bool {
         matches!(self, SourceState::Running)
     }
 

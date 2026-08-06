@@ -25,14 +25,12 @@ use crate::daemon::{
 
 use packet::Packet;
 
+// TODO: parsing failures and source mismatch errors get swallowed by timeouts and retries.
+// We may want to expose that as a statistic one day
 #[derive(Debug, Error)]
 pub enum AmazonTimeSyncError {
     #[error("IO failure.")]
     Io(#[from] io::Error),
-    #[error("Failed to parse NTP packet.")]
-    PacketParsing(String),
-    #[error("Mismatched origin. Expected {expected}, got {received}")]
-    OriginMismatch { expected: u64, received: u64 },
     #[error("Operation timed out.")]
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]

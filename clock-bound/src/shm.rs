@@ -6,7 +6,7 @@
 
 // TODO: prevent clippy from checking for dead code. The writer module is only re-exported publicly
 // if the write feature is selected. There may be a better way to do that and re-enable the lint.
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 pub mod common;
 mod reader;

@@ -1,8 +1,4 @@
 //! Feed forward clock sync algorithm
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "remove when RoutableEvent is added")
-)]
 
 mod selector;
 pub use selector::{Selector, SourceInfo};

@@ -127,7 +127,7 @@ impl ClockBoundClient {
 
 /// `ClockBoundSHM` handles access to the shared memory segment populated by the ClockBound daemon.
 struct ClockBoundSHM {
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     clockbound_shm_path: String,
     clockbound_shm_reader: ShmReader,
 }

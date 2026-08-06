@@ -94,6 +94,7 @@ impl<T> Estimate<T> {
         self.inner.iter()
     }
 
+    #[cfg(test)]
     fn push(&mut self, event: T, now_counter_post: TscCount) {
         self.last_counter_post = Some(now_counter_post);
         self.inner.push(event);
