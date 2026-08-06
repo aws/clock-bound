@@ -9,3 +9,8 @@ args = ["build", "--verbose"]
 description = "Release build without polars (heavy dep, feature-gated)"
 command = "cargo"
 args = ["build", "--verbose", "--release"]
+
+[tasks.test]
+description = "Test without polars (heavy dep, feature-gated)"
+command = "cargo"
+args = ["test", "--verbose"]
