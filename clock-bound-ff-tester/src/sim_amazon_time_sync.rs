@@ -113,6 +113,7 @@ mod tests {
     use std::sync::Arc;
 
     use clock_bound::daemon::{
+        SharedSelectedClock,
         clock_sync_algorithm::{Selector, source::AmazonTimeSync},
         selected_clock::SelectedClockSource,
         time::tsc::Skew,
@@ -129,7 +130,10 @@ mod tests {
                 .amazon_time_sync(AmazonTimeSync::new(Skew::from_ppm(15.0)))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(Skew::from_ppm(15.0)))
+                .selector(Selector::new(
+                    Skew::from_ppm(15.0),
+                    SharedSelectedClock::new(),
+                ))
                 .build(),
         );
         // running a week long scenario in -O0 is asking for trouble
@@ -144,7 +148,10 @@ mod tests {
                 .amazon_time_sync(AmazonTimeSync::new(Skew::from_ppm(15.0)))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(Skew::from_ppm(15.0)))
+                .selector(Selector::new(
+                    Skew::from_ppm(15.0),
+                    SharedSelectedClock::new(),
+                ))
                 .build(),
         );
         let scenario = perfect_symmetric(TrueDuration::from_secs(1024 * 5));

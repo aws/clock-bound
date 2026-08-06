@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::daemon::MAX_DISPERSION_GROWTH_PPB;
+use crate::daemon::SharedClockStatus;
 use crate::daemon::async_ring_buffer::Receiver;
 use crate::daemon::clock_parameters::ClockParameters;
 #[cfg(not(feature = "test-side-by-side"))]
@@ -38,6 +39,7 @@ pub(crate) struct ClockState {
     state_writer: Box<dyn ClockStateWrite>,
     clock_adjuster: Box<dyn ClockAdjust>,
     clock_parameters: Option<ClockParameters>,
+    shared_clock_status: SharedClockStatus,
     interval: tokio::time::Interval,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     clock_params_receiver: Receiver<ClockParameters>,
@@ -51,6 +53,7 @@ impl ClockState {
         clock_params_receiver: Receiver<ClockParameters>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         cancellation_token: CancellationToken,
+        shared_clock_status: SharedClockStatus,
     ) -> Self {
         let interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
         Self {
@@ -60,6 +63,7 @@ impl ClockState {
             clock_params_receiver,
             clock_disruption_receiver,
             clock_parameters: None,
+            shared_clock_status,
             cancellation_token,
         }
     }
@@ -70,6 +74,7 @@ impl ClockState {
         cancellation_token: CancellationToken,
         disruption_marker: u64,
         clock_disruption_support_enabled: bool,
+        shared_clock_status: SharedClockStatus,
     ) -> Self {
         // Build two writers, each writing to a specific shared memory segment path.
         //
@@ -112,6 +117,7 @@ impl ClockState {
             clock_params_receiver,
             clock_disruption_receiver,
             cancellation_token,
+            shared_clock_status,
         )
     }
 
@@ -218,6 +224,9 @@ impl ClockState {
             let clock_status_v3 =
                 ClockState::determine_clock_error_bound_v3_status(clock_params_age_v3);
 
+            // Update shared clock status
+            self.shared_clock_status.set(clock_status_v3);
+
             self.state_writer
                 .handle_clock_parameters_shm1(parameters, clock_status_v3);
 
@@ -257,6 +266,7 @@ impl ClockState {
             clock_disruption_receiver,
             interval: _,
             clock_parameters,
+            shared_clock_status,
             cancellation_token: _,
         } = self;
 
@@ -270,6 +280,9 @@ impl ClockState {
             *clock_parameters = None;
             clock_params_receiver.handle_disruption();
             clock_adjuster.handle_disruption(disruption_marker);
+
+            // Update shared clock status
+            shared_clock_status.set(ClockStatus::Disrupted);
 
             tracing::info!("Handled clock disruption event");
         }
@@ -291,6 +304,10 @@ mod tests {
     };
 
     use super::*;
+
+    fn test_shared_clock_status() -> SharedClockStatus {
+        SharedClockStatus::new(ClockStatus::Unknown)
+    }
 
     fn get_sample_clock_parameters() -> ClockParameters {
         ClockParameters {
@@ -328,6 +345,7 @@ mod tests {
             rx,
             clock_disruption_receiver,
             cancellation_token,
+            test_shared_clock_status(),
         );
         assert_eq!(clock_state.clock_parameters, None);
         clock_state.handle_clock_parameters(clock_parameters.clone());
@@ -370,6 +388,7 @@ mod tests {
             rx,
             clock_disruption_receiver,
             cancellation_token,
+            test_shared_clock_status(),
         );
         clock_state.clock_parameters = Some(clock_parameters);
 
@@ -408,6 +427,7 @@ mod tests {
             rx,
             clock_disruption_receiver,
             cancellation_token,
+            test_shared_clock_status(),
         );
         clock_state.clock_parameters = None;
         clock_state.handle_tick(tokio::time::Instant::now());
@@ -477,6 +497,7 @@ mod tests {
             rx,
             clock_disruption_receiver,
             cancellation_token,
+            test_shared_clock_status(),
         );
         clock_state.clock_parameters = Some(expected_clock_params);
         clock_state.handle_tick(expected_instant);
@@ -543,6 +564,7 @@ mod tests {
             async_ring_buffer::create(1).1,
             clock_disruption_receiver,
             cancellation_token,
+            test_shared_clock_status(),
         );
 
         let mut clock_parameters = get_sample_clock_parameters();

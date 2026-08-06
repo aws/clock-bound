@@ -26,6 +26,9 @@ pub mod clock_state;
 
 pub mod logging;
 
+pub mod shared_state;
+pub use shared_state::{SelectedClock, SharedClockStatus, SharedSelectedClock};
+
 // --- Everything below is only needed for the full daemon ---
 
 #[cfg(feature = "daemon")]
@@ -33,7 +36,6 @@ use {
     crate::{
         daemon::{
             async_ring_buffer::Sender,
-            clock_parameters::ClockParameters,
             clock_state::ClockState,
             clock_sync_algorithm::{ClockSyncAlgorithm, Selector},
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
@@ -42,8 +44,10 @@ use {
             source_mutator::SourceMutator,
             time::tsc::Skew,
         },
+        shm::ClockStatus,
         vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH,
     },
+    clock_parameters::ClockParameters,
     rand::{RngCore, rng},
     std::net::{IpAddr, Ipv4Addr, SocketAddr},
     std::sync::Arc,
@@ -100,6 +104,10 @@ impl Daemon {
 
         let selected_clock = Arc::new(SelectedClockSource::default());
 
+        // Initialize shared state for observability/logging.
+        let shared_selected_clock = SharedSelectedClock::new();
+        let shared_clock_status = SharedClockStatus::new(ClockStatus::Unknown);
+
         // Initialize IO components.
         let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
         let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
@@ -107,7 +115,10 @@ impl Daemon {
         let mut receiver_stream = ReceiverStream::default();
         let mut clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .selected_clock(selected_clock.clone())
-            .selector(Selector::new(MAX_DISPERSION_GROWTH))
+            .selector(Selector::new(
+                MAX_DISPERSION_GROWTH,
+                shared_selected_clock.clone(),
+            ))
             .build();
 
         let mut source_mutator = SourceMutator::new(
@@ -146,6 +157,7 @@ impl Daemon {
                 clock_state_cancellation_token.clone(),
                 disruption_marker,
                 clock_disruption_support_enabled,
+                shared_clock_status,
             );
             (tx, clock_state)
         };

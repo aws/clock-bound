@@ -112,6 +112,7 @@ mod tests {
     use std::sync::Arc;
 
     use clock_bound::daemon::{
+        SharedSelectedClock,
         clock_sync_algorithm::{
             Selector,
             source::{self, AmazonTimeSync},
@@ -131,7 +132,7 @@ mod tests {
                 .ntp_sources(vec![])
                 .phc(source::Phc::new("path".into(), skew))
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(skew))
+                .selector(Selector::new(skew, SharedSelectedClock::new()))
                 .build(),
         );
 
@@ -148,7 +149,7 @@ mod tests {
                 .ntp_sources(vec![])
                 .phc(source::Phc::new("path".into(), skew))
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(skew))
+                .selector(Selector::new(skew, SharedSelectedClock::new()))
                 .build(),
         );
         let scenario = perfect_symmetric(TrueDuration::from_secs(1024));

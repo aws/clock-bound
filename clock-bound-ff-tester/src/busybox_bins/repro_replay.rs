@@ -10,7 +10,7 @@ use crate::{
 };
 use clap::Parser;
 use clock_bound::daemon::{
-    self,
+    self, SharedSelectedClock,
     clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
     selected_clock::SelectedClockSource,
 };
@@ -37,7 +37,7 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
         .ntp_sources(vec![])
         .phc(source::Phc::new("/dev/ptp0".into(), max_dispersion))
         .selected_clock(Arc::new(SelectedClockSource::default()))
-        .selector(Selector::new(max_dispersion))
+        .selector(Selector::new(max_dispersion, SharedSelectedClock::new()))
         .build();
 
     let repro_events = repro::repro_events_from_log_file(&args.logfile)?;

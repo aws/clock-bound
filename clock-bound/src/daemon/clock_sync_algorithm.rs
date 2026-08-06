@@ -268,6 +268,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::daemon::{
+        SharedSelectedClock,
         event::Stratum,
         selected_clock::ClockSource,
         time::{Duration, Instant, TscCount, tsc::Skew},
@@ -299,7 +300,10 @@ mod tests {
             .amazon_time_sync(source::AmazonTimeSync::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
-            .selector(Selector::new(Skew::from_ppm(15.0)))
+            .selector(Selector::new(
+                Skew::from_ppm(15.0),
+                SharedSelectedClock::new(),
+            ))
             .build();
 
         let clock_parameters = csa.feed(event.clone());

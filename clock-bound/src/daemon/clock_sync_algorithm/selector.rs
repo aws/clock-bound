@@ -2,7 +2,10 @@
 
 use std::net::SocketAddr;
 
-use crate::daemon::{clock_parameters::ClockParameters, event::Stratum, time::tsc::Skew};
+use crate::daemon::{
+    SelectedClock, SharedSelectedClock, clock_parameters::ClockParameters, event::Stratum,
+    time::tsc::Skew,
+};
 
 /// Select from multiple clock sources
 ///
@@ -18,14 +21,16 @@ use crate::daemon::{clock_parameters::ClockParameters, event::Stratum, time::tsc
 pub struct Selector {
     current: Option<SourceParams>,
     max_dispersion_growth: Skew,
+    shared_selected_clock: SharedSelectedClock,
 }
 
 impl Selector {
     /// Constructor
-    pub fn new(max_dispersion_growth: Skew) -> Self {
+    pub fn new(max_dispersion_growth: Skew, shared_selected_clock: SharedSelectedClock) -> Self {
         Self {
             current: None,
             max_dispersion_growth,
+            shared_selected_clock,
         }
     }
 
@@ -42,6 +47,7 @@ impl Selector {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
             });
+            self.write_shared_state(clock_parameters, source_info);
             return self.current.as_ref().map(|sp| &sp.clock_parameters);
         };
 
@@ -55,22 +61,33 @@ impl Selector {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
             });
+            self.write_shared_state(clock_parameters, source_info);
             self.current.as_ref().map(|sp| &sp.clock_parameters)
         }
     }
 
-    /// Clear inner state during a disruption event
+    /// Clear inner state during a disruption event.
+    ///
+    /// # Panics
+    /// Panics if the `SharedSelectedClock` `Mutex` is poisoned.
     pub fn handle_disruption(&mut self) {
         let Self {
             current,
             max_dispersion_growth: _,
+            shared_selected_clock,
         } = self;
         *current = None;
+        shared_selected_clock.clear();
     }
 
     /// Get the current best clock parameters
     pub fn current(&self) -> Option<&SourceParams> {
         self.current.as_ref()
+    }
+
+    fn write_shared_state(&self, clock_parameters: &ClockParameters, source_info: SourceInfo) {
+        self.shared_selected_clock
+            .set(SelectedClock::new(clock_parameters.clone(), source_info));
     }
 }
 
@@ -99,6 +116,10 @@ mod tests {
 
     use super::*;
     use rstest::rstest;
+
+    fn test_selector(max_dispersion: Skew) -> Selector {
+        Selector::new(max_dispersion, SharedSelectedClock::new())
+    }
 
     #[rstest]
     #[case::same_events_zero_skew(
@@ -259,6 +280,7 @@ mod tests {
                 source_info: SourceInfo::Phc,
             }),
             max_dispersion_growth: max_dispersion,
+            shared_selected_clock: SharedSelectedClock::new(),
         };
         let result = selector.update(&val, SourceInfo::Phc).is_some();
         assert_eq!(result, expected);
@@ -274,7 +296,7 @@ mod tests {
             period_max_error: Period::from_seconds(1e-11), // unused
             as_of_monotonic: Instant::from_days(1), // unused
         };
-        let mut selector = Selector::new(Skew::from_ppm(0.0));
+        let mut selector = test_selector(Skew::from_ppm(0.0));
         assert!(selector.current().is_none());
         let result = selector.update(&clock_parameters, SourceInfo::Phc).unwrap();
         assert_eq!(result, &clock_parameters);
@@ -292,7 +314,7 @@ mod tests {
             as_of_monotonic: Instant::from_days(1), // unused
         };
         let skew = Skew::from_ppm(1.0);
-        let mut selector = Selector::new(skew);
+        let mut selector = test_selector(skew);
         selector.update(&clock_parameters, SourceInfo::Phc).unwrap();
         selector.handle_disruption();
         assert!(selector.current().is_none());
