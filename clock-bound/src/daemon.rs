@@ -129,14 +129,10 @@ impl Daemon {
 
         // Add clock sources
         // TODO: gate this on platform autodetection
-        source_mutator
-            .set_amazon_time_sync(MAX_DISPERSION_GROWTH)
-            .await;
+        source_mutator.set_amazon_time_sync(MAX_DISPERSION_GROWTH);
         source_mutator.set_phc(MAX_DISPERSION_GROWTH).await;
         for socket_addr in AWS_TEMP_PUBLIC_TIME_ADDRESSES {
-            source_mutator
-                .add_ntp_source(socket_addr, MAX_DISPERSION_GROWTH)
-                .await;
+            source_mutator.add_ntp_source(socket_addr, MAX_DISPERSION_GROWTH);
         }
 
         // Initialize vmclock IO component.

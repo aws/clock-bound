@@ -31,7 +31,7 @@ async fn main() {
 }
 
 /// Set up ntp source io for testing
-async fn setup() -> (Vec<Receiver<Ntp>>, Arc<SelectedClockSource>, SourceIO) {
+fn setup() -> (Vec<Receiver<Ntp>>, Arc<SelectedClockSource>, SourceIO) {
     let daemon_info = DaemonInfo {
         major_version: 2,
         minor_version: 100,
@@ -47,7 +47,7 @@ async fn setup() -> (Vec<Receiver<Ntp>>, Arc<SelectedClockSource>, SourceIO) {
         let (tx, rx) = async_ring_buffer::create(1);
         receiver_vec.push(rx);
         let sender_with_address: NTPSourceSender = (address, tx);
-        sourceio.create_ntp_source(sender_with_address).await;
+        sourceio.create_ntp_source(sender_with_address);
     }
 
     sourceio.spawn_all();
@@ -57,7 +57,7 @@ async fn setup() -> (Vec<Receiver<Ntp>>, Arc<SelectedClockSource>, SourceIO) {
 /// Test basic NTP source functionality
 async fn test_ntp_sources() {
     println!("Testing NTP sources ...");
-    let (receiver_vec, _selected_clock, _sourceio) = setup().await;
+    let (receiver_vec, _selected_clock, _sourceio) = setup();
 
     for i in 0..AWS_TEMP_PUBLIC_TIME_ADDRESSES.len() {
         #[allow(
@@ -100,7 +100,7 @@ async fn test_polls_with_selected_clock_source_combos() {
         combinations.len()
     );
 
-    let (receiver_vec, selected_clock, _sourceio) = setup().await;
+    let (receiver_vec, selected_clock, _sourceio) = setup();
     for (source, stratum) in combinations {
         // Set up the specific clock source and stratum
         match source.clone() {

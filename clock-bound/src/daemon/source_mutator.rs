@@ -37,14 +37,13 @@ impl<'a> SourceMutator<'a> {
     }
 
     /// Set the Amazon Time Sync source in the daemon
-    // TODO: this function is async due to `io_front_end.create_amazon_time_sync` binds a socket. That should not happen here
-    pub async fn set_amazon_time_sync(&mut self, max_dispersion: Skew) {
+    pub fn set_amazon_time_sync(&mut self, max_dispersion: Skew) {
         self.clock_sync_algorithm
             .set_amazon_time_sync(source::AmazonTimeSync::new(max_dispersion));
 
         let (tx, rx) = async_ring_buffer::create(2);
         self.receiver_stream.set_amazon_time_sync(rx);
-        self.io_front_end.create_amazon_time_sync(tx).await;
+        self.io_front_end.create_amazon_time_sync(tx);
     }
 
     /// Set the Amazon PHC source in the daemon
@@ -69,15 +68,13 @@ impl<'a> SourceMutator<'a> {
     }
 
     /// Add an NTP source in the daemon
-    ///
-    /// TODO: Make this function non-async by moving socket binding to spawned task
-    pub async fn add_ntp_source(&mut self, socket_addr: SocketAddr, max_dispersion: Skew) {
+    pub fn add_ntp_source(&mut self, socket_addr: SocketAddr, max_dispersion: Skew) {
         self.clock_sync_algorithm
             .add_ntp_source(source::NtpSource::new(socket_addr, max_dispersion));
 
         let (tx, rx) = async_ring_buffer::create(2);
         self.receiver_stream.add_ntp_source((socket_addr, rx));
-        self.io_front_end.create_ntp_source((socket_addr, tx)).await;
+        self.io_front_end.create_ntp_source((socket_addr, tx));
     }
 }
 
@@ -127,7 +124,7 @@ mod tests {
         assert!(rs.amazon_time_sync().is_none());
 
         let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
-        mutator.set_amazon_time_sync(Skew::from_ppm(15.0)).await;
+        mutator.set_amazon_time_sync(Skew::from_ppm(15.0));
 
         assert!(csa.amazon_time_sync().is_some());
         assert!(rs.amazon_time_sync().is_some());
@@ -142,7 +139,7 @@ mod tests {
         assert!(csa.ntp_sources.is_empty());
 
         let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
-        mutator.add_ntp_source(addr, Skew::from_ppm(15.0)).await;
+        mutator.add_ntp_source(addr, Skew::from_ppm(15.0));
 
         assert_eq!(csa.ntp_sources.len(), 1);
         assert_eq!(csa.ntp_sources[0].socket_address(), addr);
@@ -157,8 +154,8 @@ mod tests {
 
         {
             let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
-            mutator.add_ntp_source(addr1, Skew::from_ppm(15.0)).await;
-            mutator.add_ntp_source(addr2, Skew::from_ppm(10.0)).await;
+            mutator.add_ntp_source(addr1, Skew::from_ppm(15.0));
+            mutator.add_ntp_source(addr2, Skew::from_ppm(10.0));
         }
 
         assert_eq!(csa.ntp_sources.len(), 2);

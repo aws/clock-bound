@@ -30,7 +30,9 @@ use packet::Packet;
 #[derive(Debug, Error)]
 pub enum AmazonTimeSyncError {
     #[error("IO failure.")]
-    Io(#[from] io::Error),
+    SampleIo(#[source] io::Error),
+    #[error("Socket bind failure")]
+    Bind(#[source] io::Error),
     #[error("Operation timed out.")]
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
@@ -42,7 +44,7 @@ pub enum AmazonTimeSyncError {
 impl From<SamplePacketError> for AmazonTimeSyncError {
     fn from(value: SamplePacketError) -> Self {
         match value {
-            SamplePacketError::Io(e) => AmazonTimeSyncError::Io(e),
+            SamplePacketError::Io(e) => AmazonTimeSyncError::SampleIo(e),
             SamplePacketError::Timeout(e) => AmazonTimeSyncError::Timeout(e),
             SamplePacketError::TscOrder { pre, post } => {
                 AmazonTimeSyncError::TscOrder { pre, post }
@@ -55,7 +57,6 @@ impl From<SamplePacketError> for AmazonTimeSyncError {
 /// Contains the data needed to run the Amazon Time Sync runner.
 #[derive(Debug)]
 pub struct AmazonTimeSync {
-    socket: UdpSocket,
     event_sender: async_ring_buffer::Sender<event::Ntp>,
     ctrl_receiver: mpsc::Receiver<ControlRequest>,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
@@ -73,7 +74,6 @@ impl AmazonTimeSync {
     /// The `AmazonTimeSync` object will start in burst mode. The timer for burst mode begins when the object is constructed,
     /// NOT when the run loop begins.
     pub fn construct(
-        socket: UdpSocket,
         event_sender: async_ring_buffer::Sender<event::Ntp>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
@@ -82,7 +82,6 @@ impl AmazonTimeSync {
         let mut ats_interval = interval(AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION);
         ats_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         AmazonTimeSync {
-            socket,
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
@@ -112,8 +111,12 @@ impl AmazonTimeSync {
             .build();
         packet.emit_bytes(&mut self.ntp_buffer);
 
+        let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
+            .await
+            .map_err(AmazonTimeSyncError::Bind)?;
+
         let ntp_event = ntp::sample_packet(
-            &self.socket,
+            &socket,
             AMAZON_TIME_SYNC_ADDRESS.into(),
             &mut self.ntp_buffer,
             AMAZON_TIME_SYNC_TIMEOUT,
@@ -217,7 +220,6 @@ impl AmazonTimeSync {
     /// [`AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION`].
     fn handle_disruption(&mut self) {
         let AmazonTimeSync {
-            socket: _socket,
             event_sender,
             ctrl_receiver: _ctrl_receiver,
             clock_disruption_receiver,
@@ -242,7 +244,6 @@ impl AmazonTimeSync {
     /// [`AMAZON_TIME_SYNC_INTERVAL_DURATION`].
     fn transition_to_normal_mode(&mut self) {
         let AmazonTimeSync {
-            socket: _socket,
             event_sender: _event_sender,
             ctrl_receiver: _ctrl_receiver,
             clock_disruption_receiver: _clock_disruption_receiver,
@@ -290,7 +291,6 @@ impl Mode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::io::ntp;
 
     async fn create_amazon_time_sync() -> (
         AmazonTimeSync,
@@ -298,9 +298,6 @@ mod tests {
         Arc<SelectedClockSource>,
     ) {
         let (event_sender, _) = async_ring_buffer::create::<event::Ntp>(1);
-        let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
-            .await
-            .unwrap();
         let (_, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
         let (clock_disruption_sender, clock_disruption_receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent {
@@ -310,7 +307,6 @@ mod tests {
         let selected_clock = Arc::new(SelectedClockSource::default());
         (
             AmazonTimeSync::construct(
-                socket,
                 event_sender,
                 ctrl_receiver,
                 clock_disruption_receiver,

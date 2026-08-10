@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
 use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn};
@@ -85,11 +84,7 @@ impl SourceIO {
     ///
     /// # Panics
     /// - If not called within the `tokio` runtime.
-    /// - If socket binding fails.
-    pub async fn create_amazon_time_sync(
-        &mut self,
-        event_sender: async_ring_buffer::Sender<event::Ntp>,
-    ) {
+    pub fn create_amazon_time_sync(&mut self, event_sender: async_ring_buffer::Sender<event::Ntp>) {
         info!("Creating Amazon Time Sync source.");
 
         debug!(?self.amazon_time_sync, "Current source entry status");
@@ -98,12 +93,7 @@ impl SourceIO {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
                 let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
 
-                let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
-                    .await
-                    .unwrap();
-
                 let amazon_time_sync = AmazonTimeSync::construct(
-                    socket,
                     event_sender,
                     ctrl_receiver,
                     clock_disruption_receiver,
@@ -123,8 +113,7 @@ impl SourceIO {
     ///
     /// # Panics
     /// - If not called within the `tokio` runtime.
-    /// - If socket binding fails.
-    pub async fn create_ntp_source(&mut self, source: ntp::NTPSourceSender) {
+    pub fn create_ntp_source(&mut self, source: ntp::NTPSourceSender) {
         let (server_address, event_sender) = source;
         info!(
             "Creating IO source from ntp server at {:#?}.",
@@ -135,12 +124,7 @@ impl SourceIO {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
             let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
 
-            let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
-                .await
-                .unwrap();
-
             let ntp_source = NTPSource::construct(
-                socket,
                 server_address,
                 event_sender,
                 ctrl_receiver,
@@ -461,12 +445,7 @@ mod tests {
         let (_, clock_disruption_receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
 
-        let socket = UdpSocket::bind(ntp::UNSPECIFIED_SOCKET_ADDRESS)
-            .await
-            .unwrap();
-
         let amazon_time_sync = AmazonTimeSync::construct(
-            socket,
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
@@ -499,7 +478,7 @@ mod tests {
         };
 
         let mut source_io = SourceIO::construct(Arc::new(SelectedClockSource::default()), info);
-        source_io.create_amazon_time_sync(event_sender).await;
+        source_io.create_amazon_time_sync(event_sender);
 
         assert!(source_io.amazon_time_sync.is_some())
     }

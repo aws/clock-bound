@@ -35,7 +35,7 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let (receiver, selected_clock, mut sourceio) = setup().await;
+    let (receiver, selected_clock, mut sourceio) = setup();
     test_startup_polling_rate(&receiver).await;
     test_normal_polling_rate(&receiver).await;
     test_clock_disruption_polling_rate(&receiver, &mut sourceio).await;
@@ -43,7 +43,7 @@ async fn main() {
 }
 
 /// Set up Amazon Time Sync source io for testing
-async fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
+fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
     let (sender, receiver) = async_ring_buffer::create(1);
 
     let daemon_info = DaemonInfo {
@@ -55,7 +55,7 @@ async fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
     let selected_clock = Arc::new(SelectedClockSource::default());
 
     let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info);
-    sourceio.create_amazon_time_sync(sender).await;
+    sourceio.create_amazon_time_sync(sender);
     sourceio.spawn_all();
     (receiver, selected_clock, sourceio)
 }

@@ -30,8 +30,10 @@ use packet::Packet;
 // We may want to expose that as a statistic one day
 #[derive(Debug, Error)]
 pub enum NTPSourceError {
-    #[error("IO failure.")]
-    Io(#[from] io::Error),
+    #[error("Sample IO failure.")]
+    SampleIo(#[source] io::Error),
+    #[error("Socket bind failure")]
+    Bind(#[source] io::Error),
     #[error("Operation timed out.")]
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
@@ -43,7 +45,7 @@ pub enum NTPSourceError {
 impl From<SamplePacketError> for NTPSourceError {
     fn from(value: SamplePacketError) -> Self {
         match value {
-            SamplePacketError::Io(e) => NTPSourceError::Io(e),
+            SamplePacketError::Io(e) => NTPSourceError::SampleIo(e),
             SamplePacketError::Timeout(e) => NTPSourceError::Timeout(e),
             SamplePacketError::TscOrder { pre, post } => NTPSourceError::TscOrder { pre, post },
             SamplePacketError::SocketClear(e) => NTPSourceError::SocketClear(e),
@@ -56,7 +58,6 @@ impl From<SamplePacketError> for NTPSourceError {
 /// with an NTP host.
 #[derive(Debug)]
 pub struct NTPSource {
-    socket: UdpSocket,
     address: SocketAddr,
     event_sender: async_ring_buffer::Sender<event::Ntp>,
     ctrl_receiver: mpsc::Receiver<ControlRequest>,
@@ -71,7 +72,6 @@ pub struct NTPSource {
 impl NTPSource {
     /// Constructs a new `NTPSource` with using given parameters.
     pub fn construct(
-        socket: UdpSocket,
         address: SocketAddr,
         event_sender: async_ring_buffer::Sender<event::Ntp>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
@@ -82,7 +82,6 @@ impl NTPSource {
         let mut ntp_source_interval = interval(NTP_SOURCE_INTERVAL_DURATION);
         ntp_source_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         NTPSource {
-            socket,
             address,
             event_sender,
             ctrl_receiver,
@@ -113,8 +112,11 @@ impl NTPSource {
             .extensions(vec![ExtensionField::Fec2V1(self.daemon_info.clone())])
             .build();
         packet.emit_bytes(&mut self.ntp_buffer);
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(NTPSourceError::Bind)?;
         let ntp_event = ntp::sample_packet(
-            &self.socket,
+            &socket,
             self.address,
             &mut self.ntp_buffer,
             NTP_SOURCE_TIMEOUT,
@@ -197,7 +199,6 @@ impl NTPSource {
     fn handle_disruption(&mut self) {
         let Self {
             event_sender,
-            socket: _,
             address: _,
             ctrl_receiver: _,
             clock_disruption_receiver,
