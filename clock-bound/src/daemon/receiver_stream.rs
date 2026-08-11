@@ -5,7 +5,7 @@
 
 #[cfg(feature = "daemon")]
 use {
-    super::io::ntp::NTPSourceReceiver,
+    super::io::ip_addr_source::Receiver as IpAddrSourceReceiver,
     crate::daemon::async_ring_buffer::{BufferClosedError, Receiver},
     futures::StreamExt,
     futures::{
@@ -50,7 +50,7 @@ pub struct ReceiverStream {
 #[cfg(feature = "daemon")]
 impl ReceiverStream {
     /// Adds a new ntp source to the `ntp_sources`
-    pub fn add_ntp_source(&mut self, source: NTPSourceReceiver) {
+    pub fn add_ntp_source(&mut self, source: IpAddrSourceReceiver) {
         let (socket_addr, receiver) = source;
         let _ = &self.ntp_sources.insert(socket_addr, receiver);
     }
@@ -319,7 +319,7 @@ mod tests {
 
         let (_, ntp_source_rx) = create(1);
         let dummy_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 123);
-        let dummy_ntp_source_receiver: NTPSourceReceiver = (dummy_address, ntp_source_rx);
+        let dummy_ntp_source_receiver: IpAddrSourceReceiver = (dummy_address, ntp_source_rx);
 
         let mut rx_stream = ReceiverStream::builder()
             .amazon_time_sync(amazon_time_sync_rx)
@@ -338,7 +338,7 @@ mod tests {
         let (_, ntp_source_rx) = create(1);
 
         let dummy_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 123);
-        let dummy_ntp_source_receiver: NTPSourceReceiver = (dummy_address, ntp_source_rx);
+        let dummy_ntp_source_receiver: IpAddrSourceReceiver = (dummy_address, ntp_source_rx);
 
         let mut rx_stream = ReceiverStream::builder()
             .amazon_time_sync(amazon_time_sync_rx)

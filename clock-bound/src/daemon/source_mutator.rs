@@ -74,7 +74,7 @@ impl<'a> SourceMutator<'a> {
 
         let (tx, rx) = async_ring_buffer::create(2);
         self.receiver_stream.add_ntp_source((socket_addr, rx));
-        self.io_front_end.create_ntp_source((socket_addr, tx));
+        self.io_front_end.create_ip_addr_source((socket_addr, tx));
     }
 }
 

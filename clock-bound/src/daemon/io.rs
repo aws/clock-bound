@@ -18,13 +18,13 @@ use crate::daemon::{async_ring_buffer, event};
 pub mod dmi;
 use dmi::InstanceType;
 
-mod amazon_time_sync;
+pub mod amazon_time_sync;
 use amazon_time_sync::AmazonTimeSync;
 
 mod dns;
 
-mod ntp_source;
-use ntp_source::NTPSource;
+pub mod ip_addr_source;
+use ip_addr_source::IpAddrSource;
 
 mod phc;
 use phc::Phc;
@@ -42,7 +42,7 @@ pub struct SourceIO {
     /// The Amazon Time Sync source.
     amazon_time_sync: Option<Source<AmazonTimeSync>>,
     /// Mapping between the socket ip-address and the ntp io source
-    ntp_sources: HashMap<SocketAddr, Source<NTPSource>>,
+    ip_addr_sources: HashMap<SocketAddr, Source<IpAddrSource>>,
     /// The PHC source.
     phc: Option<Source<Phc>>,
     /// The VMClock source
@@ -70,7 +70,7 @@ impl SourceIO {
 
         SourceIO {
             amazon_time_sync: None,
-            ntp_sources: HashMap::new(),
+            ip_addr_sources: HashMap::new(),
             phc: None,
             vmclock: None,
             clock_disruption_channels: ClockDisruptionChannels { sender },
@@ -113,18 +113,18 @@ impl SourceIO {
     ///
     /// # Panics
     /// - If not called within the `tokio` runtime.
-    pub fn create_ntp_source(&mut self, source: ntp::NTPSourceSender) {
+    pub fn create_ip_addr_source(&mut self, source: ip_addr_source::Sender) {
         let (server_address, event_sender) = source;
         info!(
             "Creating IO source from ntp server at {:#?}.",
             server_address.ip().to_string()
         );
 
-        if !self.ntp_sources.contains_key(&server_address) {
+        if !self.ip_addr_sources.contains_key(&server_address) {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
             let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
 
-            let ntp_source = NTPSource::construct(
+            let ip_addr_source = IpAddrSource::construct(
                 server_address,
                 event_sender,
                 ctrl_receiver,
@@ -134,10 +134,10 @@ impl SourceIO {
             );
 
             let source = Source {
-                state: SourceState::Initialized(ntp_source),
+                state: SourceState::Initialized(ip_addr_source),
                 ctrl_sender,
             };
-            self.ntp_sources.insert(server_address, source);
+            self.ip_addr_sources.insert(server_address, source);
         }
 
         info!("Source NTP update complete.");
@@ -311,17 +311,17 @@ impl SourceIO {
             debug!("Could not spawn a vmclock source. No source data provided.");
         }
 
-        // Spawn ntp sources
-        for (key, ntp_source) in &mut self.ntp_sources {
-            debug!("Attempting to spawn {key:?} ntp source.");
-            if let SourceState::Initialized(mut ntp_source) =
-                ntp_source.state.transition_to_running()
+        // Spawn ip addr sources
+        for (key, ip_addr_source) in &mut self.ip_addr_sources {
+            debug!("Attempting to spawn {key:?} ip addr source.");
+            if let SourceState::Initialized(mut ip_addr_source) =
+                ip_addr_source.state.transition_to_running()
             {
                 self.task_tracker
-                    .spawn(async move { ntp_source.run().await });
-                debug!("Successfully spawned ntp source.");
+                    .spawn(async move { ip_addr_source.run().await });
+                debug!("Successfully spawned ip addr source.");
             } else {
-                warn!("Attempted to spawn a ntp source when on is currently running.");
+                warn!("Attempted to spawn an ip addr source when one is currently running.");
             }
         }
 
@@ -373,11 +373,15 @@ impl SourceIO {
             }
         }
 
-        // Shutdown ntp sources
-        for ntp_source in self.ntp_sources.values_mut() {
-            match ntp_source.ctrl_sender.send(ControlRequest::Shutdown).await {
-                Ok(()) => info!("Successfully sent shutdown signal to ntp source."),
-                Err(e) => warn!(?e, "Failed to send shutdown signal to ntp source."),
+        // Shutdown ip addr sources
+        for ip_addr_source in self.ip_addr_sources.values_mut() {
+            match ip_addr_source
+                .ctrl_sender
+                .send(ControlRequest::Shutdown)
+                .await
+            {
+                Ok(()) => info!("Successfully sent shutdown signal to ip addr source."),
+                Err(e) => warn!(?e, "Failed to send shutdown signal to ip addr source."),
             }
         }
 

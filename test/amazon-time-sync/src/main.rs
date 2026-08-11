@@ -4,7 +4,7 @@
 //! the Amazon Time Sync address and that the polling rate is roughly once a second.
 
 use clock_bound::daemon::event::{Ntp, Stratum, ValidStratumLevel};
-use clock_bound::daemon::io::{SourceIO, ntp::AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION};
+use clock_bound::daemon::io::{SourceIO, amazon_time_sync::BURST_INTERVAL};
 use clock_bound::daemon::selected_clock::{ClockSource, SelectedClockSource};
 use clock_bound::daemon::{
     async_ring_buffer::{self, BufferClosedError, Receiver},
@@ -87,10 +87,7 @@ async fn test_startup_polling_rate(receiver: &Receiver<Ntp>) {
     let polling_rate = measure_polling_rate(receiver, time::Duration::from_secs(1)).await;
 
     println!("Burst Polling rate avg: {polling_rate:?}");
-    assert!(
-        polling_rate.abs_diff(AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION)
-            < time::Duration::from_millis(100)
-    );
+    assert!(polling_rate.abs_diff(BURST_INTERVAL) < time::Duration::from_millis(100));
     println!("Burst poll rate test PASSED");
 }
 
@@ -133,8 +130,7 @@ async fn test_clock_disruption_polling_rate(receiver: &Receiver<Ntp>, sourceio: 
     println!("Clock disruption polling rate avg: {clock_disruption_polling_rate:?}");
     println!("Clock disruption polling duration: {polling_duration:?}");
     assert!(
-        clock_disruption_polling_rate.abs_diff(AMAZON_TIME_SYNC_BURST_INTERVAL_DURATION)
-            < time::Duration::from_millis(100)
+        clock_disruption_polling_rate.abs_diff(BURST_INTERVAL) < time::Duration::from_millis(100)
     );
 
     // Base line polling rate.

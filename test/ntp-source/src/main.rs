@@ -6,7 +6,7 @@
 use clock_bound::daemon::AWS_TEMP_PUBLIC_TIME_ADDRESSES;
 use clock_bound::daemon::async_ring_buffer::{self, BufferClosedError, Receiver};
 use clock_bound::daemon::event::{Ntp, Stratum, ValidStratumLevel};
-use clock_bound::daemon::io::ntp::NTPSourceSender;
+use clock_bound::daemon::io::ip_addr_source::Sender as IpAddrSourceSender;
 use clock_bound::daemon::io::{SourceIO, ntp::DaemonInfo};
 use clock_bound::daemon::selected_clock::{ClockSource, SelectedClockSource};
 use std::net::{IpAddr, Ipv4Addr};
@@ -46,8 +46,8 @@ fn setup() -> (Vec<Receiver<Ntp>>, Arc<SelectedClockSource>, SourceIO) {
     for address in AWS_TEMP_PUBLIC_TIME_ADDRESSES {
         let (tx, rx) = async_ring_buffer::create(1);
         receiver_vec.push(rx);
-        let sender_with_address: NTPSourceSender = (address, tx);
-        sourceio.create_ntp_source(sender_with_address);
+        let sender_with_address: IpAddrSourceSender = (address, tx);
+        sourceio.create_ip_addr_source(sender_with_address);
     }
 
     sourceio.spawn_all();
