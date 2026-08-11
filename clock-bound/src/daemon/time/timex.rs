@@ -11,7 +11,6 @@ use tracing::warn;
 
 use crate::daemon::time::{Duration, Instant, tsc::Skew};
 
-const MAX_PHASE_OFFSET: Duration = Duration::from_millis(500);
 const MAX_SKEW: Skew = Skew::from_ppm(512.0);
 
 /// Newtype wrapping `libc::timex` to provide valid
@@ -21,6 +20,12 @@ pub struct Timex(timex);
 
 #[bon]
 impl Timex {
+    /// Maximum phase offset that can be submitted to the kernel PLL in a single
+    /// `adjtimex` call. Offsets larger than this are clamped by the `Timex`
+    /// constructors. The state machine also uses this value as the threshold above
+    /// which a step correction is preferred over a smooth slew.
+    pub const MAX_PHASE_OFFSET: Duration = Duration::from_millis(500);
+
     /// Expose a mutable reference to the inner `libc::timex`.
     pub fn expose(&mut self) -> *mut timex {
         &raw mut self.0
@@ -87,13 +92,14 @@ impl Timex {
             warn!("Skew of {skew} is outside of bounds +/-{MAX_SKEW}, clamping the value",);
             skew = skew.clamp(-MAX_SKEW, MAX_SKEW);
         }
-        if phase_correction > MAX_PHASE_OFFSET || phase_correction < -MAX_PHASE_OFFSET {
+        if phase_correction > Self::MAX_PHASE_OFFSET || phase_correction < -Self::MAX_PHASE_OFFSET {
             warn!(
                 "Phase correction of {}ns is outside of bounds +/-{}ns, clamping the value",
                 phase_correction.as_nanos(),
-                MAX_PHASE_OFFSET.as_nanos()
+                Self::MAX_PHASE_OFFSET.as_nanos()
             );
-            phase_correction = phase_correction.clamp(-MAX_PHASE_OFFSET, MAX_PHASE_OFFSET);
+            phase_correction =
+                phase_correction.clamp(-Self::MAX_PHASE_OFFSET, Self::MAX_PHASE_OFFSET);
         }
         Self(timex {
             // Set `modes` bits for all fields we modify, plus ADJ_NANO to use nanosecond units
@@ -165,13 +171,14 @@ impl Timex {
         reason = "phase correction is clamped then converted so no truncation"
     )]
     pub fn phase_correction(mut phase_correction: Duration) -> Self {
-        if phase_correction > MAX_PHASE_OFFSET || phase_correction < -MAX_PHASE_OFFSET {
+        if phase_correction > Self::MAX_PHASE_OFFSET || phase_correction < -Self::MAX_PHASE_OFFSET {
             warn!(
                 "Phase correction of {}ns is outside of bounds +/-{}ns, clamping the value",
                 phase_correction.as_nanos(),
-                MAX_PHASE_OFFSET.as_nanos()
+                Self::MAX_PHASE_OFFSET.as_nanos()
             );
-            phase_correction = phase_correction.clamp(-MAX_PHASE_OFFSET, MAX_PHASE_OFFSET);
+            phase_correction =
+                phase_correction.clamp(-Self::MAX_PHASE_OFFSET, Self::MAX_PHASE_OFFSET);
         }
         Self(timex {
             // Set `modes` bits for all fields we modify, plus ADJ_NANO to use nanosecond units
@@ -193,6 +200,76 @@ impl Timex {
             // The value is clamped between 0 and 10.
             // For now, we use 0, to aggressively correct the clock, which means we'd expect for
             // offset to be corrected by `offset >> 2` every second (exponentially decaying)
+            constant: 0,
+            precision: 0,
+            tolerance: 0,
+            #[cfg(not(target_os = "macos"))]
+            time: timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            #[cfg(not(target_os = "macos"))]
+            tick: 0,
+            ppsfreq: 0,
+            jitter: 0,
+            shift: 0,
+            stabil: 0,
+            jitcnt: 0,
+            calcnt: 0,
+            errcnt: 0,
+            stbcnt: 0,
+            #[cfg(not(target_os = "macos"))]
+            tai: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused1: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused2: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused3: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused4: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused5: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused6: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused7: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused8: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused9: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused10: 0,
+            #[cfg(not(target_os = "macos"))]
+            __unused11: 0,
+        })
+    }
+
+    /// Builds a `libc::timex` to feed a measured phase offset directly into the kernel PLL.
+    ///
+    /// This applies an `offset` into the kernel with `STA_PLL` - this triggers a slewing of the
+    /// `offset`, plus a portion of that being attributed to the `freq` value. Over several calls
+    /// to align with a reference (e.g. ClockBound clock), this would converge in phase and frequency.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "offset is clamped then converted so no truncation"
+    )]
+    pub fn apply_phase_correction(mut offset: Duration) -> Self {
+        if offset > Self::MAX_PHASE_OFFSET || offset < -Self::MAX_PHASE_OFFSET {
+            warn!(
+                "Offset of {}ns is outside of bounds +/-{}ns, clamping the value",
+                offset.as_nanos(),
+                Self::MAX_PHASE_OFFSET.as_nanos()
+            );
+            offset = offset.clamp(-Self::MAX_PHASE_OFFSET, Self::MAX_PHASE_OFFSET);
+        }
+        Self(timex {
+            modes: MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS,
+            offset: offset.as_nanos_trunc(),
+            freq: 0,
+            maxerror: 0,
+            esterror: 0,
+            status: STA_PLL,
             constant: 0,
             precision: 0,
             tolerance: 0,

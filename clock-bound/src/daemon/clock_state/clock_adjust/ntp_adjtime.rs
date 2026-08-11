@@ -41,7 +41,10 @@ impl NtpAdjTime for NoopClockAdjuster {
 }
 #[cfg(feature = "test-side-by-side")]
 impl NtpAdjTimeExt for NoopClockAdjuster {
-    fn step_clock(&self, _phase_correction: Duration) -> Result<Timex, NtpAdjTimeError> {
+    fn apply_phase_correction_step(
+        &self,
+        _phase_correction: Duration,
+    ) -> Result<Timex, NtpAdjTimeError> {
         Ok(Timex::create_dummy_timex())
     }
 }
@@ -73,6 +76,8 @@ mod mock_ntp_adj_time_ext {
                 &self,
                 frequency_correction: Skew,
             ) -> Result<Timex, NtpAdjTimeError>;
+            fn apply_phase_correction_smooth(&self, offset: Duration) -> Result<Timex, NtpAdjTimeError>;
+            fn apply_phase_correction_step(&self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError>;
             fn step_clock(&self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError>;
             fn read_adjtime(&self) -> Result<Timex, NtpAdjTimeError>;
         }
@@ -185,6 +190,57 @@ pub trait NtpAdjTimeExt: NtpAdjTime {
         // NOTE: we actually expect TIME_ERROR if the clock adjustment succeeds, since
         // that indicates the clock is now "unsynchronized" (expected after we step the clock
         // discontinuously)
+        match self.ntp_adjtime(&mut tx) {
+            TIME_ERROR => Ok(tx),
+            cs @ (TIME_OK | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
+                Err(NtpAdjTimeError::BadState(cs))
+            }
+            -1 => Err(NtpAdjTimeError::Failure(errno::errno())),
+            unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
+        }
+    }
+
+    /// Feeds a measured phase offset into the kernel PLL, causing `CLOCK_REALTIME` to
+    /// slew toward the reference over time (smooth correction). The kernel also
+    /// applies a dampened frequency correction (unless `STA_FREQHOLD` is specified).
+    /// Calling this repeatedly with the phase between `CLOCK_REALTIME` and ClockBound
+    /// will eventually stabilize phase and frequency to align with ClockBound internal clock.
+    ///
+    /// # Errors
+    /// `NtpAdjTimeError::Failure` if `ntp_adjtime` returns -1
+    /// `NtpAdjTimeError::BadState` if an unexpected state is returned
+    /// `NtpAdjTimeError::InvalidState` if an invalid state is returned
+    fn apply_phase_correction_smooth(
+        &self,
+        phase_correction: Duration,
+    ) -> Result<Timex, NtpAdjTimeError> {
+        let mut tx = Timex::apply_phase_correction(phase_correction);
+        debug!("calling ntp_adjtime to smooth-apply phase correction {phase_correction:?}");
+        match self.ntp_adjtime(&mut tx) {
+            TIME_OK => Ok(tx),
+            cs @ (TIME_ERROR | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
+                Err(NtpAdjTimeError::BadState(cs))
+            }
+            -1 => Err(NtpAdjTimeError::Failure(errno::errno())),
+            unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
+        }
+    }
+
+    /// Applies an instantaneous step of `CLOCK_REALTIME` by the given offset.
+    ///
+    /// # Errors
+    /// `NtpAdjTimeError::Failure` if `ntp_adjtime` returns -1
+    /// `NtpAdjTimeError::BadState` if an unexpected state is returned
+    /// `NtpAdjTimeError::InvalidState` if an invalid state is returned
+    fn apply_phase_correction_step(
+        &self,
+        phase_correction: Duration,
+    ) -> Result<Timex, NtpAdjTimeError> {
+        let mut tx = Timex::clock_step()
+            .phase_correction(phase_correction)
+            .call();
+        debug!("calling ntp_adjtime to step-apply phase correction {phase_correction:?}");
+        // TIME_ERROR is expected after a step — the clock is now "unsynchronized"
         match self.ntp_adjtime(&mut tx) {
             TIME_ERROR => Ok(tx),
             cs @ (TIME_OK | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
@@ -319,5 +375,48 @@ mod test {
         mock_ntp_adj_time
             .step_clock(input_phase_correction)
             .unwrap();
+    }
+
+    #[rstest]
+    #[case::positive(Duration::from_nanos(500))]
+    #[case::negative(Duration::from_nanos(-500))]
+    #[case::zero(Duration::from_nanos(0))]
+    fn apply_phase_correction_smooth_happy_path(#[case] phase_correction: Duration) {
+        let mut mock = MockNtpAdjTime::new();
+        mock.expect_ntp_adjtime().times(1).return_const(TIME_OK);
+        mock.apply_phase_correction_smooth(phase_correction)
+            .unwrap();
+    }
+
+    #[test]
+    fn apply_phase_correction_smooth_failure() {
+        let mut mock = MockNtpAdjTime::new();
+        mock.expect_ntp_adjtime().times(1).return_const(-1);
+        assert!(matches!(
+            mock.apply_phase_correction_smooth(Duration::from_nanos(500))
+                .unwrap_err(),
+            NtpAdjTimeError::Failure(_)
+        ));
+    }
+
+    #[rstest]
+    #[case::positive(Duration::from_millis(100))]
+    #[case::negative(-Duration::from_millis(100))]
+    #[case::zero(Duration::from_millis(0))]
+    fn apply_phase_correction_step_happy_path(#[case] phase_correction: Duration) {
+        let mut mock = MockNtpAdjTime::new();
+        mock.expect_ntp_adjtime().times(1).return_const(TIME_ERROR);
+        mock.apply_phase_correction_step(phase_correction).unwrap();
+    }
+
+    #[test]
+    fn apply_phase_correction_step_failure() {
+        let mut mock = MockNtpAdjTime::new();
+        mock.expect_ntp_adjtime().times(1).return_const(-1);
+        assert!(matches!(
+            mock.apply_phase_correction_step(Duration::from_millis(100))
+                .unwrap_err(),
+            NtpAdjTimeError::Failure(_)
+        ));
     }
 }
