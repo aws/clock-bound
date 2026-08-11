@@ -1,1 +1,6 @@
 extend = "../Makefile.toml"
+
+# Default from cargo-make is to build with all features,
+# which includes features only expected when testing
+[tasks.build-release]
+args = ["build", "--release", "--features", "daemon"]
