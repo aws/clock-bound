@@ -21,6 +21,7 @@ clock-bound = { path = "../clock-bound", features = [
   "algorithm",
   "time-string-parse",
 ] }
+flate2 = "1.1.9"
 num-traits = "0.2.19"
 polars = { version = "0.52.0", features = [
   "lazy",

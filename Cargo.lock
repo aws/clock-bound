@@ -598,6 +598,7 @@ dependencies = [
  "bon",
  "clap",
  "clock-bound",
+ "flate2",
  "mockall",
  "nalgebra",
  "num-traits",

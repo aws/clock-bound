@@ -1,6 +1,8 @@
 //! Functions and structs related to parsing the primer logfiles
 
 use anyhow::Context;
+use flate2::read::MultiGzDecoder;
+
 use clock_bound::daemon::{clock_parameters::ClockParameters, receiver_stream::RoutableEvent};
 
 use super::ReproEvent;
@@ -58,14 +60,30 @@ fn extract_numeric_value_after_key(json: &str, key: &str) -> Option<i128> {
     num_str.parse::<i128>().ok()
 }
 
+/// Magic number identifying a gzip compressed file
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
 /// Read a logfile and return all inputs and outputs from the `ClockSyncAlgorithm`
+///
+/// The logfile may be gzip compressed (detected from content, not file extension).
+/// Concatenated gzip members (e.g. rotated logs joined with `cat`) are decoded in full.
 ///
 /// # Errors
 /// - Returns an error if unable to open the file.
 /// - Returns and error if unable to read values from the logfile
 pub fn repro_events_from_log_file(file_path: impl AsRef<Path>) -> anyhow::Result<Vec<ReproEvent>> {
-    let file = File::open(file_path)?;
-    repro_events_from_reader(file)
+    let mut reader = BufReader::new(File::open(&file_path)?);
+
+    // Peek at the first bytes to detect compression: fill_buf() reads at most one BufReader
+    // buffer's worth (8 KiB by default, one read syscall) and returns a borrowed slice without
+    // consuming it, so the bytes remain for the actual parsing below. An empty or 1-byte file
+    // yields a short buffer, which simply fails the match.
+    let is_gzip = reader.fill_buf()?.starts_with(&GZIP_MAGIC);
+    if is_gzip {
+        repro_events_from_reader(MultiGzDecoder::new(reader))
+    } else {
+        repro_events_from_reader(reader)
+    }
 }
 
 /// Convert a log file at `file_path` into a `ff-tester` scenario
@@ -272,6 +290,47 @@ mod tests {
         let input = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
         assert_eq!(LogFormat::detect_from_event_str(input), LogFormat::Current);
         let _event: RoutableEvent = serde_json::from_str(input).unwrap();
+    }
+
+    #[test]
+    fn plaintext_log_file_parses_same_as_reader() {
+        let example_log = include_str!("test_11_06_2025.log");
+        let expected = repro_events_from_reader(example_log.as_bytes()).unwrap();
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), example_log).unwrap();
+
+        let events = repro_events_from_log_file(tmp.path()).unwrap();
+        assert!(!events.is_empty());
+        assert_eq!(format!("{events:?}"), format!("{expected:?}"));
+    }
+
+    #[test]
+    fn gzip_log_file_round_trips() {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        let example_log = include_str!("test_11_06_2025.log");
+        let expected = repro_events_from_reader(example_log.as_bytes()).unwrap();
+
+        // Compress as two concatenated gzip members, as produced by e.g.
+        // `cat a.log.gz b.log.gz`: the full stream must be decoded, not just the
+        // first member (which is all `GzDecoder` would return, unlike
+        // `MultiGzDecoder`).
+        let (first, second) = example_log.as_bytes().split_at(example_log.len() / 2);
+        let mut compressed = Vec::new();
+        for part in [first, second] {
+            let mut encoder = GzEncoder::new(&mut compressed, Compression::default());
+            encoder.write_all(part).unwrap();
+            encoder.finish().unwrap();
+        }
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &compressed).unwrap();
+
+        let events = repro_events_from_log_file(tmp.path()).unwrap();
+        assert!(!events.is_empty());
+        assert_eq!(format!("{events:?}"), format!("{expected:?}"));
     }
 
     #[test]
