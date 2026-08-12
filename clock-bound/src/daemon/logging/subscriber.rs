@@ -12,14 +12,14 @@ use tracing_subscriber::{
     EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
+use super::layer::StructuredLogLayer;
+use super::synchronization;
 use super::{CLOCK_METRICS_TARGET, PRIMER_TARGET};
 
 /// Initialize the tracing subscriber
-///
-/// This currently uses the [`tracing_subscriber::registry()`] to have 2 different paths. Clock synchronization
-/// events for reproducing test cases use the target of [`PRIMER_TARGET`] to route into a separate file, while
-/// the rest of the logs go through the default logger (presently writes to stdout)
 pub fn init(log_directory: impl AsRef<Path>) {
+    let cargo_version = env!("CARGO_PKG_VERSION");
+
     let primer_writer = tracing_appender::rolling::hourly(&log_directory, "primer.log");
     let primer_layer = tracing_subscriber::fmt::layer()
         .json()
@@ -35,6 +35,13 @@ pub fn init(log_directory: impl AsRef<Path>) {
             md.target().starts_with(CLOCK_METRICS_TARGET)
         }));
 
+    let synchronization_layer = StructuredLogLayer::new(
+        &log_directory,
+        synchronization::FILE_NAME,
+        synchronization::TARGET,
+        cargo_version,
+    );
+
     let log_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout) // this is the default, just making it explicit
         .with_filter(
@@ -45,6 +52,9 @@ pub fn init(log_directory: impl AsRef<Path>) {
         .with_filter(filter_fn(|md| !md.target().starts_with(PRIMER_TARGET)))
         .with_filter(filter_fn(|md| {
             !md.target().starts_with(CLOCK_METRICS_TARGET)
+        }))
+        .with_filter(filter_fn(|md| {
+            !md.target().starts_with(synchronization::TARGET)
         }));
 
     tracing_subscriber::registry()
@@ -54,6 +64,8 @@ pub fn init(log_directory: impl AsRef<Path>) {
         .with(primer_layer)
         // and this is the clock metrics layer
         .with(clock_metrics_layer)
+        // and this is the synchronization log layer
+        .with(synchronization_layer)
         .init();
 
     tracing::info!("Initialized tracing subscriber");

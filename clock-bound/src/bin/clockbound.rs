@@ -2,7 +2,9 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use clock_bound::daemon::{Daemon, logging::subscriber};
+use clock_bound::daemon::{
+    Daemon, logging::subscriber, logging::synchronization::log_daemon_started,
+};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -17,6 +19,7 @@ struct Args {
 async fn main() {
     let args = Args::parse();
     subscriber::init(&args.log_dir);
+    log_daemon_started();
     let cancellation_token = CancellationToken::new();
     let d = Daemon::construct(cancellation_token.clone()).await;
     let d = Box::new(d);

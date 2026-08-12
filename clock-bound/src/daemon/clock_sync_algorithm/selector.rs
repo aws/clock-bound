@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use crate::daemon::{
     SelectedClock, SharedSelectedClock, clock_parameters::ClockParameters, event::Stratum,
-    time::tsc::Skew,
+    logging::synchronization::log_selected_source_change, time::tsc::Skew,
 };
 
 /// Select from multiple clock sources
@@ -43,6 +43,7 @@ impl Selector {
         source_info: SourceInfo,
     ) -> Option<&ClockParameters> {
         let Some(current) = &self.current else {
+            log_selected_source_change(None, Some(source_info), Some(clock_parameters));
             self.current = Some(SourceParams {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
@@ -57,6 +58,13 @@ impl Selector {
         {
             None
         } else {
+            if current.source_info != source_info {
+                log_selected_source_change(
+                    Some(current.source_info),
+                    Some(source_info),
+                    Some(clock_parameters),
+                );
+            }
             self.current = Some(SourceParams {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
@@ -71,13 +79,11 @@ impl Selector {
     /// # Panics
     /// Panics if the `SharedSelectedClock` `Mutex` is poisoned.
     pub fn handle_disruption(&mut self) {
-        let Self {
-            current,
-            max_dispersion_growth: _,
-            shared_selected_clock,
-        } = self;
-        *current = None;
-        shared_selected_clock.clear();
+        if let Some(current) = &self.current {
+            log_selected_source_change(Some(current.source_info), None, None);
+        }
+        self.current = None;
+        self.shared_selected_clock.clear();
     }
 
     /// Get the current best clock parameters

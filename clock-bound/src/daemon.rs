@@ -39,6 +39,7 @@ use {
             clock_state::ClockState,
             clock_sync_algorithm::{ClockSyncAlgorithm, Selector},
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
+            logging::synchronization::log_selected_clock,
             receiver_stream::{ReceiverStream, RoutableEvent},
             selected_clock::SelectedClockSource,
             source_mutator::SourceMutator,
@@ -87,6 +88,7 @@ pub struct Daemon {
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     cancellation_token: CancellationToken,
     clock_state_handle: ClockStateHandle,
+    shared_selected_clock: SharedSelectedClock,
 }
 
 #[cfg(feature = "daemon")]
@@ -172,10 +174,11 @@ impl Daemon {
             clock_disruption_receiver,
             cancellation_token,
             clock_state_handle,
+            shared_selected_clock,
         }
     }
 
-    /// Run the daemon
+    /// Run the daemon.
     pub async fn run(mut self: Box<Self>) {
         self.clock_sync_algorithm.init_repro();
         // Start IO polling
@@ -191,6 +194,10 @@ impl Daemon {
             }
         });
         self.clock_state_handle.task_tracker.close();
+
+        let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
+        snapshot_interval.tick().await; // discard the immediate first tick
+
         loop {
             tokio::select! {
                 biased; // biased to ensure disruption is handled first when this happens
@@ -199,6 +206,15 @@ impl Daemon {
                 }
                 Some(routable_event) = self.receiver_stream.recv() => {
                     self.handle_event(routable_event);
+                }
+                _ = snapshot_interval.tick() => {
+                    match self.shared_selected_clock.selected_clock() {
+                        Some(selected) => log_selected_clock(
+                            Some(*selected.source_info()),
+                            Some(selected.clock_parameters()),
+                        ),
+                        None => log_selected_clock(None, None),
+                    }
                 }
                 () = self.cancellation_token.cancelled() => {
                     info!("Received shutdown signal. Starting graceful shutdown of daemon.");
@@ -252,6 +268,7 @@ impl Daemon {
             clock_disruption_receiver,
             cancellation_token: _,
             clock_state_handle,
+            shared_selected_clock: _,
         } = self;
 
         let ClockStateHandle {

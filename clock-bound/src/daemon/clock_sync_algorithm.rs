@@ -250,6 +250,7 @@ impl ClockSyncAlgorithm {
         if let Some(phc) = phc {
             phc.handle_disruption();
         }
+
         selector.handle_disruption();
         tracing::info!("Handled clock disruption event");
         tracing::info!(

@@ -21,6 +21,7 @@ use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWri
 use crate::daemon::io::ClockDisruptionEvent;
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::logging::CLOCK_METRICS_TARGET;
+use crate::daemon::logging::synchronization::log_clock_status_change;
 use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse, MonotonicRaw, RealTime};
 use crate::daemon::time::{Clock, ClockExt, Duration};
 use crate::shm::{
@@ -224,8 +225,12 @@ impl ClockState {
             let clock_status_v3 =
                 ClockState::determine_clock_error_bound_v3_status(clock_params_age_v3);
 
-            // Update shared clock status
+            // Log clock status transitions and update shared state
+            let previous_status = self.shared_clock_status.clock_status();
             self.shared_clock_status.set(clock_status_v3);
+            if clock_status_v3 != previous_status {
+                log_clock_status_change(previous_status, clock_status_v3);
+            }
 
             self.state_writer
                 .handle_clock_parameters_shm1(parameters, clock_status_v3);
@@ -281,8 +286,12 @@ impl ClockState {
             clock_params_receiver.handle_disruption();
             clock_adjuster.handle_disruption(disruption_marker);
 
-            // Update shared clock status
+            // Log clock status transition to Disrupted and update shared state
+            let previous_status = shared_clock_status.clock_status();
             shared_clock_status.set(ClockStatus::Disrupted);
+            if previous_status != ClockStatus::Disrupted {
+                log_clock_status_change(previous_status, ClockStatus::Disrupted);
+            }
 
             tracing::info!("Handled clock disruption event");
         }
