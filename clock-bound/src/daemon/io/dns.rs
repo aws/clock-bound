@@ -2,8 +2,7 @@
 #![expect(dead_code)]
 
 // IO task which holds the state of the DNS pool and performs DNS resolve actions
-
-mod resolver {} // todo
+mod resolver;
 
 // IO task which performs NTP requests to
 mod ntp_source {}
