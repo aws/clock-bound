@@ -247,8 +247,7 @@ async fn reset_clock() -> Result<(), NtpAdjTimeError> {
     let clock_adjuster = KAPIClockAdjuster;
     // Reset the kernel NTP parameters.
     let phase_correction = Duration::from_millis(0);
-    let skew = Skew::from_ppm(0.0);
-    clock_adjuster.adjust_clock(phase_correction, skew)?;
+    clock_adjuster.apply_phase_correction_smooth(phase_correction)?;
     // Ensure any ongoing slews are done
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     Ok(())

@@ -1,5 +1,5 @@
-//! A program to apply a clock phase correction and skew correction using
-//! the timekeeping utilities internal to ClockBound.
+//! A program to step `CLOCK_REALTIME` by a given phase correction using the
+//! timekeeping utilities internal to ClockBound.
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use clock_bound::daemon::{
@@ -15,10 +15,6 @@ struct Args {
     phase_correction_seconds: f64,
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "skew ends up being clamped anyways so no loss of precision in i64 -> f64"
-)]
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let phase_correction = Duration::from_seconds_f64(args.phase_correction_seconds);
@@ -27,7 +23,7 @@ fn main() -> anyhow::Result<()> {
     println!("Initial time is {initial_time:?}");
     let clock_adjuster = KAPIClockAdjuster;
     clock_adjuster
-        .step_clock(phase_correction)
+        .apply_phase_correction_step(phase_correction)
         .map_err(|e| anyhow::anyhow!(e))?;
     println!(
         "Applied {:+} second phase correction to kernel to step CLOCK_REALTIME.",
