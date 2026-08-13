@@ -5,7 +5,7 @@ use clap::Parser;
 use polars::prelude::*;
 
 #[derive(Parser, Clone, Debug)]
-/// Convert the raw primer log file to a newline delimited json
+/// Convert a primer/ffevents log file to a newline delimited json
 pub struct Cli {
     /// The logfile to transform
     #[arg(short, long)]

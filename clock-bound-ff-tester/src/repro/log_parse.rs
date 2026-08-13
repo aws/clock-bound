@@ -1,12 +1,17 @@
-//! Functions and structs related to parsing the primer logfiles
+//! Functions and structs related to parsing log files
+//!
+//! Supports two log formats:
+//! - **ffevents**: The current structured NDJSON format (ClockBound 3.x+)
+//! - **primer**: The legacy tracing-subscriber JSON format (ClockBound ≤2.x)
+//!
+//! Format is auto-detected from the structure of the first parseable line.
 
 use anyhow::Context;
 use flate2::read::MultiGzDecoder;
 
 use clock_bound::daemon::{clock_parameters::ClockParameters, receiver_stream::RoutableEvent};
 
-use super::ReproEvent;
-use super::legacy_femtoseconds;
+use super::{ReproEvent, log_format_primer};
 
 use std::{
     fs::File,
@@ -14,50 +19,13 @@ use std::{
     path::Path,
 };
 
-/// Any time field exceeding this value cannot be a valid nanosecond timestamp.
-/// Corresponds to roughly year 2535 in nanoseconds. Values above this in the first
-/// feed event indicate we are reading the legacy femtosecond format.
-const FEMTOSECOND_THRESHOLD: i128 = 17_828_542_000_000_000_000;
-
 /// The detected log format for a given log file
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogFormat {
-    /// Current format: i64 nanoseconds (previously was i128 femtoseconds)
-    Current,
-    /// Legacy format: i128 femtoseconds
-    Femtoseconds,
-}
-
-impl LogFormat {
-    /// Detect the log format from a raw event JSON string
-    ///
-    /// Scans for `server_recv_time` or `"time"` key and checks whether
-    /// its value exceeds the femtosecond threshold.
-    pub fn detect_from_event_str(event_json: &str) -> Self {
-        for key in ["server_recv_time", "\"time\""] {
-            if let Some(value) = extract_numeric_value_after_key(event_json, key) {
-                if value > FEMTOSECOND_THRESHOLD {
-                    return Self::Femtoseconds;
-                }
-                return Self::Current;
-            }
-        }
-        // Default to current format if we can't detect
-        Self::Current
-    }
-}
-
-/// Extract a numeric value that follows a given key in a JSON string
-fn extract_numeric_value_after_key(json: &str, key: &str) -> Option<i128> {
-    let idx = json.find(key)?;
-    let after_key = &json[idx + key.len()..];
-    let colon_idx = after_key.find(':')?;
-    let after_colon = after_key[colon_idx + 1..].trim_start();
-    let num_str: String = after_colon
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '-')
-        .collect();
-    num_str.parse::<i128>().ok()
+enum LogFormat {
+    /// Current ffevents.log format (ClockBound 3.x+)
+    Ffevents,
+    /// Legacy primer.log format (ClockBound ≤2.x)
+    Primer,
 }
 
 /// Magic number identifying a gzip compressed file
@@ -70,7 +38,7 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 ///
 /// # Errors
 /// - Returns an error if unable to open the file.
-/// - Returns and error if unable to read values from the logfile
+/// - Returns an error if unable to read values from the logfile
 pub fn repro_events_from_log_file(file_path: impl AsRef<Path>) -> anyhow::Result<Vec<ReproEvent>> {
     let mut reader = BufReader::new(File::open(&file_path)?);
 
@@ -86,85 +54,59 @@ pub fn repro_events_from_log_file(file_path: impl AsRef<Path>) -> anyhow::Result
     }
 }
 
-/// Convert a log file at `file_path` into a `ff-tester` scenario
+/// Convert a log file into a sequence of [`ReproEvent`] items.
 ///
-/// Returns a Scenario, and the output from every call into `ClockSyncAlgorithm::feed_amazon_time_sync`
-///
-/// Automatically detects whether the log uses the legacy femtosecond format or the
-/// current nanosecond format by inspecting the first feed event. Legacy values are
-/// converted to nanoseconds transparently.
+/// Auto-detects whether the file is in ffevents or primer format based on the
+/// structure of the first parseable JSON line.
 ///
 /// # Errors
-/// Returns errors if the logfile is corrupted
+/// Returns errors if the logfile is corrupted or contains no events.
 pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEvent>> {
     let reader = BufReader::new(input);
-
     let mut events = Vec::new();
     let mut detected_format: Option<LogFormat> = None;
+    let mut primer_femto_mode: Option<bool> = None;
 
     for (idx, line) in reader.lines().enumerate() {
         let Ok(line) = line else {
             tracing::warn!("Could not read line from log file");
             continue;
         };
-        // If pulling logs via `aws logs tail`, extra information will be prepended on each line. Strip it out
+        // If pulling logs via `aws logs tail`, extra information will be prepended on each line.
         let start_index = line
             .find('{')
-            .with_context(|| format!("Line {idx} does contain {{. {line}"))?;
+            .with_context(|| format!("Line {idx} does not contain {{. {line}"))?;
         let end_index = line
             .rfind('}')
-            .with_context(|| format!("Line {idx} does not contain }} {line}"))?;
+            .with_context(|| format!("Line {idx} does not contain }}. {line}"))?;
         if end_index < start_index {
             anyhow::bail!("Json braces out of order on line {idx}: {line}");
         }
-        let line = &line[start_index..=end_index];
-        let line: Line = match serde_json::from_str(line) {
-            Ok(line) => line,
-            Err(e) => {
-                tracing::warn!(line, "Could not parse line from log file: {e}");
-                continue;
-            }
-        };
+        let json_str = &line[start_index..=end_index];
 
-        let repro_event = match &line.fields {
-            FieldEnum::Init(_init) => ReproEvent::Init,
+        // Auto-detect format on first line
+        if detected_format.is_none() {
+            detected_format = Some(detect_format(json_str));
+        }
 
-            FieldEnum::Disruption(_disruption) => ReproEvent::Disruption,
-
-            FieldEnum::FeedEvent(fields) => {
-                // Detect the log format on the first feed event
-                if detected_format.is_none() {
-                    let raw_event = fields.event.replace("\\\"", "\"");
-                    detected_format = Some(LogFormat::detect_from_event_str(&raw_event));
-                    if detected_format == Some(LogFormat::Femtoseconds) {
-                        tracing::info!(
-                            "Detected legacy femtosecond log format, converting to nanoseconds"
-                        );
-                    }
+        #[expect(clippy::missing_panics_doc, reason = "checked above")]
+        let result = match detected_format.unwrap() {
+            LogFormat::Ffevents => parse_ffevents_line(json_str, idx),
+            LogFormat::Primer => {
+                match log_format_primer::parse_line(json_str, &mut primer_femto_mode) {
+                    Ok(Some(pair)) => Ok(pair),
+                    Ok(None) => continue,
+                    Err(e) => Err(e),
                 }
-
-                let format = detected_format.unwrap_or(LogFormat::Current);
-
-                let event = match fields.parse_event(format) {
-                    Ok(event) => event,
-                    Err(e) => {
-                        tracing::warn!(line = ?line, "Could not parse event: {e}");
-                        continue;
-                    }
-                };
-
-                let output = match fields.parse_output(format) {
-                    Ok(output) => output,
-                    Err(e) => {
-                        tracing::warn!(line = ?line, "Could not parse output: {e}");
-                        continue;
-                    }
-                };
-
-                ReproEvent::Feed { event, output }
             }
         };
-        events.push((line.timestamp, repro_event));
+
+        match result {
+            Ok((timestamp, repro_event)) => events.push((timestamp, repro_event)),
+            Err(e) => {
+                tracing::warn!("Could not parse line {idx} from log file: {e}");
+            }
+        }
     }
 
     if events.is_empty() {
@@ -173,83 +115,63 @@ pub fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<ReproEve
 
     // Sort by the timestamp
     events.sort_by(|(a_ts, _), (b_ts, _)| a_ts.cmp(b_ts));
-
     let events = events.into_iter().map(|(_, e)| e).collect();
-
     Ok(events)
 }
 
-/// Convenience struct to parse each line of the log
+/// Detect log format by examining the JSON structure.
 ///
-/// It's not exhaustive, but has the minimum number of fields
-/// to get the [`NTP event`](clock_bound::daemon::event::Ntp) and [`ClockParameters`]
+/// - If the line has a top-level `"fields"` key, it's primer format.
+/// - If the line has a top-level `"event"` key with a string value, it's ffevents.
+fn detect_format(json_str: &str) -> LogFormat {
+    // Quick heuristic: primer format always has "fields" as a top-level key
+    if json_str.contains("\"fields\"") {
+        LogFormat::Primer
+    } else {
+        LogFormat::Ffevents
+    }
+}
+
+// --- ffevents format parsing ---
+
+/// Parse a single ffevents-format JSON line
+fn parse_ffevents_line(json_str: &str, idx: usize) -> anyhow::Result<(String, ReproEvent)> {
+    let parsed: FfeventsLine = serde_json::from_str(json_str)
+        .with_context(|| format!("Line {idx}: failed to parse as ffevents format"))?;
+
+    let repro_event = match parsed.event.as_str() {
+        "init" => ReproEvent::Init,
+        "disruption" => ReproEvent::Disruption,
+        "feed" => {
+            let feed = parsed.feed.ok_or_else(|| {
+                anyhow::anyhow!("Line {idx}: event is 'feed' but no 'feed' payload found")
+            })?;
+            ReproEvent::Feed {
+                event: feed.input,
+                output: feed.output,
+            }
+        }
+        other => anyhow::bail!("Line {idx}: unknown event type: {other}"),
+    };
+
+    Ok((parsed.timestamp, repro_event))
+}
+
+/// ffevents.log line structure
 #[derive(Debug, Clone, serde::Deserialize)]
-struct Line {
-    /// The timestamp when the log was written
-    ///
-    /// Need this value because a misconfigured cloudwatch can store logs in the incorrect order.
-    /// And we can use this to sort the logs in this case.
-    ///
-    /// Using a string since it's in ISO 8601 format (YYYY-MM-DD HH:MM) which sorts alphabetically
+struct FfeventsLine {
     timestamp: String,
-    /// The actual fields of the log
-    fields: FieldEnum,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(untagged)] // load bearing untagged
-enum FieldEnum {
-    FeedEvent(Fields),
-    Init(Init),
-    Disruption(Disruption),
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[expect(unused, reason = "key used for deserialization")]
-struct Init {
-    init: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[expect(unused, reason = "key used for deserialization")]
-struct Disruption {
-    disruption: String,
-}
-
-/// Workaround for tracing escapes
-///
-/// Holds strings to make it easy to grab the inner keys. But since these values cannot be parsed directly from json,
-/// implement methods to parse each event.
-///
-/// tracing currently escapes double quote characters in json when logging. So we need to convert all `\"` into '"'
-#[derive(Debug, Clone, serde::Deserialize)]
-struct Fields {
+    #[allow(dead_code)]
+    version: Option<String>,
     event: String,
-    output: String,
+    #[serde(default)]
+    feed: Option<FeedPayload>,
 }
 
-impl Fields {
-    fn parse_event(&self, format: LogFormat) -> anyhow::Result<RoutableEvent> {
-        let unescaped = self.event.replace("\\\"", "\"");
-        match format {
-            LogFormat::Femtoseconds => legacy_femtoseconds::parse_legacy_event(unescaped),
-            LogFormat::Current => {
-                let retval: RoutableEvent = serde_json::from_str(&unescaped)?;
-                Ok(retval)
-            }
-        }
-    }
-
-    fn parse_output(&self, format: LogFormat) -> anyhow::Result<Option<ClockParameters>> {
-        let unescaped = self.output.replace("\\\"", "\"");
-        match format {
-            LogFormat::Femtoseconds => legacy_femtoseconds::parse_legacy_output(unescaped),
-            LogFormat::Current => {
-                let retval: Option<ClockParameters> = serde_json::from_str(&unescaped)?;
-                Ok(retval)
-            }
-        }
-    }
+#[derive(Debug, Clone, serde::Deserialize)]
+struct FeedPayload {
+    input: RoutableEvent,
+    output: Option<ClockParameters>,
 }
 
 #[cfg(test)]
@@ -259,37 +181,136 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detect_current_format() {
-        let event_str = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
-        assert_eq!(
-            LogFormat::detect_from_event_str(event_str),
-            LogFormat::Current
-        );
+    fn parse_ffevents_log() {
+        let log = include_str!("test_ffevents.log");
+        let events = repro_events_from_reader(log.as_bytes()).unwrap();
+
+        // 1 init + 5 feeds + 1 disruption + 1 feed = 8 lines total
+        assert_eq!(events.len(), 8);
+
+        // First event is init
+        assert!(matches!(events[0], ReproEvent::Init));
+
+        // Count feed events with output (clock parameters)
+        let param_count = events
+            .iter()
+            .filter_map(|event| {
+                let ReproEvent::Feed { output, .. } = event else {
+                    return None;
+                };
+                output.as_ref()
+            })
+            .count();
+        assert_eq!(param_count, 2);
+
+        // Verify disruption is present
+        let disruption_count = events
+            .iter()
+            .filter(|e| matches!(e, ReproEvent::Disruption))
+            .count();
+        assert_eq!(disruption_count, 1);
     }
 
     #[test]
-    fn detect_femtosecond_format() {
-        let event_str = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039000000,"server_send_time":1762449800677146186000000,"root_delay":30517578125,"root_dispersion":15258789063,"stratum":1}}}"#;
-        assert_eq!(
-            LogFormat::detect_from_event_str(event_str),
-            LogFormat::Femtoseconds
-        );
+    fn parse_ffevents_log_events_sorted_by_timestamp() {
+        let log = include_str!("test_ffevents.log");
+        let events = repro_events_from_reader(log.as_bytes()).unwrap();
+
+        // Extract feed events and verify they're sorted by counter_pre
+        let feed_events: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                let ReproEvent::Feed { event, .. } = e else {
+                    return None;
+                };
+                Some(event)
+            })
+            .collect();
+
+        let is_sorted = feed_events.is_sorted_by_key(|e| e.counter_pre());
+        assert!(is_sorted);
     }
 
     #[test]
-    fn detect_phc_femtosecond_format() {
-        let event_str = r#"{"Phc":{"counter_pre":302084682318463,"counter_post":302084682325383,"data":{"time":1766995198825456232000000,"clock_error_bound":23239000000}}}"#;
-        assert_eq!(
-            LogFormat::detect_from_event_str(event_str),
-            LogFormat::Femtoseconds
-        );
+    fn parse_ffevents_log_with_cloudwatch_prefix() {
+        let log = r#"2026-07-16T14:33:49.000000+00:00 i-abc123 {"timestamp":"2026-07-16T14:33:49.654418Z","version":"3.0.0-alpha.2","event":"feed","feed":{"input":{"type":"ntp","identifier":"169.254.169.123:123","counter_pre":482393264419,"counter_post":482393405301,"data":{"server_recv_time_ns":1784212429654307727,"server_send_time_ns":1784212429654319674,"root_delay_ns":30517578125000,"root_dispersion_ns":15258789063000,"stratum":1}},"output":null}}
+2026-07-16T14:33:51.000000+00:00 i-abc123 {"timestamp":"2026-07-16T14:33:51.654418Z","version":"3.0.0-alpha.2","event":"feed","feed":{"input":{"type":"phc","identifier":"/dev/ptp0","counter_pre":482398526053,"counter_post":482398528552,"data":{"time_ns":1784212431654498913,"clock_error_bound_ns":21119}},"output":null}}
+"#;
+        let events = repro_events_from_reader(log.as_bytes()).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], ReproEvent::Feed { .. }));
+        assert!(matches!(events[1], ReproEvent::Feed { .. }));
     }
 
     #[test]
-    fn current_format_event_parses_directly() {
-        let input = r#"{"LinkLocal":{"counter_pre":635623413319024,"counter_post":635623413864816,"data":{"server_recv_time":1762449800677131039,"server_send_time":1762449800677146186,"root_delay":30517,"root_dispersion":15258,"stratum":1}}}"#;
-        assert_eq!(LogFormat::detect_from_event_str(input), LogFormat::Current);
-        let _event: RoutableEvent = serde_json::from_str(input).unwrap();
+    fn parse_primer_format_nanos() {
+        let log = include_str!("test_11_06_2025_nanos.log");
+        let events = repro_events_from_reader(log.as_bytes()).unwrap();
+
+        // 3 of the 13 events are the first input for each source (no output yet).
+        // The remaining 10 produce clock parameters.
+        let param_count = events
+            .iter()
+            .filter_map(|event| {
+                let ReproEvent::Feed { output, .. } = event else {
+                    return None;
+                };
+                output.as_ref()
+            })
+            .count();
+        assert_eq!(param_count, 10);
+    }
+
+    #[test]
+    fn parse_primer_format_femtoseconds() {
+        let log = include_str!("test_11_06_2025.log");
+        let events = repro_events_from_reader(log.as_bytes()).unwrap();
+
+        // Same fixture as nanos but with femtosecond values — should produce identical results
+        let param_count = events
+            .iter()
+            .filter_map(|event| {
+                let ReproEvent::Feed { output, .. } = event else {
+                    return None;
+                };
+                output.as_ref()
+            })
+            .count();
+        assert_eq!(param_count, 10);
+    }
+
+    #[test]
+    fn parse_primer_cloudwatch_logs() {
+        let log = include_str!("cw_tail_12_29_2026.log");
+        let events = repro_events_from_reader(log.as_bytes()).unwrap();
+
+        let feed_events: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                let ReproEvent::Feed { event, .. } = e else {
+                    return None;
+                };
+                Some(event)
+            })
+            .collect();
+
+        assert_eq!(feed_events.len(), 13);
+
+        // verify sorted by counter_pre
+        let is_sorted = feed_events.is_sorted_by_key(|e| e.counter_pre());
+        assert!(is_sorted);
+    }
+
+    #[test]
+    fn detect_format_ffevents() {
+        let line = r#"{"timestamp":"2026-07-16T14:30:00Z","version":"3.0.0","event":"init","init":{"message":"test"}}"#;
+        assert_eq!(detect_format(line), LogFormat::Ffevents);
+    }
+
+    #[test]
+    fn detect_format_primer() {
+        let line = r#"{"timestamp":"2025-11-06T17:23:20Z","level":"INFO","fields":{"message":"feed","event":"{}","output":"null"},"target":"clock_bound::primer"}"#;
+        assert_eq!(detect_format(line), LogFormat::Primer);
     }
 
     #[test]
@@ -331,55 +352,5 @@ mod tests {
         let events = repro_events_from_log_file(tmp.path()).unwrap();
         assert!(!events.is_empty());
         assert_eq!(format!("{events:?}"), format!("{expected:?}"));
-    }
-
-    #[test]
-    fn scenario_from_logs() {
-        let example_log = include_str!("test_11_06_2025.log");
-
-        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
-
-        let param_count = events
-            .iter()
-            .filter_map(|event| {
-                let ReproEvent::Feed {
-                    event: _event,
-                    output: params,
-                } = event
-                else {
-                    return None;
-                };
-                params.as_ref()
-            })
-            .count();
-        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
-    }
-
-    #[test]
-    fn scenario_from_cloudwatch_logs() {
-        // this log also has an out of order log event
-        let log = include_str!("cw_tail_12_29_2026.log");
-
-        let events = repro_events_from_reader(log.as_bytes()).unwrap();
-
-        let events: Vec<_> = events
-            .iter()
-            .filter_map(|event| {
-                let ReproEvent::Feed {
-                    event,
-                    output: _params,
-                } = event
-                else {
-                    return None;
-                };
-                Some(event)
-            })
-            .collect();
-
-        assert_eq!(events.len(), 13);
-
-        // verify that it's deserialized and sorted
-        let is_sorted = events.is_sorted_by_key(|e| e.counter_pre());
-        assert!(is_sorted);
     }
 }

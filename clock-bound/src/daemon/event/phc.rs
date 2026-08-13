@@ -175,8 +175,10 @@ impl TscRtt for Phc {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PhcData {
     /// Reference clock time
+    #[serde(rename = "time_ns")]
     pub time: Instant,
     /// Clock error bound of this measurement
+    #[serde(rename = "clock_error_bound_ns")]
     pub clock_error_bound: Duration,
 }
 

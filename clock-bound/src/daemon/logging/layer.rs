@@ -50,7 +50,10 @@ impl StructuredLogLayer {
         target_prefix: &'static str,
         version: &'static str,
     ) -> Self {
-        let path = log_directory.as_ref().join(filename);
+        let dir = log_directory.as_ref();
+        std::fs::create_dir_all(dir)
+            .unwrap_or_else(|e| panic!("Failed to create log directory {}: {}", dir.display(), e));
+        let path = dir.join(filename);
         let file = OpenOptions::new()
             .create(true)
             .append(true)

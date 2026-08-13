@@ -14,17 +14,18 @@ use tracing_subscriber::{
 
 use super::layer::StructuredLogLayer;
 use super::synchronization;
-use super::{CLOCK_METRICS_TARGET, PRIMER_TARGET, is_structured_target};
+use super::{CLOCK_METRICS_TARGET, ffevents, is_structured_target};
 
 /// Initialize the tracing subscriber
 pub fn init(log_directory: impl AsRef<Path>) {
     let cargo_version = env!("CARGO_PKG_VERSION");
 
-    let primer_writer = tracing_appender::rolling::hourly(&log_directory, "primer.log");
-    let primer_layer = tracing_subscriber::fmt::layer()
-        .json()
-        .with_writer(primer_writer)
-        .with_filter(filter_fn(|md| md.target().starts_with(PRIMER_TARGET)));
+    let ffevents_layer = StructuredLogLayer::new(
+        &log_directory,
+        ffevents::FILE_NAME,
+        ffevents::TARGET,
+        cargo_version,
+    );
 
     let clock_metrics_writer =
         tracing_appender::rolling::hourly(&log_directory, "clock_metrics.log");
@@ -57,8 +58,8 @@ pub fn init(log_directory: impl AsRef<Path>) {
     tracing_subscriber::registry()
         // this is the default logging layer
         .with(log_layer)
-        // and this is the primer reproducibility layer
-        .with(primer_layer)
+        // and this is the ffevents structured log layer
+        .with(ffevents_layer)
         // and this is the clock metrics layer
         .with(clock_metrics_layer)
         // and this is the synchronization log layer
@@ -66,5 +67,6 @@ pub fn init(log_directory: impl AsRef<Path>) {
         .init();
 
     tracing::info!("Initialized tracing subscriber");
-    tracing::info!(primer_log_file = %log_directory.as_ref().display(), "Initialized log directory");
+    // TODO: rework/remove this log line.
+    tracing::info!(ffevents_log_file = %log_directory.as_ref().display(), "Initialized log directory");
 }

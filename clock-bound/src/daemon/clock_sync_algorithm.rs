@@ -12,8 +12,8 @@ use std::{net::SocketAddr, sync::Arc};
 pub use ring_buffer::RingBuffer;
 
 use crate::daemon::{
-    clock_parameters::ClockParameters, event, logging::PRIMER_TARGET,
-    receiver_stream::RoutableEvent, selected_clock::SelectedClockSource,
+    clock_parameters::ClockParameters, event, logging, receiver_stream::RoutableEvent,
+    selected_clock::SelectedClockSource,
 };
 
 pub mod source;
@@ -87,11 +87,7 @@ impl ClockSyncAlgorithm {
     ///
     /// Can be used to break-up application restarts when scanning logs
     pub fn init_repro(&self) {
-        tracing::info!(
-            target: PRIMER_TARGET,
-            init = "CSA initialized",
-            "Clock Sync Alg started"
-        );
+        logging::ffevents::log_init();
     }
 
     /// Feed the clock sync algorithm with a time synchronization event
@@ -162,16 +158,13 @@ impl ClockSyncAlgorithm {
     }
 
     // wrapper around feed_inner that emits reproducibility
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "serializing event before logging is unergonomic"
+    )]
     fn feed_repro(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
-        let serialized = serde_json::to_string(&routable_event).unwrap();
-        let output = self.feed_inner(routable_event);
-        tracing::info!(
-            target: PRIMER_TARGET,
-            event = serialized,
-            output = serde_json::to_string(&output).unwrap(),
-            "feed"
-        );
-
+        let output = self.feed_inner(routable_event.clone());
+        logging::ffevents::log_feed(&routable_event, output);
         output
     }
 
@@ -253,11 +246,7 @@ impl ClockSyncAlgorithm {
 
         selector.handle_disruption();
         tracing::info!("Handled clock disruption event");
-        tracing::info!(
-            target: PRIMER_TARGET,
-            disruption = "Disruption occurred",
-            "handled disruption"
-        );
+        logging::ffevents::log_disruption();
     }
 }
 

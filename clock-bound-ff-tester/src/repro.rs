@@ -1,6 +1,6 @@
 //! Reproduction utilities
 
-mod legacy_femtoseconds;
+mod log_format_primer;
 mod log_parse;
 pub use log_parse::{repro_events_from_log_file, repro_events_from_reader};
 
@@ -392,55 +392,10 @@ mod tests {
     }
 
     #[test]
-    fn scenario_from_logs() {
-        let example_log = include_str!("repro/test_11_06_2025.log");
-
-        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
-
-        let param_count = events
-            .iter()
-            .filter_map(|event| {
-                let ReproEvent::Feed {
-                    event: _event,
-                    output: params,
-                } = event
-                else {
-                    return None;
-                };
-                params.as_ref()
-            })
-            .count();
-        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
-    }
-
-    #[test]
-    fn scenario_from_nanos_logs() {
-        let example_log = include_str!("repro/test_11_06_2025_nanos.log");
-
-        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
-
-        let param_count = events
-            .iter()
-            .filter_map(|event| {
-                let ReproEvent::Feed {
-                    event: _event,
-                    output: params,
-                } = event
-                else {
-                    return None;
-                };
-                params.as_ref()
-            })
-            .count();
-        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
-    }
-
-    #[test]
     #[cfg(feature = "polars")]
     fn to_dataframe_does_not_panic() {
-        let example_log = include_str!("repro/test_11_06_2025.log");
-
-        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
+        let log = include_str!("repro/test_ffevents.log");
+        let events = repro_events_from_reader(log.as_bytes()).unwrap();
         let _df = ReproEvent::into_dataframe(events);
     }
 }

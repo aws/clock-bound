@@ -10,7 +10,7 @@ use crate::{
 use clock_bound::daemon::{
     SharedSelectedClock,
     clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
-    logging::PRIMER_TARGET,
+    logging::ffevents,
     selected_clock::SelectedClockSource,
 };
 use tracing::Level;
@@ -22,7 +22,7 @@ pub fn main() {
             EnvFilter::builder()
                 .with_default_directive(Level::INFO.into())
                 .from_env_lossy()
-                .add_directive(format!("{PRIMER_TARGET}=error").parse().unwrap()), // ignore primer
+                .add_directive(format!("{}=error", ffevents::TARGET).parse().unwrap()), // ignore ffevents
         )
         .init();
 

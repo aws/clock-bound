@@ -210,13 +210,17 @@ impl TscRtt for Ntp {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NtpData {
     /// NTP Server recv time
+    #[serde(rename = "server_recv_time_ns")]
     pub server_recv_time: Instant,
     /// NTP Server send time
+    #[serde(rename = "server_send_time_ns")]
     pub server_send_time: Instant,
 
     /// Root Delay of NTP packet
+    #[serde(rename = "root_delay_ns")]
     pub root_delay: Duration,
     /// Root Dispersion of NTP packet
+    #[serde(rename = "root_dispersion_ns")]
     pub root_dispersion: Duration,
 
     /// NTP Stratum. Used in reporting, not used in ff-sync

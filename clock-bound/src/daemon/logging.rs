@@ -6,6 +6,7 @@
 //! - Shared serialization types used across log modules
 //! - Typed log entry modules (e.g., [`synchronization`]) for each log group
 //! - The tracing [`subscriber`] setup that wires everything together
+//! - The [`ffevents`] module for typed feed-forward event emission
 
 use std::net::SocketAddr;
 
@@ -16,12 +17,12 @@ use crate::daemon::clock_sync_algorithm::SourceInfo;
 use crate::daemon::time::{Duration, Instant};
 use crate::shm::ClockStatus;
 
+pub mod ffevents;
 pub mod layer;
 pub mod subscriber;
 pub mod synchronization;
 
-/// Tracing target for the primer reproducibility log.
-pub const PRIMER_TARGET: &str = "clock_bound::primer";
+pub use layer::StructuredLogLayer;
 
 /// Tracing target for the clock metrics log.
 pub const CLOCK_METRICS_TARGET: &str = "clock_bound::clock_metrics";
@@ -34,7 +35,7 @@ pub const ALGO_ANALYSIS_TARGET: &str = "clock_bound::algo_analysis";
 /// dedicated log files. When defining a new structured target, add it here so
 /// every human-readable output automatically keeps it off.
 pub const STRUCTURED_TARGETS: &[&str] =
-    &[PRIMER_TARGET, CLOCK_METRICS_TARGET, ALGO_ANALYSIS_TARGET];
+    &[ffevents::TARGET, CLOCK_METRICS_TARGET, ALGO_ANALYSIS_TARGET];
 
 /// Returns true if a tracing target belongs to one of the structured log streams
 /// listed in [`STRUCTURED_TARGETS`].
