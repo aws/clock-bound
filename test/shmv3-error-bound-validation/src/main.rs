@@ -49,10 +49,10 @@ struct Args {
     #[clap(long, default_value = "bound_check_results.json")]
     output_path: String,
 
-    /// Interval between samples in microseconds. Controls the sampling rate
+    /// Interval between samples in milliseconds. Controls the sampling rate
     /// to prevent excessive memory usage during long test runs.
-    #[clap(long, default_value_t = 500)]
-    sample_interval_micros: u64,
+    #[clap(long, default_value_t = 250)]
+    sample_interval_ms: u64,
 }
 
 /// Output of the measurement loop.
@@ -152,7 +152,7 @@ fn main() {
     println!("=== ClockBound SHM Error Bound Validation ===");
     println!("Sampling loop duration: {}s", args.sampling_loop_duration);
     println!("Warmup period: {}s", args.warmup_secs);
-    println!("Sample interval: {}μs", args.sample_interval_micros);
+    println!("Sample interval: {}ms", args.sample_interval_ms);
     println!("SHM path: {}", args.shm_path);
     println!();
 
@@ -168,7 +168,7 @@ fn main() {
     thread::sleep(Duration::from_secs(args.warmup_secs));
 
     let sampling_duration = Duration::from_secs(args.sampling_loop_duration);
-    let sample_interval = Duration::from_micros(args.sample_interval_micros);
+    let sample_interval = Duration::from_millis(args.sample_interval_ms);
     let collection = collect_samples(&mut client, sampling_duration, sample_interval);
 
     let report = validate(&collection.samples, collection.shm_errors);

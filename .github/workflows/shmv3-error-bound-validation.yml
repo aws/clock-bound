@@ -81,20 +81,21 @@ jobs:
       - name: Verify chrony
         run: |
           TRACKING=$(chronyc tracking 2>&1 || true)
-          if echo "$TRACKING" | grep -q '169\.254\.169\.123'; then
-            echo "chrony is running with 169.254.169.123 as reference"
+          if echo "$TRACKING" | grep -q 'PHC0'; then
+            echo "chrony is running with the PHC as a reference"
           else
-            echo "chrony not running (or is not tracking link local), restarting..."
-            sudo sed -i '1i server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4\n' /etc/chrony.conf
+            echo "chrony not running (or is not syncing to the PHC), adding PHC reflock to chrony config and restarting..."
+            sudo sed -i '1i refclock PHC /dev/ptp_ena poll 0 delay 0.000010 prefer' /etc/chrony.conf
             sudo service chronyd restart
-            # 20s gives at least one full poll cycle (minpoll 4 = 16s interval).
-            # The test warmup period provides additional convergence time.
-            sleep 20
+            # With poll 0 (1s interval), chrony gets one sample each second.
+            # Sleep 10s to allow convergence before verifying.
+            # The test warmup period (--warmup-secs) provides additional convergence time.
+            sleep 10
             TRACKING=$(chronyc tracking 2>&1)
-            if echo "$TRACKING" | grep -q '169\.254\.169\.123'; then
-              echo "chrony is now tracking 169.254.169.123"
+            if echo "$TRACKING" | grep -q 'PHC0'; then
+              echo "chrony is now tracking the PHC"
             else
-              echo "ERROR: chrony did not select 169.254.169.123 after restart"
+              echo "ERROR: chrony did not select the PHC after restart"
               echo "$TRACKING"
               exit 1
             fi
@@ -111,7 +112,7 @@ jobs:
           ./shmv3-error-bound-validation \
             --sampling-loop-duration "$SAMPLING_LOOP_DURATION" \
             --warmup-secs 10 \
-            --sample-interval-micros 500 \
+            --sample-interval-ms 250 \
             --output-path shmv3_error_bound_validation_results.json
 
       - name: Upload test results
