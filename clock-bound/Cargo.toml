@@ -97,7 +97,9 @@ algorithm = [
   "dep:thiserror",
   "dep:tracing-appender",
   "tracing-subscriber/env-filter",
-] # clock sync algorithm only, no daemon I/O or clock adjustment
+] # clock sync algorithm for replay and analysis tooling (e.g. ff-tester): compiles
+# the algorithm without daemon I/O or clock adjustment, and enables emission of
+# internal algorithm calculations (algo_analysis module) for analysis
 test-side-by-side = [
 ] # run without changing system clock. And compare against system clock
 time-string-parse = ["dep:nom"]

@@ -1,5 +1,8 @@
 //! Clock Synchronization Daemon
 
+#[cfg(feature = "algorithm")]
+pub mod algo_analysis;
+
 pub mod clock_parameters;
 
 pub mod clock_sync_algorithm;

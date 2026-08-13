@@ -14,7 +14,7 @@ use tracing_subscriber::{
 
 use super::layer::StructuredLogLayer;
 use super::synchronization;
-use super::{CLOCK_METRICS_TARGET, PRIMER_TARGET};
+use super::{CLOCK_METRICS_TARGET, PRIMER_TARGET, is_structured_target};
 
 /// Initialize the tracing subscriber
 pub fn init(log_directory: impl AsRef<Path>) {
@@ -42,6 +42,9 @@ pub fn init(log_directory: impl AsRef<Path>) {
         cargo_version,
     );
 
+    // Logging layer for regular log events (progress, warnings) being pushed to stdout.
+    // Verbose messages to export ffevents, synchronization and source events are filtered out.
+    // Defaults to INFO.
     let log_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout) // this is the default, just making it explicit
         .with_filter(
@@ -49,13 +52,7 @@ pub fn init(log_directory: impl AsRef<Path>) {
                 .with_default_directive(Level::INFO.into())
                 .from_env_lossy(),
         )
-        .with_filter(filter_fn(|md| !md.target().starts_with(PRIMER_TARGET)))
-        .with_filter(filter_fn(|md| {
-            !md.target().starts_with(CLOCK_METRICS_TARGET)
-        }))
-        .with_filter(filter_fn(|md| {
-            !md.target().starts_with(synchronization::TARGET)
-        }));
+        .with_filter(filter_fn(|md| !is_structured_target(md.target())));
 
     tracing_subscriber::registry()
         // this is the default logging layer

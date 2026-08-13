@@ -153,6 +153,20 @@ impl Phc {
         // uses `tsc_midpoint` as that is the value that was used during the `Self::calculate_theta` fn
         let time = uncorrected_clock.time_at(tsc_midpoint) - theta;
 
+        // Emit internal calculations for after-the-fact analysis (replay only,
+        // no-op in daemon builds; see the algo_analysis module)
+
+        #[cfg(feature = "algorithm")]
+        crate::daemon::algo_analysis::emit_theta_calculation(
+            "phc",
+            theta,
+            clock_error_bound,
+            uncorrected_clock,
+            &local_period,
+            tsc_midpoint,
+            time,
+        );
+
         let clock_parameters = ClockParameters {
             tsc_count: tsc_midpoint,
             time,

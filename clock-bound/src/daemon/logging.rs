@@ -26,6 +26,25 @@ pub const PRIMER_TARGET: &str = "clock_bound::primer";
 /// Tracing target for the clock metrics log.
 pub const CLOCK_METRICS_TARGET: &str = "clock_bound::clock_metrics";
 
+/// Tracing target for the algorithm analysis log (see
+/// [`crate::daemon::algo_analysis`]). Only emitted with the `algorithm` feature.
+pub const ALGO_ANALYSIS_TARGET: &str = "clock_bound::algo_analysis";
+
+/// All tracing targets that carry high-frequency structured records meant for
+/// dedicated log files. When defining a new structured target, add it here so
+/// every human-readable output automatically keeps it off.
+pub const STRUCTURED_TARGETS: &[&str] =
+    &[PRIMER_TARGET, CLOCK_METRICS_TARGET, ALGO_ANALYSIS_TARGET];
+
+/// Returns true if a tracing target belongs to one of the structured log streams
+/// listed in [`STRUCTURED_TARGETS`].
+///
+/// Use this to filter structured records out of human-readable layers, e.g.:
+/// `filter_fn(|md| !is_structured_target(md.target()))`
+pub fn is_structured_target(target: &str) -> bool {
+    STRUCTURED_TARGETS.iter().any(|t| target.starts_with(t))
+}
+
 /// Log-specific representation of a clock source for serialization.
 ///
 /// Strips stratum information from [`SourceInfo`], keeping only the source

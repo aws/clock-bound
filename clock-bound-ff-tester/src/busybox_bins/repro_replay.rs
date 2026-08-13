@@ -5,21 +5,19 @@
 use std::{path::PathBuf, sync::Arc};
 
 use crate::{
+    logging,
     repro::{self, ReproEvent},
     time::Skew,
 };
 use clap::Parser;
 use clock_bound::daemon::{
-    self, SharedSelectedClock,
+    SharedSelectedClock,
     clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
     selected_clock::SelectedClockSource,
 };
 
 #[derive(Parser, Clone, Debug)]
 /// Replay a scenario from a logfile back into the `ClockSyncAlgorithm`
-///
-/// Outputs the results from this run into `--output-dir` with the same
-/// format as the input
 pub struct Cli {
     /// The logfile to replay
     #[arg(short, long)]
@@ -40,10 +38,11 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
         .selector(Selector::new(max_dispersion, SharedSelectedClock::new()))
         .build();
 
-    let repro_events = repro::repro_events_from_log_file(&args.logfile)?;
+    // Needed to output updated clock estimates and internal algorithm calculations to their
+    // respective log files.
+    logging::init_for_synchronization_replay(args.output_dir);
 
-    // needed to output new clock parameters
-    daemon::logging::subscriber::init(args.output_dir);
+    let repro_events = repro::repro_events_from_log_file(&args.logfile)?;
 
     for event in repro_events {
         match event {

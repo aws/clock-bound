@@ -1,9 +1,9 @@
 //! Feed Forward Time sync algorithm tester
 
 pub mod events;
+pub mod logging;
 pub mod repro;
 pub mod simulation;
-
 pub mod time;
 
 pub mod sim_amazon_time_sync;
