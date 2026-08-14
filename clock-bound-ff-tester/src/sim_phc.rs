@@ -45,13 +45,17 @@ impl TestPhc {
             .events
             .iter()
             .map(tester_phc_event_to_cb)
-            .map(|e| self.algorithm.feed(e.clone()).cloned())
+            .map(|e| {
+                self.algorithm
+                    .feed(e.clone())
+                    .map(|sp| sp.clock_parameters.clone())
+            })
             .collect()
     }
 
     pub fn feed_phc(&mut self, event: &Event) -> Option<&ClockParameters> {
         let phc = tester_phc_event_to_cb(event);
-        self.algorithm.feed(phc)
+        self.algorithm.feed(phc).map(|sp| &sp.clock_parameters)
     }
 }
 
@@ -112,7 +116,6 @@ mod tests {
     use std::sync::Arc;
 
     use clock_bound::daemon::{
-        SharedSelectedClock,
         clock_sync_algorithm::{
             Selector,
             source::{self, AmazonTimeSync},
@@ -132,7 +135,7 @@ mod tests {
                 .ntp_sources(vec![])
                 .phc(source::Phc::new("path".into(), skew))
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(skew, SharedSelectedClock::new()))
+                .selector(Selector::new(skew))
                 .build(),
         );
 
@@ -149,7 +152,7 @@ mod tests {
                 .ntp_sources(vec![])
                 .phc(source::Phc::new("path".into(), skew))
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(skew, SharedSelectedClock::new()))
+                .selector(Selector::new(skew))
                 .build(),
         );
         let scenario = perfect_symmetric(TrueDuration::from_secs(1024));

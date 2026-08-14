@@ -1,7 +1,7 @@
 //! Feed forward clock sync algorithm
 
 mod selector;
-pub use selector::{Selector, SourceInfo};
+pub use selector::{Selector, SourceInfo, SyncParameters};
 
 pub mod ff;
 
@@ -91,7 +91,7 @@ impl ClockSyncAlgorithm {
     }
 
     /// Feed the clock sync algorithm with a time synchronization event
-    pub fn feed(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
+    pub fn feed(&mut self, routable_event: RoutableEvent) -> Option<&SyncParameters> {
         #[cfg(not(test))]
         {
             use crate::daemon::event::TscRtt;
@@ -102,7 +102,8 @@ impl ClockSyncAlgorithm {
             let system_tsc = system_clock.tsc;
             let tsc_rtt = routable_event.rtt();
             let retval = self.feed_repro(routable_event);
-            if let Some(new_params) = &retval {
+            if let Some(new_source_params) = &retval {
+                let new_params = &new_source_params.clock_parameters;
                 let system_clock_tsc_age = system_tsc - new_params.tsc_count;
                 let system_clock_age = system_clock_tsc_age * new_params.period;
 
@@ -125,13 +126,13 @@ impl ClockSyncAlgorithm {
         }
     }
 
-    /// Get the current best clock parameters
-    pub fn clock_parameters(&self) -> Option<&ClockParameters> {
-        self.selector.current().map(|o| &o.clock_parameters)
+    /// Get the current best source params (clock parameters + source info)
+    pub fn current_source_params(&self) -> Option<&SyncParameters> {
+        self.selector.current()
     }
 
     /// Convenience function to allow for easy instrumenting
-    fn feed_inner(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
+    fn feed_inner(&mut self, routable_event: RoutableEvent) -> Option<&SyncParameters> {
         // First route the event to the correct inner source
         let alg_output = match routable_event {
             RoutableEvent::AmazonTimeSync(event) => {
@@ -162,9 +163,9 @@ impl ClockSyncAlgorithm {
         clippy::needless_pass_by_value,
         reason = "serializing event before logging is unergonomic"
     )]
-    fn feed_repro(&mut self, routable_event: RoutableEvent) -> Option<&ClockParameters> {
+    fn feed_repro(&mut self, routable_event: RoutableEvent) -> Option<&SyncParameters> {
         let output = self.feed_inner(routable_event.clone());
-        logging::ffevents::log_feed(&routable_event, output);
+        logging::ffevents::log_feed(&routable_event, output.map(|sp| &sp.clock_parameters));
         output
     }
 
@@ -258,7 +259,6 @@ mod tests {
     use rstest::rstest;
 
     use crate::daemon::{
-        SharedSelectedClock,
         event::Stratum,
         selected_clock::ClockSource,
         time::{Duration, Instant, TscCount, tsc::Skew},
@@ -290,17 +290,15 @@ mod tests {
             .amazon_time_sync(source::AmazonTimeSync::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
-            .selector(Selector::new(
-                Skew::from_ppm(15.0),
-                SharedSelectedClock::new(),
-            ))
+            .selector(Selector::new(Skew::from_ppm(15.0)))
             .build();
 
         let clock_parameters = csa.feed(event.clone());
         assert!(clock_parameters.is_none());
 
         let serialized_event = serde_json::to_string(&event).unwrap();
-        let serialized_output = serde_json::to_string(&clock_parameters).unwrap();
+        let serialized_output =
+            serde_json::to_string(&clock_parameters.map(|sp| &sp.clock_parameters)).unwrap();
 
         // tracing escapes quotes
         let serialized_event = serialized_event.replace("\"", r#"\""#);

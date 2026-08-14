@@ -8,13 +8,10 @@
 //! - The tracing [`subscriber`] setup that wires everything together
 //! - The [`ffevents`] module for typed feed-forward event emission
 
-use std::net::SocketAddr;
-
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 
 use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_sync_algorithm::SourceInfo;
-use crate::daemon::time::{Duration, Instant};
 use crate::shm::ClockStatus;
 
 pub mod ffevents;
@@ -72,39 +69,6 @@ pub fn is_structured_target(target: &str) -> bool {
     STRUCTURED_TARGETS.iter().any(|t| target.starts_with(t))
 }
 
-/// Log-specific representation of a clock source for serialization.
-///
-/// Strips stratum information from [`SourceInfo`], keeping only the source
-/// identity needed for log output.
-pub(crate) enum SourceName {
-    None,
-    AmazonTimeSync,
-    Ntp(SocketAddr),
-    Phc,
-}
-
-impl From<Option<SourceInfo>> for SourceName {
-    fn from(source: Option<SourceInfo>) -> Self {
-        match source {
-            Option::None => Self::None,
-            Some(SourceInfo::AmazonTimeSync(_, _)) => Self::AmazonTimeSync,
-            Some(SourceInfo::NtpSource(addr, _)) => Self::Ntp(addr),
-            Some(SourceInfo::Phc) => Self::Phc,
-        }
-    }
-}
-
-impl Serialize for SourceName {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::None => serializer.serialize_str("null"),
-            Self::AmazonTimeSync => serializer.serialize_str("AmazonTimeSync"),
-            Self::Ntp(addr) => serializer.serialize_str(&format!("NTP ({addr})")),
-            Self::Phc => serializer.serialize_str("PHC"),
-        }
-    }
-}
-
 /// Log-specific representation of clock status for serialization.
 ///
 /// Avoids deriving `Serialize` on the actual [`ClockStatus`] enum.
@@ -128,30 +92,48 @@ impl From<ClockStatus> for ClockStatusName {
     }
 }
 
-/// Clock parameters subset for log entries: timestamp and clock error bound.
-pub(crate) struct ClockInfo {
-    pub timestamp: Instant,
-    pub clock_error_bound: Duration,
+/// Serializable description of a clock source for log output.
+#[derive(Serialize)]
+pub(crate) struct Source {
+    #[serde(rename = "type")]
+    pub source_type: &'static str,
+    pub identifier: String,
 }
 
-impl Serialize for ClockInfo {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("ClockInfo", 2)?;
-        let ts = chrono::DateTime::from_timestamp_nanos(self.timestamp.as_nanos())
-            .format("%Y-%m-%dT%H:%M:%S%.6fZ")
-            .to_string();
-        s.serialize_field("timestamp", &ts)?;
-        s.serialize_field("clock_error_bound_ns", &self.clock_error_bound.as_nanos())?;
-        s.end()
+impl From<SourceInfo> for Source {
+    fn from(info: SourceInfo) -> Self {
+        match info {
+            SourceInfo::AmazonTimeSync(addr, _) | SourceInfo::NtpSource(addr, _) => Self {
+                source_type: "ntp",
+                identifier: addr.to_string(),
+            },
+            // TODO: fixme! thread actual device path through `SourceInfo`
+            SourceInfo::Phc => Self {
+                source_type: "phc",
+                identifier: "/dev/ptp0".to_string(),
+            },
+        }
     }
 }
 
-impl From<&ClockParameters> for ClockInfo {
-    fn from(params: &ClockParameters) -> Self {
+/// Serializable feed-forward clock state for log output.
+#[derive(Serialize)]
+pub(crate) struct FFClock {
+    pub time_sync: String,
+    pub clock_error_bound_ns: i64,
+    pub status: ClockStatusName,
+}
+
+impl FFClock {
+    /// Build from clock parameters and current status.
+    pub fn from_params(params: &ClockParameters, clock_status: ClockStatus) -> Self {
+        let time_sync = chrono::DateTime::from_timestamp_nanos(params.time.as_nanos())
+            .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+            .to_string();
         Self {
-            timestamp: params.time,
-            clock_error_bound: params.clock_error_bound,
+            time_sync,
+            clock_error_bound_ns: params.clock_error_bound.as_nanos(),
+            status: clock_status.into(),
         }
     }
 }

@@ -2,10 +2,7 @@
 
 use std::net::SocketAddr;
 
-use crate::daemon::{
-    SelectedClock, SharedSelectedClock, clock_parameters::ClockParameters, event::Stratum,
-    logging::synchronization::log_selected_source_change, time::tsc::Skew,
-};
+use crate::daemon::{clock_parameters::ClockParameters, event::Stratum, time::tsc::Skew};
 
 /// Select from multiple clock sources
 ///
@@ -19,18 +16,16 @@ use crate::daemon::{
 /// When picking the TSC Period to use, the current `ClockParameters` value is used
 #[derive(Debug, Clone)]
 pub struct Selector {
-    current: Option<SourceParams>,
+    current: Option<SyncParameters>,
     max_dispersion_growth: Skew,
-    shared_selected_clock: SharedSelectedClock,
 }
 
 impl Selector {
     /// Constructor
-    pub fn new(max_dispersion_growth: Skew, shared_selected_clock: SharedSelectedClock) -> Self {
+    pub fn new(max_dispersion_growth: Skew) -> Self {
         Self {
             current: None,
             max_dispersion_growth,
-            shared_selected_clock,
         }
     }
 
@@ -41,15 +36,13 @@ impl Selector {
         &mut self,
         clock_parameters: &ClockParameters,
         source_info: SourceInfo,
-    ) -> Option<&ClockParameters> {
+    ) -> Option<&SyncParameters> {
         let Some(current) = &self.current else {
-            log_selected_source_change(None, Some(source_info), Some(clock_parameters));
-            self.current = Some(SourceParams {
+            self.current = Some(SyncParameters {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
             });
-            self.write_shared_state(clock_parameters, source_info);
-            return self.current.as_ref().map(|sp| &sp.clock_parameters);
+            return self.current.as_ref();
         };
 
         if current
@@ -58,47 +51,27 @@ impl Selector {
         {
             None
         } else {
-            if current.source_info != source_info {
-                log_selected_source_change(
-                    Some(current.source_info),
-                    Some(source_info),
-                    Some(clock_parameters),
-                );
-            }
-            self.current = Some(SourceParams {
+            self.current = Some(SyncParameters {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
             });
-            self.write_shared_state(clock_parameters, source_info);
-            self.current.as_ref().map(|sp| &sp.clock_parameters)
+            self.current.as_ref()
         }
     }
 
     /// Clear inner state during a disruption event.
-    ///
-    /// # Panics
-    /// Panics if the `SharedSelectedClock` `Mutex` is poisoned.
     pub fn handle_disruption(&mut self) {
-        if let Some(current) = &self.current {
-            log_selected_source_change(Some(current.source_info), None, None);
-        }
         self.current = None;
-        self.shared_selected_clock.clear();
     }
 
     /// Get the current best clock parameters
-    pub fn current(&self) -> Option<&SourceParams> {
+    pub fn current(&self) -> Option<&SyncParameters> {
         self.current.as_ref()
-    }
-
-    fn write_shared_state(&self, clock_parameters: &ClockParameters, source_info: SourceInfo) {
-        self.shared_selected_clock
-            .set(SelectedClock::new(clock_parameters.clone(), source_info));
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SourceParams {
+pub struct SyncParameters {
     pub clock_parameters: ClockParameters,
     pub source_info: SourceInfo,
 }
@@ -124,7 +97,7 @@ mod tests {
     use rstest::rstest;
 
     fn test_selector(max_dispersion: Skew) -> Selector {
-        Selector::new(max_dispersion, SharedSelectedClock::new())
+        Selector::new(max_dispersion)
     }
 
     #[rstest]
@@ -281,12 +254,11 @@ mod tests {
             as_of_monotonic: Instant::from_days(1),        // unused
         };
         let mut selector = Selector {
-            current: Some(SourceParams {
+            current: Some(SyncParameters {
                 clock_parameters: first,
                 source_info: SourceInfo::Phc,
             }),
             max_dispersion_growth: max_dispersion,
-            shared_selected_clock: SharedSelectedClock::new(),
         };
         let result = selector.update(&val, SourceInfo::Phc).is_some();
         assert_eq!(result, expected);
@@ -305,7 +277,8 @@ mod tests {
         let mut selector = test_selector(Skew::from_ppm(0.0));
         assert!(selector.current().is_none());
         let result = selector.update(&clock_parameters, SourceInfo::Phc).unwrap();
-        assert_eq!(result, &clock_parameters);
+        assert_eq!(&result.clock_parameters, &clock_parameters);
+        assert_eq!(result.source_info, SourceInfo::Phc);
         assert_eq!(selector.current().unwrap().source_info, SourceInfo::Phc);
     }
 
@@ -324,6 +297,6 @@ mod tests {
         selector.update(&clock_parameters, SourceInfo::Phc).unwrap();
         selector.handle_disruption();
         assert!(selector.current().is_none());
-        assert_eq!(selector.max_dispersion_growth, skew)
+        assert_eq!(selector.max_dispersion_growth, skew);
     }
 }

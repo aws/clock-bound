@@ -11,7 +11,6 @@ use crate::{
 };
 use clap::Parser;
 use clock_bound::daemon::{
-    SharedSelectedClock,
     clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
     selected_clock::SelectedClockSource,
 };
@@ -35,7 +34,7 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
         .ntp_sources(vec![])
         .phc(source::Phc::new("/dev/ptp0".into(), max_dispersion))
         .selected_clock(Arc::new(SelectedClockSource::default()))
-        .selector(Selector::new(max_dispersion, SharedSelectedClock::new()))
+        .selector(Selector::new(max_dispersion))
         .build();
 
     // Needed to output updated clock estimates and internal algorithm calculations to their

@@ -8,7 +8,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::daemon::MAX_DISPERSION_GROWTH_PPB;
-use crate::daemon::SharedClockStatus;
 use crate::daemon::async_ring_buffer::Receiver;
 use crate::daemon::clock_parameters::ClockParameters;
 #[cfg(not(feature = "test-side-by-side"))]
@@ -18,10 +17,11 @@ use crate::daemon::clock_state::clock_adjust::NoopClockAdjuster;
 use crate::daemon::clock_state::clock_adjust::{ClockAdjust, ClockAdjuster};
 use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
 use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
+use crate::daemon::clock_sync_algorithm::SyncParameters;
 use crate::daemon::io::ClockDisruptionEvent;
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::logging::CLOCK_METRICS_TARGET;
-use crate::daemon::logging::synchronization::log_clock_status_change;
+use crate::daemon::logging::synchronization::{log_clock_status_change, log_sync_snapshot};
 use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse, MonotonicRaw, RealTime};
 use crate::daemon::time::{Clock, ClockExt, Duration};
 use crate::shm::{
@@ -39,11 +39,11 @@ const FREE_RUNNING_GRACE_PERIOD: Duration = Duration::from_secs(60);
 pub(crate) struct ClockState {
     state_writer: Box<dyn ClockStateWrite>,
     clock_adjuster: Box<dyn ClockAdjust>,
-    clock_parameters: Option<ClockParameters>,
-    shared_clock_status: SharedClockStatus,
+    sync_parameters: Option<SyncParameters>,
+    clock_status: ClockStatus,
     interval: tokio::time::Interval,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
-    clock_params_receiver: Receiver<ClockParameters>,
+    clock_params_receiver: Receiver<SyncParameters>,
     cancellation_token: CancellationToken,
 }
 
@@ -51,10 +51,10 @@ impl ClockState {
     pub fn new(
         clock_state_writer: Box<dyn ClockStateWrite>,
         clock_adjuster: Box<dyn ClockAdjust>,
-        clock_params_receiver: Receiver<ClockParameters>,
+        clock_params_receiver: Receiver<SyncParameters>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         cancellation_token: CancellationToken,
-        shared_clock_status: SharedClockStatus,
+        clock_status: ClockStatus,
     ) -> Self {
         let interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
         Self {
@@ -63,19 +63,19 @@ impl ClockState {
             interval,
             clock_params_receiver,
             clock_disruption_receiver,
-            clock_parameters: None,
-            shared_clock_status,
+            sync_parameters: None,
+            clock_status,
             cancellation_token,
         }
     }
 
     pub fn construct(
-        clock_params_receiver: Receiver<ClockParameters>,
+        clock_params_receiver: Receiver<SyncParameters>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         cancellation_token: CancellationToken,
         disruption_marker: u64,
         clock_disruption_support_enabled: bool,
-        shared_clock_status: SharedClockStatus,
+        clock_status: ClockStatus,
     ) -> Self {
         // Build two writers, each writing to a specific shared memory segment path.
         //
@@ -118,13 +118,15 @@ impl ClockState {
             clock_params_receiver,
             clock_disruption_receiver,
             cancellation_token,
-            shared_clock_status,
+            clock_status,
         )
     }
 
     pub async fn run(&mut self) {
         let mut clock_offset_metric_interval =
             tokio::time::interval(tokio::time::Duration::from_secs(1));
+        let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
+        snapshot_interval.tick().await; // discard the immediate first tick
         info!("Starting run for ClockState");
         // FIXME: This clears the SHM segment quite early, before we have
         // even received `ClockParameters` and started trying to adjust the clock -
@@ -139,8 +141,15 @@ impl ClockState {
                 Ok(()) = self.clock_disruption_receiver.changed() => {
                     self.handle_disruption();
                 }
-                params = self.clock_params_receiver.recv() => {
-                    self.handle_clock_parameters(params.unwrap()); // todo fixme
+                source_params = self.clock_params_receiver.recv() => {
+                    self.handle_sync_update(source_params.unwrap()); // todo fixme
+                },
+                _ = snapshot_interval.tick() => {
+                    log_sync_snapshot(
+                        self.sync_parameters.as_ref().map(|sp| sp.source_info),
+                        self.sync_parameters.as_ref().map(|sp| &sp.clock_parameters),
+                        self.clock_status,
+                    );
                 },
                 _ = clock_offset_metric_interval.tick() => {
                     self.emit_clock_offsets();
@@ -166,8 +175,8 @@ impl ClockState {
             realtime_to_monotonic_raw = serde_json::to_string(&realtime_to_monotonic_raw).unwrap(),
             "metrics"
         );
-        if let Some(parameters) = &self.clock_parameters {
-            let clockbound_clock = ClockBound::new(parameters.clone(), ReadTscImpl);
+        if let Some(sp) = &self.sync_parameters {
+            let clockbound_clock = ClockBound::new(sp.clock_parameters.clone(), ReadTscImpl);
             let clockbound_to_realtime = clockbound_clock.get_offset_and_rtt(&RealTime);
             let clockbound_to_monotonic_raw = clockbound_clock.get_offset_and_rtt(&MonotonicRaw);
             tracing::info!(
@@ -214,7 +223,8 @@ impl ClockState {
     }
 
     fn handle_tick(&mut self, now: tokio::time::Instant) {
-        if let Some(parameters) = &self.clock_parameters {
+        if let Some(sp) = &self.sync_parameters {
+            let parameters = &sp.clock_parameters;
             self.clock_adjuster.handle_clock_parameters(now, parameters);
 
             // Handle SHM1 (`ClockErrorboundV3`) first
@@ -226,8 +236,8 @@ impl ClockState {
                 ClockState::determine_clock_error_bound_v3_status(clock_params_age_v3);
 
             // Log clock status transitions and update shared state
-            let previous_status = self.shared_clock_status.clock_status();
-            self.shared_clock_status.set(clock_status_v3);
+            let previous_status = self.clock_status;
+            self.clock_status = clock_status_v3;
             if clock_status_v3 != previous_status {
                 log_clock_status_change(previous_status, clock_status_v3);
             }
@@ -242,17 +252,13 @@ impl ClockState {
         }
     }
 
-    /// Handles `ClockParameters` passed out from the `ClockSyncAlgorithm` selector.
+    /// Handles `SyncParameters` passed out from the `ClockSyncAlgorithm` selector.
     ///
     /// # Panics
     /// If the `ClockAdjuster` fails, e.g. an invalid value was supplied to `ntp_adjtime`, or
     /// insufficient permissions to adjust the clock.
-    pub(crate) fn handle_clock_parameters(
-        &mut self,
-        // This is needed to tell ClockAdjust what frequency to use.
-        clock_parameters: ClockParameters,
-    ) {
-        self.clock_parameters = Some(clock_parameters);
+    pub(crate) fn handle_sync_update(&mut self, sync_parameters: SyncParameters) {
+        self.sync_parameters = Some(sync_parameters);
     }
 
     /// Handle a clock disruption event
@@ -270,25 +276,25 @@ impl ClockState {
             clock_params_receiver,
             clock_disruption_receiver,
             interval: _,
-            clock_parameters,
-            shared_clock_status,
+            sync_parameters,
+            clock_status,
             cancellation_token: _,
         } = self;
 
         let val = clock_disruption_receiver.borrow_and_update().clone();
         if let Some(disruption_marker) = val.disruption_marker {
             // Update the clock status on the shared memory segments
-            if let Some(params) = clock_parameters {
-                clock_state_writer.handle_disruption(params, disruption_marker);
+            if let Some(sp) = sync_parameters {
+                clock_state_writer.handle_disruption(&sp.clock_parameters, disruption_marker);
             }
 
-            *clock_parameters = None;
+            *sync_parameters = None;
             clock_params_receiver.handle_disruption();
             clock_adjuster.handle_disruption(disruption_marker);
 
             // Log clock status transition to Disrupted and update shared state
-            let previous_status = shared_clock_status.clock_status();
-            shared_clock_status.set(ClockStatus::Disrupted);
+            let previous_status = *clock_status;
+            *clock_status = ClockStatus::Disrupted;
             if previous_status != ClockStatus::Disrupted {
                 log_clock_status_change(previous_status, ClockStatus::Disrupted);
             }
@@ -307,16 +313,13 @@ mod tests {
         daemon::{
             async_ring_buffer,
             clock_state::{clock_adjust::MockClockAdjust, clock_state_writer::MockClockStateWrite},
+            clock_sync_algorithm::SourceInfo,
             time::{Duration, Instant, TscCount, tsc::Period},
         },
         shm::ClockStatus,
     };
 
     use super::*;
-
-    fn test_shared_clock_status() -> SharedClockStatus {
-        SharedClockStatus::new(ClockStatus::Unknown)
-    }
 
     fn get_sample_clock_parameters() -> ClockParameters {
         ClockParameters {
@@ -354,11 +357,20 @@ mod tests {
             rx,
             clock_disruption_receiver,
             cancellation_token,
-            test_shared_clock_status(),
+            ClockStatus::Unknown,
         );
-        assert_eq!(clock_state.clock_parameters, None);
-        clock_state.handle_clock_parameters(clock_parameters.clone());
-        assert_eq!(clock_state.clock_parameters, Some(clock_parameters));
+        assert_eq!(clock_state.sync_parameters, None);
+        clock_state.handle_sync_update(SyncParameters {
+            clock_parameters: clock_parameters.clone(),
+            source_info: SourceInfo::Phc,
+        });
+        assert_eq!(
+            clock_state.sync_parameters,
+            Some(SyncParameters {
+                clock_parameters,
+                source_info: SourceInfo::Phc,
+            })
+        );
     }
 
     #[tokio::test]
@@ -397,9 +409,12 @@ mod tests {
             rx,
             clock_disruption_receiver,
             cancellation_token,
-            test_shared_clock_status(),
+            ClockStatus::Unknown,
         );
-        clock_state.clock_parameters = Some(clock_parameters);
+        clock_state.sync_parameters = Some(SyncParameters {
+            clock_parameters,
+            source_info: SourceInfo::Phc,
+        });
 
         clock_disruption_sender
             .send(ClockDisruptionEvent {
@@ -436,9 +451,9 @@ mod tests {
             rx,
             clock_disruption_receiver,
             cancellation_token,
-            test_shared_clock_status(),
+            ClockStatus::Unknown,
         );
-        clock_state.clock_parameters = None;
+        clock_state.sync_parameters = None;
         clock_state.handle_tick(tokio::time::Instant::now());
     }
 
@@ -506,9 +521,12 @@ mod tests {
             rx,
             clock_disruption_receiver,
             cancellation_token,
-            test_shared_clock_status(),
+            ClockStatus::Unknown,
         );
-        clock_state.clock_parameters = Some(expected_clock_params);
+        clock_state.sync_parameters = Some(SyncParameters {
+            clock_parameters: expected_clock_params,
+            source_info: SourceInfo::Phc,
+        });
         clock_state.handle_tick(expected_instant);
     }
 
@@ -573,7 +591,7 @@ mod tests {
             async_ring_buffer::create(1).1,
             clock_disruption_receiver,
             cancellation_token,
-            test_shared_clock_status(),
+            ClockStatus::Unknown,
         );
 
         let mut clock_parameters = get_sample_clock_parameters();

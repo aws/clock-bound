@@ -29,9 +29,6 @@ pub mod clock_state;
 
 pub mod logging;
 
-pub mod shared_state;
-pub use shared_state::{SelectedClock, SharedClockStatus, SharedSelectedClock};
-
 // --- Everything below is only needed for the full daemon ---
 
 #[cfg(feature = "daemon")]
@@ -40,9 +37,8 @@ use {
         daemon::{
             async_ring_buffer::Sender,
             clock_state::ClockState,
-            clock_sync_algorithm::{ClockSyncAlgorithm, Selector},
+            clock_sync_algorithm::{ClockSyncAlgorithm, Selector, SyncParameters},
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
-            logging::synchronization::log_selected_clock,
             receiver_stream::{ReceiverStream, RoutableEvent},
             selected_clock::SelectedClockSource,
             source_mutator::SourceMutator,
@@ -51,7 +47,6 @@ use {
         shm::ClockStatus,
         vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH,
     },
-    clock_parameters::ClockParameters,
     rand::{RngCore, rng},
     std::net::{IpAddr, Ipv4Addr, SocketAddr},
     std::sync::Arc,
@@ -91,7 +86,6 @@ pub struct Daemon {
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     cancellation_token: CancellationToken,
     clock_state_handle: ClockStateHandle,
-    shared_selected_clock: SharedSelectedClock,
 }
 
 #[cfg(feature = "daemon")]
@@ -109,10 +103,6 @@ impl Daemon {
 
         let selected_clock = Arc::new(SelectedClockSource::default());
 
-        // Initialize shared state for observability/logging.
-        let shared_selected_clock = SharedSelectedClock::new();
-        let shared_clock_status = SharedClockStatus::new(ClockStatus::Unknown);
-
         // Initialize IO components.
         let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
         let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
@@ -120,10 +110,7 @@ impl Daemon {
         let mut receiver_stream = ReceiverStream::default();
         let mut clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .selected_clock(selected_clock.clone())
-            .selector(Selector::new(
-                MAX_DISPERSION_GROWTH,
-                shared_selected_clock.clone(),
-            ))
+            .selector(Selector::new(MAX_DISPERSION_GROWTH))
             .build();
 
         let mut source_mutator = SourceMutator::new(
@@ -158,7 +145,7 @@ impl Daemon {
                 clock_state_cancellation_token.clone(),
                 disruption_marker,
                 clock_disruption_support_enabled,
-                shared_clock_status,
+                ClockStatus::Unknown,
             );
             (tx, clock_state)
         };
@@ -177,7 +164,6 @@ impl Daemon {
             clock_disruption_receiver,
             cancellation_token,
             clock_state_handle,
-            shared_selected_clock,
         }
     }
 
@@ -198,9 +184,6 @@ impl Daemon {
         });
         self.clock_state_handle.task_tracker.close();
 
-        let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
-        snapshot_interval.tick().await; // discard the immediate first tick
-
         loop {
             tokio::select! {
                 biased; // biased to ensure disruption is handled first when this happens
@@ -209,15 +192,6 @@ impl Daemon {
                 }
                 Some(routable_event) = self.receiver_stream.recv() => {
                     self.handle_event(routable_event);
-                }
-                _ = snapshot_interval.tick() => {
-                    match self.shared_selected_clock.selected_clock() {
-                        Some(selected) => log_selected_clock(
-                            Some(*selected.source_info()),
-                            Some(selected.clock_parameters()),
-                        ),
-                        None => log_selected_clock(None, None),
-                    }
                 }
                 () = self.cancellation_token.cancelled() => {
                     info!("Received shutdown signal. Starting graceful shutdown of daemon.");
@@ -239,15 +213,15 @@ impl Daemon {
     }
 
     fn handle_event(&mut self, routable_event: RoutableEvent) {
-        if let Some(params) = self.clock_sync_algorithm.feed(routable_event) {
+        if let Some(source_params) = self.clock_sync_algorithm.feed(routable_event) {
             use crate::daemon::async_ring_buffer::SendError;
 
-            match self.clock_state_handle.tx.send(params.clone()) {
+            match self.clock_state_handle.tx.send(source_params.clone()) {
                 Ok(()) => (),
-                Err(SendError::Disrupted(clock_parameters)) => {
+                Err(SendError::Disrupted(source_params)) => {
                     // don't handle_disruption. It will be handled on the next call of tokio::select
                     info!(
-                        ?clock_parameters,
+                        ?source_params,
                         "Trying to send a value when there was a disruption event. dropping."
                     );
                 }
@@ -271,7 +245,6 @@ impl Daemon {
             clock_disruption_receiver,
             cancellation_token: _,
             clock_state_handle,
-            shared_selected_clock: _,
         } = self;
 
         let ClockStateHandle {
@@ -293,7 +266,7 @@ impl Daemon {
 #[cfg(feature = "daemon")]
 struct ClockStateHandle {
     clock_state: Option<ClockState>,
-    tx: Sender<ClockParameters>,
+    tx: Sender<SyncParameters>,
     cancellation_token: CancellationToken,
     task_tracker: TaskTracker,
 }

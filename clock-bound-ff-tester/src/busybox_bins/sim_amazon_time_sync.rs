@@ -8,7 +8,6 @@ use crate::{
     time::{CbBridge, Skew, TrueDuration},
 };
 use clock_bound::daemon::{
-    SharedSelectedClock,
     clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
     logging::ffevents,
     selected_clock::SelectedClockSource,
@@ -31,10 +30,7 @@ pub fn main() {
             .amazon_time_sync(source::AmazonTimeSync::new(Skew::from_ppm(15.0)))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
-            .selector(Selector::new(
-                Skew::from_ppm(15.0),
-                SharedSelectedClock::new(),
-            ))
+            .selector(Selector::new(Skew::from_ppm(15.0)))
             .build(),
     );
 

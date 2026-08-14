@@ -42,13 +42,17 @@ impl TestAmazonTimeSync {
             .events
             .iter()
             .map(tester_event_to_amazon_time_sync)
-            .map(|e| self.algorithm.feed(e.clone()).cloned())
+            .map(|e| {
+                self.algorithm
+                    .feed(e.clone())
+                    .map(|sp| sp.clock_parameters.clone())
+            })
             .collect()
     }
 
     pub fn feed_ntp(&mut self, event: &Event) -> Option<&ClockParameters> {
         let ntp = tester_event_to_amazon_time_sync(event);
-        self.algorithm.feed(ntp)
+        self.algorithm.feed(ntp).map(|sp| &sp.clock_parameters)
     }
 }
 
@@ -113,7 +117,6 @@ mod tests {
     use std::sync::Arc;
 
     use clock_bound::daemon::{
-        SharedSelectedClock,
         clock_sync_algorithm::{Selector, source::AmazonTimeSync},
         selected_clock::SelectedClockSource,
         time::tsc::Skew,
@@ -130,10 +133,7 @@ mod tests {
                 .amazon_time_sync(AmazonTimeSync::new(Skew::from_ppm(15.0)))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(
-                    Skew::from_ppm(15.0),
-                    SharedSelectedClock::new(),
-                ))
+                .selector(Selector::new(Skew::from_ppm(15.0)))
                 .build(),
         );
         // running a week long scenario in -O0 is asking for trouble
@@ -148,10 +148,7 @@ mod tests {
                 .amazon_time_sync(AmazonTimeSync::new(Skew::from_ppm(15.0)))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(
-                    Skew::from_ppm(15.0),
-                    SharedSelectedClock::new(),
-                ))
+                .selector(Selector::new(Skew::from_ppm(15.0)))
                 .build(),
         );
         let scenario = perfect_symmetric(TrueDuration::from_secs(1024 * 5));

@@ -84,7 +84,6 @@ mod tests {
     use std::sync::Arc;
 
     use crate::daemon::ClockSyncAlgorithm;
-    use crate::daemon::SharedSelectedClock;
     use crate::daemon::clock_sync_algorithm::Selector;
     use crate::daemon::io::SourceIO;
     use crate::daemon::io::ntp::DaemonInfo;
@@ -106,10 +105,7 @@ mod tests {
         let io = SourceIO::construct(selected_clock.clone(), daemon_info);
         let csa = ClockSyncAlgorithm::builder()
             .selected_clock(selected_clock)
-            .selector(Selector::new(
-                Skew::from_ppm(15.0),
-                SharedSelectedClock::new(),
-            ))
+            .selector(Selector::new(Skew::from_ppm(15.0)))
             .build();
         let receiver_stream = ReceiverStream::default();
 
