@@ -28,7 +28,7 @@ pub fn init_for_synchronization_replay(log_directory: impl AsRef<Path>) {
     std::fs::create_dir_all(&log_directory)
         .expect("Failed to create the algo analysis log directory");
 
-    let algo_analysis_layer = StructuredLogLayer::new(
+    let (algo_analysis_layer, _algo_handle) = StructuredLogLayer::new(
         &log_directory,
         "algo_analysis.log",
         ALGO_ANALYSIS_TARGET,

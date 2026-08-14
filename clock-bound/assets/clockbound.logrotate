@@ -1,0 +1,31 @@
+# Logrotate configuration for ClockBound structured log files.
+#
+# ClockBound writes structured JSONL logs to /var/log/clockbound/ (or user-configured directory).
+# These files grow continuously and require rotation to prevent disk exhaustion.
+#
+# This configuration uses the "move and signal" strategy:
+#   1. logrotate renames the current log file (e.g., synchronization.log → synchronization.log.1)
+#   2. logrotate sends SIGHUP to the clockbound process
+#   3. ClockBound closes the old file descriptor and opens a fresh file at the original path
+#
+# This avoids the need for copytruncate which is not recommended as it can result in loss
+# of logs across rotation.
+#
+# Install to: /etc/logrotate.d/clockbound
+
+/var/log/clockbound/synchronization.log
+/var/log/clockbound/ffevents.log
+/var/log/clockbound/sources.log {
+    daily
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        # Signal clockbound to reopen log files. The `|| true` ensures logrotate
+        # does not fail if the service is not currently running.
+        /usr/bin/systemctl kill --signal=HUP clockbound.service 2>/dev/null || true
+    endscript
+}

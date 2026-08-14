@@ -7,8 +7,8 @@ use std::{
     fmt,
     fs::{File, OpenOptions},
     io::Write,
-    path::Path,
-    sync::Mutex,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use chrono::Utc;
@@ -19,6 +19,47 @@ use tracing::{
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
+/// A handle to a structured log file that supports reopening.
+///
+/// Used to implement lossless log rotation: an external tool (e.g., logrotate)
+/// renames the current file, then sends SIGHUP to trigger [`LogHandle::reopen`],
+/// which closes the old fd and opens a new file at the original path.
+pub struct LogHandle {
+    writer: Arc<Mutex<Option<File>>>,
+    path: PathBuf,
+}
+
+impl LogHandle {
+    /// Close and reopen the log file at its original path.
+    ///
+    /// On failure, logs an error to stderr and drops the writer so the old fd
+    /// is closed (freeing disk space). A subsequent successful `reopen` call
+    /// will restore logging.
+    pub fn reopen(&self) {
+        let new_writer = match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            Ok(file) => Some(file),
+            Err(e) => {
+                eprintln!(
+                    "ERROR: failed to reopen log file {}: {e}. Structured log output suspended.",
+                    self.path.display()
+                );
+                None
+            }
+        };
+
+        #[expect(
+            clippy::missing_panics_doc,
+            reason = "only fails if the mutex is poisoned"
+        )]
+        let mut guard = self.writer.lock().unwrap();
+        *guard = new_writer;
+    }
+}
+
 /// A tracing [`Layer`] that writes pre-serialized JSON entries as newline-delimited
 /// JSON to a file, injecting `timestamp` and `version` fields automatically.
 ///
@@ -28,13 +69,16 @@ use tracing_subscriber::{layer::Context, registry::LookupSpan};
 /// This layer/target is not intended to be called into directly by the main app,
 /// but via strongly-typed helper libraries.
 pub struct StructuredLogLayer {
-    writer: Mutex<File>,
+    writer: Arc<Mutex<Option<File>>>,
     target_prefix: &'static str,
     version: &'static str,
 }
 
 impl StructuredLogLayer {
     /// Create a new `StructuredLogLayer` that writes to the specified file.
+    ///
+    /// Returns the layer and a [`LogHandle`] that can be used to reopen the file
+    /// (e.g., on SIGHUP for log rotation).
     ///
     /// # Arguments
     /// - `log_directory` - Directory where the log file will be created
@@ -49,7 +93,7 @@ impl StructuredLogLayer {
         filename: &str,
         target_prefix: &'static str,
         version: &'static str,
-    ) -> Self {
+    ) -> (Self, LogHandle) {
         let dir = log_directory.as_ref();
         std::fs::create_dir_all(dir)
             .unwrap_or_else(|e| panic!("Failed to create log directory {}: {}", dir.display(), e));
@@ -60,11 +104,17 @@ impl StructuredLogLayer {
             .open(&path)
             .unwrap_or_else(|e| panic!("Failed to open log file {}: {}", path.display(), e));
 
-        Self {
-            writer: Mutex::new(file),
+        let writer = Arc::new(Mutex::new(Some(file)));
+
+        let layer = Self {
+            writer: Arc::clone(&writer),
             target_prefix,
             version,
-        }
+        };
+
+        let handle = LogHandle { writer, path };
+
+        (layer, handle)
     }
 }
 
@@ -104,7 +154,8 @@ where
 
         // Write as a single JSON line
         if let Ok(line) = serde_json::to_string(&output)
-            && let Ok(mut w) = self.writer.lock()
+            && let Ok(mut guard) = self.writer.lock()
+            && let Some(ref mut w) = *guard
         {
             let _ = writeln!(w, "{line}");
         }
@@ -143,7 +194,8 @@ mod tests {
     /// the subscriber active. Returns the file contents after the closure completes.
     fn with_layer(f: impl FnOnce()) -> String {
         let tmp_dir = TempDir::new().unwrap();
-        let layer = StructuredLogLayer::new(tmp_dir.path(), "test.log", TEST_TARGET, TEST_VERSION);
+        let (layer, _handle) =
+            StructuredLogLayer::new(tmp_dir.path(), "test.log", TEST_TARGET, TEST_VERSION);
 
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, f);

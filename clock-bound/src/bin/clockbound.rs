@@ -18,7 +18,7 @@ struct Args {
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let args = Args::parse();
-    subscriber::init(&args.log_dir);
+    let log_handles = subscriber::init(&args.log_dir);
     log_daemon_started();
     let cancellation_token = CancellationToken::new();
     let d = Daemon::construct(cancellation_token.clone()).await;
@@ -26,15 +26,27 @@ async fn main() {
     let mut daemon_handle = tokio::spawn(async move { d.run().await });
 
     let mut sigint = signal(SignalKind::interrupt()).expect("failed to create SIGINT listener.");
-    tokio::select! {
-        _ = sigint.recv() => {
-            info!("SIGINT receieved. Starting graceful shutdown of daemon.");
-            cancellation_token.cancel();
-            match daemon_handle.await {
-                Ok(()) => info!("daemon exited gracefully."),
-                Err(e) => warn!(?e, "daemon exited ungracefully.")
+    let mut sighup = signal(SignalKind::hangup()).expect("failed to create SIGHUP listener.");
+
+    loop {
+        tokio::select! {
+            _ = sigint.recv() => {
+                info!("SIGINT received. Starting graceful shutdown of daemon.");
+                cancellation_token.cancel();
+                match daemon_handle.await {
+                    Ok(()) => info!("daemon exited gracefully."),
+                    Err(e) => warn!(?e, "daemon exited ungracefully.")
+                }
+                break;
             }
-        },
-        res = &mut daemon_handle => error!(?res, "daemon exited unexpectedly."),
+            _ = sighup.recv() => {
+                info!("SIGHUP received. Reopening log files.");
+                log_handles.reopen_all();
+            }
+            res = &mut daemon_handle => {
+                error!(?res, "daemon exited unexpectedly.");
+                break;
+            }
+        }
     }
 }

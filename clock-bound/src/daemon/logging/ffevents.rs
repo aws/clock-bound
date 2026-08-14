@@ -69,7 +69,7 @@ mod tests {
     use crate::daemon::{
         clock_parameters::ClockParameters,
         event::{Ntp, NtpData, Phc, PhcData, Stratum},
-        logging::StructuredLogLayer,
+        logging::{StructuredLogLayer, ffevents::FILE_NAME},
         receiver_stream::RoutableEvent,
         time::{Duration, Instant, TscCount, tsc::Period},
     };
@@ -123,13 +123,14 @@ mod tests {
     /// caller's scope.
     fn with_ffevents_layer(f: impl FnOnce()) -> (String, TempDir) {
         let tmp_dir = TempDir::new().unwrap();
-        let layer = StructuredLogLayer::new(tmp_dir.path(), "ffevents.log", TARGET, TEST_VERSION);
+        let (layer, _handle) =
+            StructuredLogLayer::new(tmp_dir.path(), FILE_NAME, TARGET, TEST_VERSION);
 
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, f);
 
         let mut contents = String::new();
-        std::fs::File::open(tmp_dir.path().join("ffevents.log"))
+        std::fs::File::open(tmp_dir.path().join(FILE_NAME))
             .unwrap()
             .read_to_string(&mut contents)
             .unwrap();

@@ -12,15 +12,18 @@ use tracing_subscriber::{
     EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
+use super::LogHandles;
 use super::layer::StructuredLogLayer;
 use super::synchronization;
 use super::{CLOCK_METRICS_TARGET, ffevents, is_structured_target};
 
-/// Initialize the tracing subscriber
-pub fn init(log_directory: impl AsRef<Path>) {
+/// Initialize the tracing subscriber.
+///
+/// Returns [`LogHandles`] for SIGHUP-triggered log file reopening.
+pub fn init(log_directory: impl AsRef<Path>) -> LogHandles {
     let cargo_version = env!("CARGO_PKG_VERSION");
 
-    let ffevents_layer = StructuredLogLayer::new(
+    let (ffevents_layer, ffevents_handle) = StructuredLogLayer::new(
         &log_directory,
         ffevents::FILE_NAME,
         ffevents::TARGET,
@@ -36,7 +39,7 @@ pub fn init(log_directory: impl AsRef<Path>) {
             md.target().starts_with(CLOCK_METRICS_TARGET)
         }));
 
-    let synchronization_layer = StructuredLogLayer::new(
+    let (synchronization_layer, synchronization_handle) = StructuredLogLayer::new(
         &log_directory,
         synchronization::FILE_NAME,
         synchronization::TARGET,
@@ -56,17 +59,17 @@ pub fn init(log_directory: impl AsRef<Path>) {
         .with_filter(filter_fn(|md| !is_structured_target(md.target())));
 
     tracing_subscriber::registry()
-        // this is the default logging layer
         .with(log_layer)
-        // and this is the ffevents structured log layer
         .with(ffevents_layer)
-        // and this is the clock metrics layer
         .with(clock_metrics_layer)
-        // and this is the synchronization log layer
         .with(synchronization_layer)
         .init();
 
     tracing::info!("Initialized tracing subscriber");
-    // TODO: rework/remove this log line.
-    tracing::info!(ffevents_log_file = %log_directory.as_ref().display(), "Initialized log directory");
+    tracing::info!(log_directory = %log_directory.as_ref().display(), "Initialized log directory");
+
+    LogHandles {
+        ffevents: Some(ffevents_handle),
+        synchronization: Some(synchronization_handle),
+    }
 }

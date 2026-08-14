@@ -95,7 +95,7 @@ mod tests {
     /// to a temp file, and return the file contents.
     fn with_algo_analysis_layer(f: impl FnOnce()) -> String {
         let tmp_dir = TempDir::new().unwrap();
-        let layer = StructuredLogLayer::new(
+        let (layer, _handle) = StructuredLogLayer::new(
             tmp_dir.path(),
             "algo_analysis.log",
             ALGO_ANALYSIS_TARGET,

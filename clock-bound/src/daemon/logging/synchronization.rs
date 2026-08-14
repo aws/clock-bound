@@ -153,7 +153,8 @@ mod tests {
         /// The `TempDir` is returned to keep it alive for the caller's scope.
         fn with_synchronization_layer(f: impl FnOnce()) -> (String, TempDir) {
             let tmp_dir = TempDir::new().unwrap();
-            let layer = StructuredLogLayer::new(tmp_dir.path(), FILE_NAME, TARGET, TEST_VERSION);
+            let (layer, _handle) =
+                StructuredLogLayer::new(tmp_dir.path(), FILE_NAME, TARGET, TEST_VERSION);
 
             let subscriber = tracing_subscriber::registry().with(layer);
             tracing::subscriber::with_default(subscriber, f);

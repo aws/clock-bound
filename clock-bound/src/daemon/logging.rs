@@ -22,7 +22,33 @@ pub mod layer;
 pub mod subscriber;
 pub mod synchronization;
 
-pub use layer::StructuredLogLayer;
+pub use layer::{LogHandle, StructuredLogLayer};
+
+/// Handles to all structured log files, enabling SIGHUP-triggered reopening
+/// for lossless log rotation.
+///
+/// Each field is `Option` to support future configuration where individual
+/// log files may be disabled.
+///
+/// TODO: add other log streams.
+pub struct LogHandles {
+    ffevents: Option<LogHandle>,
+    synchronization: Option<LogHandle>,
+}
+
+impl LogHandles {
+    /// Reopen all active log files.
+    ///
+    /// Call this on SIGHUP to support logrotate without `copytruncate`.
+    pub fn reopen_all(&self) {
+        if let Some(h) = &self.ffevents {
+            h.reopen();
+        }
+        if let Some(h) = &self.synchronization {
+            h.reopen();
+        }
+    }
+}
 
 /// Tracing target for the clock metrics log.
 pub const CLOCK_METRICS_TARGET: &str = "clock_bound::clock_metrics";
