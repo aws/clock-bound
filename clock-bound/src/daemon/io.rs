@@ -23,6 +23,9 @@ use amazon_time_sync::AmazonTimeSync;
 
 mod dns;
 
+pub mod in_use_ip_addrs;
+use in_use_ip_addrs::InUseIpAddrs;
+
 pub mod ip_addr_source;
 use ip_addr_source::IpAddrSource;
 
@@ -55,6 +58,8 @@ pub struct SourceIO {
     daemon_info: DaemonInfo,
     /// `tokio::task::TaskTracker` to manage lifecycle of the individual IO tasks
     task_tracker: TaskTracker,
+    /// Shared tracker of IP addresses currently in use by NTP IO tasks
+    in_use_ip_addrs: InUseIpAddrs,
 }
 
 impl SourceIO {
@@ -77,6 +82,7 @@ impl SourceIO {
             selected_clock,
             daemon_info,
             task_tracker,
+            in_use_ip_addrs: InUseIpAddrs::new(),
         }
     }
 
@@ -113,6 +119,7 @@ impl SourceIO {
     ///
     /// # Panics
     /// - If not called within the `tokio` runtime.
+    /// - If a duplicate IP is added (global to the app)
     pub fn create_ip_addr_source(&mut self, source: ip_addr_source::Sender) {
         let (server_address, event_sender) = source;
         info!(
@@ -138,6 +145,7 @@ impl SourceIO {
                 ctrl_sender,
             };
             self.ip_addr_sources.insert(server_address, source);
+            self.in_use_ip_addrs.add(server_address.ip()).unwrap();
         }
 
         info!("Source NTP update complete.");

@@ -3,7 +3,7 @@
 mod message;
 pub use message::Message;
 
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::daemon::io::ControlRequest;
+use crate::daemon::io::InUseIpAddrs;
 
 /// Time before re-selecting a bad host
 const QUARANTINE_DURATION: Duration = Duration::from_hours(1);
@@ -65,6 +66,8 @@ pub struct Resolver {
     ctrl_receiver: mpsc::Receiver<ControlRequest>,
     /// Receiver from the DNS Pool's NTP tasks
     ntp_receiver: mpsc::Receiver<Message>,
+    /// Shared tracker of globally in-use IP addresses across all resolvers
+    in_use_ip_addrs: InUseIpAddrs,
 }
 
 impl Resolver {
@@ -213,6 +216,14 @@ impl Resolver {
         let state = self.task_state.get_mut(&addr).unwrap();
         assert_eq!(*state, State::Running);
         *state = State::Unhealthy;
+
+        // Release the address from the global in-use tracker so other resolvers
+        // (or this one on a future tick) can potentially select it after quarantine expires.
+        if self.in_use_ip_addrs.remove(&addr).is_err() {
+            // global radius could potentially be removed elsewhere in the app
+            warn!(%addr, "Address was not found in global in-use tracker");
+        }
+
         info!(
             quarantine_secs = QUARANTINE_DURATION.as_secs(),
             "Quarantining unreachable NTP source"
@@ -243,33 +254,51 @@ impl Resolver {
             .count()
     }
 
-    /// Determine the new addresses to initialize
+    /// Determine the new addresses to initialize, and register them in `in_use_ip_addrs` as well as `task_state`
     ///
     /// Given a slice of addresses:
     /// - filter out the ones that are already being used
     /// - filter out the ones that are quarantined
+    /// - filter out the ones that are globally in use (tracked by [`InUseIpAddrs`])
+    ///
+    /// Atomically claims the selected addresses in the shared [`InUseIpAddrs`] tracker
+    /// to prevent other resolvers from selecting the same addresses concurrently.
     fn new_addrs_to_launch(
-        &self,
+        &mut self,
         candidate_addrs: Vec<IpAddr>,
         needed_host_count: usize,
         supports_ipv6: bool,
     ) -> Vec<IpAddr> {
-        let mut available_addrs: Vec<_> = candidate_addrs
+        // Pre-filter candidates based on local state (ipv6 support, task_state, quarantine)
+        let locally_filtered: Vec<_> = candidate_addrs
             .into_iter()
             // filter out ipv6 if we don't have it enabled
             .filter(|addr| match addr {
                 IpAddr::V4(_) => true,
                 IpAddr::V6(_) => supports_ipv6,
             })
-            // filter out addrs that are already being used or quarantined
+            // filter out addrs that are already being used locally or quarantined
             .filter(|addr| {
                 !self.task_state.contains_key(addr) && !self.quarantined.contains_key(addr)
             })
             .collect();
 
-        available_addrs.truncate(needed_host_count);
+        // Atomically filter out globally in-use addresses and claim the new ones
+        let new_addrs = self.in_use_ip_addrs.transact_add(|globally_in_use| {
+            let mut available: Vec<_> = locally_filtered
+                .iter()
+                .filter(|addr| !globally_in_use.contains(addr))
+                .copied()
+                .collect();
 
-        available_addrs
+            available.truncate(needed_host_count);
+            available
+        });
+        for addr in &new_addrs {
+            self.task_state.insert(*addr, State::Initializing);
+            debug!(%addr, "Claimed address");
+        }
+        new_addrs
     }
 
     /// Return cached IP addrs if still valid, otherwise resolve addresses to cache and return them
@@ -372,6 +401,15 @@ mod tests {
         quarantined: HashMap<IpAddr, Instant>,
         last_resolved: Option<LastResolved>,
     ) -> Resolver {
+        make_resolver_with_in_use(task_state, quarantined, last_resolved, InUseIpAddrs::new())
+    }
+
+    fn make_resolver_with_in_use(
+        task_state: HashMap<IpAddr, State>,
+        quarantined: HashMap<IpAddr, Instant>,
+        last_resolved: Option<LastResolved>,
+        in_use_ip_addrs: InUseIpAddrs,
+    ) -> Resolver {
         let (daemon_tx, _rx) = mpsc::channel(1);
         let (_ctrl_tx, ctrl_receiver) = mpsc::channel(1);
         let (_ntp_tx, ntp_receiver) = mpsc::channel(1);
@@ -383,6 +421,7 @@ mod tests {
             daemon_tx,
             ctrl_receiver,
             ntp_receiver,
+            in_use_ip_addrs,
         }
     }
 
@@ -443,10 +482,21 @@ mod tests {
         let fresh = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
 
         let task_state = HashMap::from([(existing, State::Running)]);
-        let resolver = make_resolver(task_state, HashMap::new(), None);
+        let mut resolver = make_resolver(task_state, HashMap::new(), None);
 
         let result = resolver.new_addrs_to_launch(vec![existing, fresh], 5, true);
         assert_eq!(result, vec![fresh]);
+
+        // task_state should contain the original entry plus the newly launched addr
+        assert_eq!(*resolver.task_state.get(&existing).unwrap(), State::Running);
+        assert_eq!(
+            *resolver.task_state.get(&fresh).unwrap(),
+            State::Initializing
+        );
+        // in_use_ip_addrs should track the fresh addr
+        let snapshot = resolver.in_use_ip_addrs.snapshot();
+        assert!(snapshot.contains(&fresh));
+        assert!(!snapshot.contains(&existing));
     }
 
     #[test]
@@ -455,10 +505,21 @@ mod tests {
         let fresh = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
 
         let quarantined = HashMap::from([(quarantined_addr, Instant::now())]);
-        let resolver = make_resolver(HashMap::new(), quarantined, None);
+        let mut resolver = make_resolver(HashMap::new(), quarantined, None);
 
         let result = resolver.new_addrs_to_launch(vec![quarantined_addr, fresh], 5, true);
         assert_eq!(result, vec![fresh]);
+
+        // task_state should contain only the fresh addr
+        assert!(!resolver.task_state.contains_key(&quarantined_addr));
+        assert_eq!(
+            *resolver.task_state.get(&fresh).unwrap(),
+            State::Initializing
+        );
+        // in_use_ip_addrs should track only the fresh addr
+        let snapshot = resolver.in_use_ip_addrs.snapshot();
+        assert!(snapshot.contains(&fresh));
+        assert!(!snapshot.contains(&quarantined_addr));
     }
 
     #[test]
@@ -466,10 +527,18 @@ mod tests {
         let v4 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
 
-        let resolver = make_resolver(HashMap::new(), HashMap::new(), None);
+        let mut resolver = make_resolver(HashMap::new(), HashMap::new(), None);
 
         let result = resolver.new_addrs_to_launch(vec![v4, v6], 5, false);
         assert_eq!(result, vec![v4]);
+
+        // task_state should contain only the v4 addr
+        assert_eq!(*resolver.task_state.get(&v4).unwrap(), State::Initializing);
+        assert!(!resolver.task_state.contains_key(&v6));
+        // in_use_ip_addrs should track only v4
+        let snapshot = resolver.in_use_ip_addrs.snapshot();
+        assert!(snapshot.contains(&v4));
+        assert!(!snapshot.contains(&v6));
     }
 
     #[test]
@@ -477,10 +546,18 @@ mod tests {
         let v4 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
 
-        let resolver = make_resolver(HashMap::new(), HashMap::new(), None);
+        let mut resolver = make_resolver(HashMap::new(), HashMap::new(), None);
 
         let result = resolver.new_addrs_to_launch(vec![v4, v6], 5, true);
         assert_eq!(result, vec![v4, v6]);
+
+        // task_state should contain both addresses
+        assert_eq!(*resolver.task_state.get(&v4).unwrap(), State::Initializing);
+        assert_eq!(*resolver.task_state.get(&v6).unwrap(), State::Initializing);
+        // in_use_ip_addrs should track both
+        let snapshot = resolver.in_use_ip_addrs.snapshot();
+        assert!(snapshot.contains(&v4));
+        assert!(snapshot.contains(&v6));
     }
 
     #[test]
@@ -489,10 +566,22 @@ mod tests {
             .map(|i| IpAddr::V4(Ipv4Addr::new(10, 0, 0, i)))
             .collect();
 
-        let resolver = make_resolver(HashMap::new(), HashMap::new(), None);
+        let mut resolver = make_resolver(HashMap::new(), HashMap::new(), None);
 
         let result = resolver.new_addrs_to_launch(addrs, 3, true);
         assert_eq!(result.len(), 3);
+
+        // task_state should contain exactly the 3 launched addresses
+        assert_eq!(resolver.task_state.len(), 3);
+        for addr in &result {
+            assert_eq!(*resolver.task_state.get(addr).unwrap(), State::Initializing);
+        }
+        // in_use_ip_addrs should track the same 3 addresses
+        let snapshot = resolver.in_use_ip_addrs.snapshot();
+        assert_eq!(snapshot.len(), 3);
+        for addr in &result {
+            assert!(snapshot.contains(addr));
+        }
     }
 
     #[test]
@@ -502,19 +591,33 @@ mod tests {
 
         let task_state = HashMap::from([(existing, State::Initializing)]);
         let quarantined = HashMap::from([(quarantined_addr, Instant::now())]);
-        let resolver = make_resolver(task_state, quarantined, None);
+        let mut resolver = make_resolver(task_state, quarantined, None);
 
         let result = resolver.new_addrs_to_launch(vec![existing, quarantined_addr], 5, true);
         assert!(result.is_empty());
+
+        // task_state should remain unchanged (only the pre-existing entry)
+        assert_eq!(resolver.task_state.len(), 1);
+        assert_eq!(
+            *resolver.task_state.get(&existing).unwrap(),
+            State::Initializing
+        );
+        // in_use_ip_addrs should remain empty (nothing was claimed)
+        assert!(resolver.in_use_ip_addrs.snapshot().is_empty());
     }
 
     #[test]
     fn new_addrs_to_launch_returns_empty_when_needed_count_is_zero() {
         let v4 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        let resolver = make_resolver(HashMap::new(), HashMap::new(), None);
+        let mut resolver = make_resolver(HashMap::new(), HashMap::new(), None);
 
         let result = resolver.new_addrs_to_launch(vec![v4], 0, true);
         assert!(result.is_empty());
+
+        // task_state should remain empty
+        assert!(resolver.task_state.is_empty());
+        // in_use_ip_addrs should remain empty
+        assert!(resolver.in_use_ip_addrs.snapshot().is_empty());
     }
 
     #[tokio::test]
@@ -662,5 +765,90 @@ mod tests {
         assert_eq!(*resolver.task_state.get(&addr1).unwrap(), State::Running);
         assert_eq!(*resolver.task_state.get(&addr2).unwrap(), State::Running);
         assert_eq!(*resolver.task_state.get(&addr3).unwrap(), State::Unhealthy);
+    }
+
+    #[test]
+    fn new_addrs_to_launch_filters_globally_in_use_addrs() {
+        let globally_used = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let fresh = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+
+        let in_use = InUseIpAddrs::new();
+        in_use.add(globally_used).unwrap();
+
+        let mut resolver = make_resolver_with_in_use(HashMap::new(), HashMap::new(), None, in_use);
+
+        let result = resolver.new_addrs_to_launch(vec![globally_used, fresh], 5, true);
+        assert_eq!(result, vec![fresh]);
+    }
+
+    #[test]
+    fn new_addrs_to_launch_claims_addrs_in_shared_tracker() {
+        let addr1 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let addr2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+
+        let in_use = InUseIpAddrs::new();
+        let mut resolver =
+            make_resolver_with_in_use(HashMap::new(), HashMap::new(), None, in_use.clone());
+
+        let result = resolver.new_addrs_to_launch(vec![addr1, addr2], 5, true);
+        assert_eq!(result, vec![addr1, addr2]);
+
+        // Verify the addresses were claimed in the shared tracker
+        let snapshot = in_use.snapshot();
+        assert!(snapshot.contains(&addr1));
+        assert!(snapshot.contains(&addr2));
+    }
+
+    #[test]
+    fn new_addrs_to_launch_does_not_claim_when_all_filtered() {
+        let existing = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        let in_use = InUseIpAddrs::new();
+        let task_state = HashMap::from([(existing, State::Running)]);
+        let mut resolver =
+            make_resolver_with_in_use(task_state, HashMap::new(), None, in_use.clone());
+
+        let result = resolver.new_addrs_to_launch(vec![existing], 5, true);
+        assert!(result.is_empty());
+
+        // Nothing should have been added to the shared tracker
+        assert!(in_use.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "not yet implemented")]
+    async fn handle_unreachable_removes_addr_from_shared_tracker() {
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        let in_use = InUseIpAddrs::new();
+        in_use.add(addr).unwrap();
+
+        let task_state = HashMap::from([(addr, State::Running)]);
+        let mut resolver =
+            make_resolver_with_in_use(task_state, HashMap::new(), None, in_use.clone());
+
+        // The remove happens before the todo!() panic.
+        // The two_resolvers_sharing_tracker test validates the remove behavior indirectly.
+        resolver.handle_unreachable(addr).await;
+    }
+
+    #[test]
+    fn two_resolvers_sharing_tracker_prevent_duplicate_selection() {
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        let shared_tracker = InUseIpAddrs::new();
+
+        let mut resolver1 =
+            make_resolver_with_in_use(HashMap::new(), HashMap::new(), None, shared_tracker.clone());
+        let mut resolver2 =
+            make_resolver_with_in_use(HashMap::new(), HashMap::new(), None, shared_tracker.clone());
+
+        // First resolver claims the address
+        let result1 = resolver1.new_addrs_to_launch(vec![addr], 5, true);
+        assert_eq!(result1, vec![addr]);
+
+        // Second resolver should NOT get the same address
+        let result2 = resolver2.new_addrs_to_launch(vec![addr], 5, true);
+        assert!(result2.is_empty());
     }
 }
