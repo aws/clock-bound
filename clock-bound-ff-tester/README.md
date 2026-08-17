@@ -46,10 +46,6 @@ results into another logfile. If the clock sync algorithm is the same as the one
 Where this adds value is when exploring changes in the clock sync algorithm. By making changes to the underlying algorithm, one can test the effects
 of that change against the same scenario.
 
-### Exploring Replays
-This crate's binary has a utility `primer-log-to-parquet` to convert the inputs and outputs into a `.parquet` file. This enables easy/fast data exploration
-with pandas/polars frameworks (or anything that can read parquet` files).
-
 ## Simulations
 This crate has the capability to simulate NTP and PHC events and replay them into the clock synchronization algorithm.
 One can use this by first creating a local oscillator model with the `oscillator-generator` command, and then modelling the sources with the

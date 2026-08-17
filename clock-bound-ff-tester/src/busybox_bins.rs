@@ -7,8 +7,6 @@
 )]
 
 pub mod oscillator_generator;
-#[cfg(feature = "polars")]
-pub mod primer_log_to_parquet;
 pub mod repro_replay;
 pub mod scenario_generator;
 pub mod sim_amazon_time_sync;

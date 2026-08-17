@@ -6,9 +6,6 @@ pub use log_parse::{repro_events_from_log_file, repro_events_from_reader};
 
 use std::{borrow::Borrow, io::Write};
 
-#[cfg(feature = "polars")]
-use polars::prelude as pl;
-
 use crate::events::v1;
 use crate::time::CbBridge;
 use clock_bound::daemon::{
@@ -30,204 +27,6 @@ pub enum ReproEvent {
     Init,
     /// A disruption event came in. Call `handle_disruption`
     Disruption,
-}
-
-#[cfg(feature = "polars")]
-impl ReproEvent {
-    /// Convert event into a [polars dataframe](pl::DataFrame)
-    ///
-    /// Schema is generally shaped as a column of `event` structs and optional `clock_params`
-    pub fn into_dataframe(events: Vec<Self>) -> Option<pl::DataFrame> {
-        use polars::prelude::*;
-
-        let (events, outputs): (Vec<_>, Vec<_>) = events
-            .into_iter()
-            .filter_map(|e| {
-                let Self::Feed { event, output } = e else {
-                    return None;
-                };
-                Some((event, output))
-            })
-            .unzip();
-
-        let event_df = Self::routable_events_dataframe(&events);
-        let params_df = Self::clock_parameters_dataframe(&outputs);
-
-        let event_series = event_df.into_struct("event".into()).into_series();
-        let params_series = params_df.into_struct("clock_params".into()).into_series();
-
-        #[expect(clippy::missing_panics_doc, reason = "infallible")]
-        let df = DataFrame::new(vec![event_series.into(), params_series.into()]).unwrap();
-
-        // Convert clock_params from a struct filled with nulls to a null struct
-        #[expect(clippy::missing_panics_doc, reason = "infallible")]
-        let df = df
-            .lazy()
-            .with_column(
-                when(
-                    col("clock_params")
-                        .struct_()
-                        .field_by_name("time")
-                        .is_null(),
-                )
-                .then(lit(Null {}))
-                .otherwise(col("clock_params"))
-                .alias("clock_params"),
-            )
-            .collect()
-            .unwrap();
-
-        Some(df)
-    }
-
-    fn clock_parameters_dataframe(params: &[Option<ClockParameters>]) -> pl::DataFrame {
-        use polars::prelude::*;
-
-        let capacity = params.len();
-        let mut tsc_counts = Vec::with_capacity(capacity);
-        let mut times = Vec::with_capacity(capacity);
-        let mut clock_error_bounds = Vec::with_capacity(capacity);
-        let mut periods = Vec::with_capacity(capacity);
-        let mut period_max_errors = Vec::with_capacity(capacity);
-        for param in params {
-            let Some(param) = param else {
-                tsc_counts.push(None);
-                times.push(None);
-                clock_error_bounds.push(None);
-                periods.push(None);
-                period_max_errors.push(None);
-                continue;
-            };
-            tsc_counts.push(Some(param.tsc_count.get()));
-            times.push(Some(param.time.as_nanos()));
-            clock_error_bounds.push(Some(param.clock_error_bound.as_nanos()));
-            periods.push(Some(param.period.get()));
-            period_max_errors.push(Some(param.period_max_error.get()));
-        }
-
-        let df = df!(
-            "tsc_count" => tsc_counts,
-            "time" => times,
-            "clock_error_bound" => clock_error_bounds,
-            "period_s" => periods,
-            "period_max_error_s" => period_max_errors,
-        )
-        .unwrap();
-
-        df.lazy()
-            .with_columns([
-                Self::cast_col_to_ts_ns("time"),
-                Self::cast_col_to_dur_ns("clock_error_bound"),
-            ])
-            .collect()
-            .unwrap()
-    }
-
-    fn routable_events_dataframe(events: &[RoutableEvent]) -> pl::DataFrame {
-        use polars::prelude::*;
-        let capacity = events.len();
-        let mut event_types = Vec::with_capacity(capacity);
-        let mut counter_pres = Vec::with_capacity(capacity);
-        let mut counter_posts = Vec::with_capacity(capacity);
-        let mut server_recv_times = Vec::with_capacity(capacity);
-        let mut server_send_times = Vec::with_capacity(capacity);
-        let mut root_delays = Vec::with_capacity(capacity);
-        let mut root_dispersions = Vec::with_capacity(capacity);
-        let mut stratums = Vec::with_capacity(capacity);
-        let mut phc_times = Vec::with_capacity(capacity);
-        let mut clock_error_bounds = Vec::with_capacity(capacity);
-        let mut socket_addrs = Vec::with_capacity(capacity);
-
-        for event in events {
-            match event {
-                RoutableEvent::AmazonTimeSync(event) => {
-                    event_types.push("AmazonTimeSync".to_string());
-                    counter_pres.push(event.counter_pre().get());
-                    counter_posts.push(event.counter_post().get());
-                    server_recv_times.push(Some(event.data().server_recv_time.as_nanos()));
-                    server_send_times.push(Some(event.data().server_send_time.as_nanos()));
-                    root_delays.push(Some(event.data().root_delay.as_nanos()));
-                    root_dispersions.push(Some(event.data().root_dispersion.as_nanos()));
-                    stratums.push(Some(u8::from(event.data().stratum)));
-                    phc_times.push(None);
-                    clock_error_bounds.push(None);
-                    socket_addrs.push(None);
-                }
-                RoutableEvent::Phc(event) => {
-                    event_types.push("Phc".to_string());
-                    counter_pres.push(event.counter_pre().get());
-                    counter_posts.push(event.counter_post().get());
-                    server_recv_times.push(None);
-                    server_send_times.push(None);
-                    root_delays.push(None);
-                    root_dispersions.push(None);
-                    stratums.push(None);
-                    phc_times.push(Some(event.data().time.as_nanos()));
-                    clock_error_bounds.push(Some(event.data().clock_error_bound.as_nanos()));
-                    socket_addrs.push(None);
-                }
-                RoutableEvent::NtpSource(addr, event) => {
-                    event_types.push("NtpSource".to_string());
-                    counter_pres.push(event.counter_pre().get());
-                    counter_posts.push(event.counter_post().get());
-                    server_recv_times.push(Some(event.data().server_recv_time.as_nanos()));
-                    server_send_times.push(Some(event.data().server_send_time.as_nanos()));
-                    root_delays.push(Some(event.data().root_delay.as_nanos()));
-                    root_dispersions.push(Some(event.data().root_dispersion.as_nanos()));
-                    stratums.push(Some(u8::from(event.data().stratum)));
-                    phc_times.push(None);
-                    clock_error_bounds.push(None);
-                    socket_addrs.push(Some(addr.to_string()));
-                }
-            }
-        }
-        let df = df!(
-            "type" => event_types,
-            "counter_pre" => counter_pres,
-            "counter_post" => counter_posts,
-            "server_recv_time" => server_recv_times,
-            "server_send_time" => server_send_times,
-            "root_delay" => root_delays,
-            "root_dispersion" => root_dispersions,
-            "stratum" => stratums,
-            "phc_time" => phc_times,
-            "clock_error_bound" => clock_error_bounds,
-            "socket_addr" => socket_addrs,
-        )
-        .unwrap();
-
-        // convert time types
-        df.lazy()
-            .with_columns([
-                Self::cast_col_to_ts_ns("server_recv_time"),
-                Self::cast_col_to_ts_ns("server_send_time"),
-                Self::cast_col_to_dur_ns("root_delay"),
-                Self::cast_col_to_dur_ns("root_dispersion"),
-                Self::cast_col_to_ts_ns("phc_time"),
-                Self::cast_col_to_dur_ns("clock_error_bound"),
-            ])
-            .collect()
-            .unwrap()
-    }
-
-    fn cast_col_to_ts_ns(col_name: &str) -> pl::Expr {
-        use polars::prelude::*;
-        col(col_name)
-            .cast(DataType::Int64)
-            .cast(DataType::Datetime(
-                TimeUnit::Nanoseconds,
-                Some(TimeZone::UTC),
-            ))
-            .alias(col_name)
-    }
-
-    fn cast_col_to_dur_ns(col_name: &str) -> pl::Expr {
-        use polars::prelude::*;
-        col(col_name)
-            .cast(DataType::Int64)
-            .cast(DataType::Duration(TimeUnit::Nanoseconds))
-            .alias(col_name)
-    }
 }
 
 /// Write a collection of [`ReproEvent`] items into a writeable sink
@@ -392,10 +191,46 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "polars")]
-    fn to_dataframe_does_not_panic() {
-        let log = include_str!("repro/test_ffevents.log");
-        let events = repro_events_from_reader(log.as_bytes()).unwrap();
-        let _df = ReproEvent::into_dataframe(events);
+    fn scenario_from_logs() {
+        let example_log = include_str!("repro/test_11_06_2025.log");
+
+        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
+
+        let param_count = events
+            .iter()
+            .filter_map(|event| {
+                let ReproEvent::Feed {
+                    event: _event,
+                    output: params,
+                } = event
+                else {
+                    return None;
+                };
+                params.as_ref()
+            })
+            .count();
+        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
+    }
+
+    #[test]
+    fn scenario_from_nanos_logs() {
+        let example_log = include_str!("repro/test_11_06_2025_nanos.log");
+
+        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
+
+        let param_count = events
+            .iter()
+            .filter_map(|event| {
+                let ReproEvent::Feed {
+                    event: _event,
+                    output: params,
+                } = event
+                else {
+                    return None;
+                };
+                params.as_ref()
+            })
+            .count();
+        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
     }
 }
