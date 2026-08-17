@@ -17,10 +17,15 @@ pub const FILE_NAME: &str = "ffevents.log";
 /// Emit an `init` event to the ffevents log.
 ///
 /// Called once at daemon startup to delimit log replay boundaries.
+///
+/// `seq` is the event sequence number. Callers should start numbering at zero
+/// for the `init` event and increment by one for every subsequent `feed` or
+/// `disruption` event.
 #[expect(clippy::missing_panics_doc, reason = "infallible")]
-pub fn log_init() {
+pub fn log_init(seq: u64) {
     let envelope = serde_json::json!({
         "event": "init",
+        "seq": seq,
         "init": {
             "message": "Clock Sync Algorithm initialized"
         }
@@ -32,10 +37,13 @@ pub fn log_init() {
 /// Emit a `disruption` event to the ffevents log.
 ///
 /// Called when a clock discontinuity is detected and state is reset.
+///
+/// `seq` is the event sequence number. See [`log_init`] for numbering rules.
 #[expect(clippy::missing_panics_doc, reason = "infallible")]
-pub fn log_disruption() {
+pub fn log_disruption(seq: u64) {
     let envelope = serde_json::json!({
         "event": "disruption",
+        "seq": seq,
         "disruption": {
             "message": "Disruption occurred"
         }
@@ -45,10 +53,13 @@ pub fn log_disruption() {
 }
 
 /// Emit a `feed` event to the ffevents log containing input and output data.
+///
+/// `seq` is the event sequence number. See [`log_init`] for numbering rules.
 #[expect(clippy::missing_panics_doc, reason = "infallible")]
-pub fn log_feed(input: &RoutableEvent, output: Option<&ClockParameters>) {
+pub fn log_feed(input: &RoutableEvent, output: Option<&ClockParameters>, seq: u64) {
     let envelope = serde_json::json!({
         "event": "feed",
+        "seq": seq,
         "feed": {
             "input": input,
             "output": output
@@ -156,7 +167,7 @@ mod tests {
     #[test]
     fn init_event() {
         let (output, _tmp) = with_ffevents_layer(|| {
-            super::log_init();
+            super::log_init(0);
         });
 
         assert_matches_expected(
@@ -164,6 +175,7 @@ mod tests {
             r#"{
                 "timestamp": "",
                 "event": "init",
+                "seq": 0,
                 "init": {
                     "message": "Clock Sync Algorithm initialized"
                 },
@@ -175,7 +187,7 @@ mod tests {
     #[test]
     fn disruption_event() {
         let (output, _tmp) = with_ffevents_layer(|| {
-            super::log_disruption();
+            super::log_disruption(7);
         });
 
         assert_matches_expected(
@@ -183,6 +195,7 @@ mod tests {
             r#"{
                 "timestamp": "",
                 "event": "disruption",
+                "seq": 7,
                 "disruption": {
                     "message": "Disruption occurred"
                 },
@@ -195,7 +208,7 @@ mod tests {
     fn feed_ntp_no_output() {
         let (output, _tmp) = with_ffevents_layer(|| {
             let routable = RoutableEvent::AmazonTimeSync(sample_ntp_event());
-            super::log_feed(&routable, None);
+            super::log_feed(&routable, None, 1);
         });
 
         assert_matches_expected(
@@ -203,6 +216,7 @@ mod tests {
             r#"{
                 "timestamp": "",
                 "event": "feed",
+                "seq": 1,
                 "feed": {
                     "input": {
                         "type": "ntp",
@@ -229,7 +243,7 @@ mod tests {
         let output_params = sample_output();
         let (output, _tmp) = with_ffevents_layer(|| {
             let routable = RoutableEvent::Phc(sample_phc_event());
-            super::log_feed(&routable, Some(&output_params));
+            super::log_feed(&routable, Some(&output_params), 2);
         });
 
         assert_matches_expected(
@@ -237,6 +251,7 @@ mod tests {
             r#"{
                 "timestamp": "",
                 "event": "feed",
+                "seq": 2,
                 "feed": {
                     "input": {
                         "type": "phc",

@@ -45,6 +45,12 @@ pub struct ClockSyncAlgorithm {
     selected_clock: Arc<SelectedClockSource>,
     /// Selector. Chooses the best clock source
     selector: Selector,
+    /// Monotonically increasing sequence number for ffevents log entries.
+    ///
+    /// Assigned to the `init` event (starting at zero) and incremented by one
+    /// for every subsequent `feed` or `disruption` event.
+    #[builder(default)]
+    seq: u64,
 }
 
 impl ClockSyncAlgorithm {
@@ -86,8 +92,8 @@ impl ClockSyncAlgorithm {
     /// Logs into the reproducibility logs that the app has started
     ///
     /// Can be used to break-up application restarts when scanning logs
-    pub fn init_repro(&self) {
-        logging::ffevents::log_init();
+    pub fn init_repro(&mut self) {
+        logging::ffevents::log_init(self.next_seq());
     }
 
     /// Feed the clock sync algorithm with a time synchronization event
@@ -131,6 +137,16 @@ impl ClockSyncAlgorithm {
         self.selector.current()
     }
 
+    /// Return the current ffevents sequence number, then increment it.
+    ///
+    /// Used to number every ffevents log entry (`init`/`feed`/`disruption`)
+    /// with a monotonically increasing sequence number, starting at zero.
+    fn next_seq(&mut self) -> u64 {
+        let seq = self.seq;
+        self.seq += 1;
+        seq
+    }
+
     /// Convenience function to allow for easy instrumenting
     fn feed_inner(&mut self, routable_event: RoutableEvent) -> Option<&SyncParameters> {
         // First route the event to the correct inner source
@@ -164,8 +180,9 @@ impl ClockSyncAlgorithm {
         reason = "serializing event before logging is unergonomic"
     )]
     fn feed_repro(&mut self, routable_event: RoutableEvent) -> Option<&SyncParameters> {
+        let seq = self.next_seq();
         let output = self.feed_inner(routable_event.clone());
-        logging::ffevents::log_feed(&routable_event, output.map(|sp| &sp.clock_parameters));
+        logging::ffevents::log_feed(&routable_event, output.map(|sp| &sp.clock_parameters), seq);
         output
     }
 
@@ -232,6 +249,7 @@ impl ClockSyncAlgorithm {
             phc,
             selected_clock,
             selector,
+            seq,
         } = self;
 
         selected_clock.set_to_none();
@@ -247,7 +265,9 @@ impl ClockSyncAlgorithm {
 
         selector.handle_disruption();
         tracing::info!("Handled clock disruption event");
-        logging::ffevents::log_disruption();
+        let current_seq = *seq;
+        *seq += 1;
+        logging::ffevents::log_disruption(current_seq);
     }
 }
 
