@@ -12,7 +12,7 @@ use tokio::{
     sync::{mpsc, watch},
     time::{self, Duration, Instant, Interval, MissedTickBehavior, interval_at},
 };
-use tracing::{debug, error, info, trace};
+use tracing::{debug, info, trace};
 
 pub mod packet;
 pub use packet::{ExtensionField, Fec2V1Value as DaemonInfo, Packet};
@@ -20,7 +20,7 @@ pub use packet::{ExtensionField, Fec2V1Value as DaemonInfo, Packet};
 pub mod socket_ext;
 
 use crate::daemon::{
-    async_ring_buffer::{self, SendError},
+    async_ring_buffer::{self, BufferClosedError, SendError},
     event::{self, NtpData},
     io::{
         ClockDisruptionEvent, ControlRequest,
@@ -241,19 +241,24 @@ impl Ntp {
 
     /// Sends an NTP event through the ring buffer.
     ///
-    /// # Panics
-    /// Panics if the ring buffer is closed, indicating the daemon can no longer communicate.
-    pub fn send_event(&self, event: &event::Ntp) {
+    /// Silently drops the event if a disruption occurs. This will be handled by the task
+    /// on the next iteration of the IO task loop
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer receiver is closed
+    pub fn send_event(&self, event: &event::Ntp) -> Result<(), BufferClosedError> {
         match self.event_sender.send(event.clone()) {
-            Ok(()) => debug!(?event, "Successfully sent IO event."),
+            Ok(()) => {
+                debug!(?event, "Successfully sent IO event.");
+                Ok(())
+            }
             Err(SendError::Disrupted(_)) => {
+                // next await of this task will respond with a disruption notification
                 info!("Trying to send when there was a disruption event.");
+                Ok(())
             }
-            Err(SendError::BufferClosed(e)) => {
-                // TODO: handle when integrating DNS logic to tear down and recreate.
-                error!(?e, "channel closed. not supported in alpha");
-                panic!("unable to communicate with daemon. {e:?}");
-            }
+            Err(SendError::BufferClosed(e)) => Err(e),
         }
     }
 }

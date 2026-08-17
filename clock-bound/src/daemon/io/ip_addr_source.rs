@@ -7,7 +7,7 @@ use tokio::{
     sync::{mpsc, watch},
     time::Duration,
 };
-use tracing::info;
+use tracing::{error, info};
 
 use super::ntp::{DaemonInfo, ExtensionField, Ntp, NtpIoError};
 use super::{ClockDisruptionEvent, ControlRequest};
@@ -80,7 +80,7 @@ impl IpAddrSource {
                 biased; // priority order is disruption, commands, and ticks
                 val = branches.clock_disruption_receiver.changed() => {
                     if let Err(e) = val {
-                        tracing::error!(?e, "Clock disruption receiver dropped.");
+                        error!(?e, "Clock disruption receiver dropped.");
                         break;
                     }
                     info!("Received clock disruption signal.");
@@ -115,6 +115,9 @@ impl IpAddrSource {
             }
             Ok(ntp_event) => ntp_event,
         };
-        self.ntp.send_event(&ntp_event);
+        if let Err(e) = self.ntp.send_event(&ntp_event) {
+            error!(?e, "channel closed. Not supported on this task");
+            panic!("unable to communicate with daemon. {e:?}");
+        }
     }
 }

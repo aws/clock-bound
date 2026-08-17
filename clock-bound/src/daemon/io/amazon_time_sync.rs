@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
-use tracing::info;
+use tracing::{error, info};
 
 use super::ntp::{BurstConfig, Ntp, NtpIoError};
 use super::{ClockDisruptionEvent, ControlRequest};
@@ -81,7 +81,7 @@ impl AmazonTimeSync {
                 biased; // priority order is disruption, commands, and ticks
                 val = branches.clock_disruption_receiver.changed() => {
                     if let Err(e) = val {
-                        tracing::error!(?e, "Clock disruption receiver dropped.");
+                        error!(?e, "Clock disruption receiver dropped.");
                         break;
                     }
                     if self.ntp.handle_disruption() {
@@ -119,7 +119,10 @@ impl AmazonTimeSync {
             }
         };
 
-        self.ntp.send_event(&ntp_event);
+        if let Err(e) = self.ntp.send_event(&ntp_event) {
+            error!(?e, "channel closed. Not supported on this task");
+            panic!("unable to communicate with daemon. {e:?}");
+        }
 
         if self.ntp.handle_burst_expiry() {
             info!("Transitioning from `Burst` mode to `Normal` mode.");
