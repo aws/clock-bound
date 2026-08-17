@@ -30,7 +30,7 @@ use clock_bound::client::{
     CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
     VMCLOCK_SHM_DEFAULT_PATH,
 };
-use clock_bound::daemon::io::dmi::InstanceType;
+use clock_bound::daemon::autodetect::Autodetect;
 
 /// Exit code when the clock synchronized within the timeout.
 const EXIT_CODE_SYNCHRONIZED: u8 = 0;
@@ -181,19 +181,22 @@ pub fn run(args: &WaitsyncArgs) -> ExitCode {
     // impaired, the daemon cannot guarantee a trusted clock error bound, and waiting would
     // block forever. Bare metal EC2 instances have no VMClock device by design, and non-EC2
     // hosts (or hosts whose instance type cannot be determined from DMI) are exempt.
-    let instance_type = match InstanceType::get_from_dmi() {
-        Ok(instance_type) => instance_type,
+    let autodetect = match Autodetect::detect() {
+        Ok(result) => result,
         Err(error) => {
             if args.verbose {
                 eprintln!(
-                    "cbctl waitsync: warning: could not determine the instance type ({error}); \
+                    "cbctl waitsync: warning: could not determine the platform ({error}); \
                      skipping the VMClock environment check"
                 );
             }
-            None
+            Autodetect::Other
         }
     };
-    let vmclock_required = instance_type.is_some_and(|instance_type| !instance_type.is_metal());
+    let vmclock_required = match &autodetect {
+        Autodetect::Amazon(amazon) => !amazon.is_metal(),
+        Autodetect::Other => false,
+    };
     if vmclock_required && !Path::new(VMCLOCK_SHM_DEFAULT_PATH).exists() {
         // TODO: add a link to public documentation on the VMClock device requirement for
         // virtualized EC2 instances to this error message.

@@ -9,9 +9,12 @@ use std::net::SocketAddr;
 use crate::daemon::ClockSyncAlgorithm;
 use crate::daemon::ReceiverStream;
 use crate::daemon::async_ring_buffer;
+use crate::daemon::autodetect::{self, Autodetect};
 use crate::daemon::clock_sync_algorithm::source;
 use crate::daemon::io::SourceIO;
 use crate::daemon::time::tsc::Skew;
+use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
+use tracing::info;
 
 /// Mutate the sources in the app
 ///
@@ -33,6 +36,43 @@ impl<'a> SourceMutator<'a> {
             io_front_end,
             clock_sync_algorithm,
             receiver_stream,
+        }
+    }
+
+    /// Install sources based on platform autodetection results.
+    ///
+    /// On Amazon (Nitro or Xen), installs Amazon Time Sync, PHC, and VMClock (if non-metal).
+    /// On other platforms, this is a no-op — only NTP sources are used, installed separately.
+    pub async fn init_from_autodetect_results(
+        &mut self,
+        autodetect: &Autodetect,
+        max_dispersion: Skew,
+    ) {
+        match autodetect {
+            Autodetect::Amazon(amazon) => self.init_amazon_sources(amazon, max_dispersion).await,
+            Autodetect::Other => {
+                info!("Non-Amazon platform detected. Skipping Amazon-specific sources.");
+            }
+        }
+    }
+
+    /// Install all Amazon-specific clock sources: local Amazon Time Sync NTP, PHC, and VMClock.
+    ///
+    /// VMClock is only installed on non-metal instances
+    async fn init_amazon_sources(&mut self, amazon: &autodetect::Amazon, max_dispersion: Skew) {
+        self.set_amazon_time_sync(max_dispersion);
+        self.set_phc(max_dispersion).await;
+
+        // VMClock only touches the IO layer — it does not wire into the clock sync algorithm or
+        // receiver stream. It provides clock disruption events, not time samples.
+        if amazon.is_metal() {
+            info!("EC2 metal instance detected. VMClock not enabled.");
+        } else {
+            // TODO: align create_vmclock error handling with PHC's graceful degradation (currently
+            // panics if the shm file is missing on a confirmed non-metal EC2 instance).
+            self.io_front_end
+                .create_vmclock(VMCLOCK_SHM_DEFAULT_PATH)
+                .await;
         }
     }
 

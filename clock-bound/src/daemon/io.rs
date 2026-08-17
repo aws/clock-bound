@@ -15,9 +15,6 @@ use crate::daemon::io::ntp::DaemonInfo;
 use crate::daemon::selected_clock::SelectedClockSource;
 use crate::daemon::{async_ring_buffer, event};
 
-pub mod dmi;
-use dmi::InstanceType;
-
 pub mod amazon_time_sync;
 use amazon_time_sync::AmazonTimeSync;
 
@@ -193,12 +190,11 @@ impl SourceIO {
 
     /// Initializes the IO task for sampling the VMClock shared memory file.
     ///
-    /// A VMClock object will not be created if the daemon is running on an unsupported instance
-    /// type, the shared memory file is not found, or if the instance type cannot be determined
-    /// from the local DMI tables.
+    /// The caller is responsible for ensuring this is only called on supported instance types
+    /// This method does not perform any platform checks.
     ///
     /// # Panics
-    /// - When the vmclock device can not be constructed using the provided shared memory path.
+    /// - When the vmclock device cannot be constructed using the provided shared memory path.
     pub async fn create_vmclock(&mut self, vmclock_shm_path: &str) {
         info!("Creating VMClock source.");
 
@@ -206,29 +202,8 @@ impl SourceIO {
         if self.vmclock.is_none() {
             self.vmclock = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
-                // Not all instance types are able to use vmclock. Before attempting to create the
-                // vmclock object the instance is first determined to be viable, using the local
-                // DMI/SMBIOS tables to identify the instance type.
-                let instance_type = match InstanceType::get_from_dmi() {
-                    Ok(Some(it)) => it,
-                    Ok(None) => {
-                        info!("Not an EC2 instance. VMClock not enabled.");
-                        return;
-                    }
-                    Err(e) => {
-                        warn!(?e, "EC2 instance type not determined. VMClock not enabled.");
-                        return;
-                    }
-                };
 
-                // Metal instances do not benefit from the vmclock and the vmclock will not be
-                // enabled on this instance types.
-                if instance_type.is_metal() {
-                    info!("EC2 metal instance type determined. Not enabling VMClock");
-                    return;
-                }
-
-                info!("EC2 non-metal instance type determined. Enabling VMClock.");
+                info!("Enabling VMClock.");
                 let vmclock = VMClock::construct(
                     vmclock_shm_path,
                     ctrl_receiver,

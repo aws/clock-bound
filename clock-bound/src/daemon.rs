@@ -16,6 +16,9 @@ pub mod receiver_stream;
 pub mod selected_clock;
 
 #[cfg(feature = "daemon")]
+pub mod autodetect;
+
+#[cfg(feature = "daemon")]
 pub mod source_mutator;
 
 #[cfg(feature = "daemon")]
@@ -36,6 +39,7 @@ use {
     crate::{
         daemon::{
             async_ring_buffer::Sender,
+            autodetect::Autodetect,
             clock_state::ClockState,
             clock_sync_algorithm::{ClockSyncAlgorithm, Selector, SyncParameters},
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
@@ -45,14 +49,13 @@ use {
             time::tsc::Skew,
         },
         shm::ClockStatus,
-        vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH,
     },
     rand::{RngCore, rng},
     std::net::{IpAddr, Ipv4Addr, SocketAddr},
     std::sync::Arc,
     tokio::sync::watch,
     tokio_util::{sync::CancellationToken, task::TaskTracker},
-    tracing::{error, info},
+    tracing::{error, info, warn},
 };
 
 /// The maximum dispersion growth every second
@@ -119,16 +122,29 @@ impl Daemon {
             &mut receiver_stream,
         );
 
-        // Add clock sources
-        // TODO: gate this on platform autodetection
-        source_mutator.set_amazon_time_sync(MAX_DISPERSION_GROWTH);
-        source_mutator.set_phc(MAX_DISPERSION_GROWTH).await;
+        // Platform auto-detection: determine which sources to install.
+        let autodetect_result = match Autodetect::detect() {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(
+                    ?e,
+                    "Platform auto-detection failed; defaulting to non-Amazon."
+                );
+                Autodetect::Other
+            }
+        };
+
+        // Install Amazon-conditional sources.
+        source_mutator
+            .init_from_autodetect_results(&autodetect_result, MAX_DISPERSION_GROWTH)
+            .await;
+
+        // Install universal NTP sources.
         for socket_addr in AWS_TEMP_PUBLIC_TIME_ADDRESSES {
             source_mutator.add_ntp_source(socket_addr, MAX_DISPERSION_GROWTH);
         }
 
-        // Initialize vmclock IO component.
-        io_front_end.create_vmclock(VMCLOCK_SHM_DEFAULT_PATH).await;
+        // Read VMClock state (may have been created by init_amazon_sources above).
         #[expect(clippy::redundant_closure_for_method_calls)]
         let disruption_marker = io_front_end
             .vmclock()
