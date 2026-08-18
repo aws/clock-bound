@@ -77,6 +77,10 @@ pub struct Ntp {
 #[bon::bon]
 impl Ntp {
     /// Constructs a new `Ntp` base struct.
+    ///
+    /// # Panics
+    ///
+    /// Panics if not constructed within a tokio runtime
     #[builder]
     pub fn new(
         /// Ring buffer sender for NTP events
@@ -114,7 +118,7 @@ impl Ntp {
             mode: Mode::burst(),
         });
 
-        Ntp {
+        let mut retval = Ntp {
             event_sender,
             ctrl_receiver,
             clock_disruption_receiver,
@@ -127,7 +131,9 @@ impl Ntp {
             socket_address,
             timeout,
             burst,
-        }
+        };
+        retval.decorrelate_poll_timing();
+        retval
     }
 }
 
@@ -140,6 +146,22 @@ impl Ntp {
             ctrl_receiver: &mut self.ctrl_receiver,
             interval: &mut self.interval,
         }
+    }
+
+    /// Set the interval to fire at a random time in the future
+    ///
+    /// This prevents all NTP tasks from polling at the same time
+    fn decorrelate_poll_timing(&mut self) {
+        let max_delay = if let Some(burst) = &self.burst
+            && let Mode::Burst(_) = &burst.mode
+        {
+            burst.config.interval.as_nanos() as usize
+        } else {
+            self.normal_interval.as_nanos() as usize
+        };
+        let delay = rand::random_range(0..=max_delay) as u64;
+        let delay = Duration::from_nanos(delay);
+        self.interval.reset_after(delay);
     }
 
     /// Return the socket address
@@ -234,6 +256,7 @@ impl Ntp {
             self.interval = interval_at(Instant::now() + normal, normal);
             self.interval
                 .set_missed_tick_behavior(MissedTickBehavior::Delay);
+            self.decorrelate_poll_timing();
             return true;
         }
         false
