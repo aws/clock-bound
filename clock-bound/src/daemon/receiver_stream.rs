@@ -132,7 +132,35 @@ impl ReceiverStream {
         select_all(streams)
     }
 
+    /// Number of configured receivers
+    pub fn len(&self) -> usize {
+        // destructure to ensure we catch new members at compile time
+        let Self {
+            ntp_sources,
+            amazon_time_sync,
+            phc,
+        } = self;
+
+        let mut retval = ntp_sources.len();
+        if amazon_time_sync.is_some() {
+            retval += 1;
+        }
+
+        if phc.is_some() {
+            retval += 1;
+        }
+
+        retval
+    }
+
+    /// Returns `true` if no receivers are configured.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Creates an aggregate stream containing all results from `SourceIO` component `Receiver`s tracked by the struct
+    ///
+    /// This will immediately return if there are no configured streams
     ///
     /// # Returns
     /// a `RoutableEvent` wrapping the first event returned by the aggregate stream.
@@ -483,6 +511,100 @@ mod tests {
         assert!(rx_stream.ntp_sources.is_empty());
     }
 
+    #[test]
+    fn len_empty() {
+        let rx_stream = ReceiverStream::builder().build();
+        assert_eq!(rx_stream.len(), 0);
+    }
+
+    #[test]
+    fn is_empty_reflects_configured_receivers() {
+        let empty_stream = ReceiverStream::builder().build();
+        assert!(empty_stream.is_empty());
+
+        let (_, amazon_time_sync_rx) = create(1);
+        let non_empty_stream = ReceiverStream::builder()
+            .amazon_time_sync(amazon_time_sync_rx)
+            .build();
+        assert!(!non_empty_stream.is_empty());
+    }
+
+    #[test]
+    fn len_amazon_time_sync_only() {
+        let (_, amazon_time_sync_rx) = create(1);
+
+        let rx_stream = ReceiverStream::builder()
+            .amazon_time_sync(amazon_time_sync_rx)
+            .build();
+
+        assert_eq!(rx_stream.len(), 1);
+    }
+
+    #[test]
+    fn len_phc_only() {
+        let (_, phc_rx) = create(1);
+
+        let rx_stream = ReceiverStream::builder().phc(phc_rx).build();
+
+        assert_eq!(rx_stream.len(), 1);
+    }
+
+    #[test]
+    fn len_ntp_sources_only() {
+        let (_, ntp_source_rx_a) = create(1);
+        let (_, ntp_source_rx_b) = create(1);
+
+        let addr_a = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 123);
+        let addr_b = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 123);
+
+        let rx_stream = ReceiverStream::builder()
+            .ntp_sources(HashMap::from([
+                (addr_a, ntp_source_rx_a),
+                (addr_b, ntp_source_rx_b),
+            ]))
+            .build();
+
+        assert_eq!(rx_stream.len(), 2);
+    }
+
+    #[test]
+    fn len_all_sources() {
+        let (_, amazon_time_sync_rx) = create(1);
+        let (_, phc_rx) = create(1);
+        let (_, ntp_source_rx) = create(1);
+
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 123);
+
+        let rx_stream = ReceiverStream::builder()
+            .amazon_time_sync(amazon_time_sync_rx)
+            .phc(phc_rx)
+            .ntp_sources(HashMap::from([(addr, ntp_source_rx)]))
+            .build();
+
+        // 1 amazon time sync + 1 phc + 1 ntp source
+        assert_eq!(rx_stream.len(), 3);
+    }
+
+    #[test]
+    fn len_reflects_add_and_remove_ntp_source() {
+        let (_, amazon_time_sync_rx) = create(1);
+        let (_, ntp_source_rx) = create(1);
+
+        let dummy_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 123);
+        let dummy_ntp_source_receiver: IpAddrSourceReceiver = (dummy_address, ntp_source_rx);
+
+        let mut rx_stream = ReceiverStream::builder()
+            .amazon_time_sync(amazon_time_sync_rx)
+            .build();
+
+        assert_eq!(rx_stream.len(), 1);
+
+        rx_stream.add_ntp_source(dummy_ntp_source_receiver);
+        assert_eq!(rx_stream.len(), 2);
+
+        rx_stream.remove_ntp_source(&dummy_address);
+        assert_eq!(rx_stream.len(), 1);
+    }
     #[tokio::test]
     async fn pool_source_delivered_as_ntp_source() {
         let (_amazon_time_sync_tx, amazon_time_sync_rx) = create(1);

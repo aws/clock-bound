@@ -241,7 +241,7 @@ impl Daemon {
                     // exit ourselves
                     break;
                 }
-                routable_event = self.receiver_stream.recv() => {
+                routable_event = self.receiver_stream.recv(), if !self.receiver_stream.is_empty() => {
                     // TODO: This will return None if nothing is initialized. We need
                     // the handle this scenario
                     #[expect(clippy::missing_panics_doc)]
