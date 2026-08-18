@@ -35,6 +35,9 @@ pub mod config;
 
 pub mod logging;
 
+#[cfg(feature = "daemon")]
+pub mod message;
+
 // --- Everything below is only needed for the full daemon ---
 
 #[cfg(feature = "daemon")]
@@ -46,6 +49,7 @@ use {
             clock_state::ClockState,
             clock_sync_algorithm::{ClockSyncAlgorithm, Selector, SyncParameters},
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
+            message::Dns as DnsMessage,
             receiver_stream::{ReceiverStream, RoutableEvent},
             selected_clock::SelectedClockSource,
             source_mutator::SourceMutator,
@@ -54,9 +58,11 @@ use {
         shm::ClockStatus,
     },
     rand::{RngCore, rng},
-    std::net::{IpAddr, Ipv4Addr, SocketAddr},
-    std::sync::Arc,
-    tokio::sync::watch,
+    std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Arc,
+    },
+    tokio::sync::{mpsc, watch},
     tokio_util::{sync::CancellationToken, task::TaskTracker},
     tracing::{error, info, warn},
 };
@@ -84,6 +90,13 @@ pub const AWS_TEMP_PUBLIC_TIME_ADDRESSES: [SocketAddr; 2] = [
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(3, 33, 186, 244)), 123),
 ];
 
+/// The number of messages that can be in the daemon's mpsc channel
+///
+/// There is no technical reason why this cannot be one. However, adding
+/// more allows for less contention when initializing pools
+#[cfg(feature = "daemon")]
+const DAEMON_MESSAGE_CAPACITY: usize = 5;
+
 #[cfg(feature = "daemon")]
 pub struct Daemon {
     io_front_end: io::SourceIO,
@@ -92,6 +105,7 @@ pub struct Daemon {
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     cancellation_token: CancellationToken,
     clock_state_handle: ClockStateHandle,
+    dns_message_rx: mpsc::Receiver<DnsMessage>,
 }
 
 #[cfg(feature = "daemon")]
@@ -110,7 +124,9 @@ impl Daemon {
         let selected_clock = Arc::new(SelectedClockSource::default());
 
         // Initialize IO components.
-        let mut io_front_end = io::SourceIO::construct(selected_clock.clone(), daemon_info);
+        let (dns_message_tx, dns_message_rx) = mpsc::channel(DAEMON_MESSAGE_CAPACITY);
+        let mut io_front_end =
+            io::SourceIO::construct(selected_clock.clone(), daemon_info, dns_message_tx);
         let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
 
         let mut receiver_stream = ReceiverStream::default();
@@ -183,6 +199,7 @@ impl Daemon {
             clock_disruption_receiver,
             cancellation_token,
             clock_state_handle,
+            dns_message_rx,
         }
     }
 
@@ -194,7 +211,7 @@ impl Daemon {
         self.clock_state_handle.task_tracker.spawn({
             #[expect(
                 clippy::missing_panics_doc,
-                reason = "struct always initialized with Some"
+                reason = "struct always initialized with `Some`"
             )]
             let mut clock_state = self.clock_state_handle.clock_state.take().unwrap();
             async move {
@@ -208,9 +225,6 @@ impl Daemon {
                 biased; // biased to ensure disruption is handled first when this happens
                 Ok(()) = self.clock_disruption_receiver.changed() => {
                     self.handle_disruption();
-                }
-                Some(routable_event) = self.receiver_stream.recv() => {
-                    self.handle_event(routable_event);
                 }
                 () = self.cancellation_token.cancelled() => {
                     info!("Received shutdown signal. Starting graceful shutdown of daemon.");
@@ -226,6 +240,18 @@ impl Daemon {
 
                     // exit ourselves
                     break;
+                }
+                routable_event = self.receiver_stream.recv() => {
+                    // TODO: This will return None if nothing is initialized. We need
+                    // the handle this scenario
+                    #[expect(clippy::missing_panics_doc)]
+                    let routable_event = routable_event.unwrap();
+                    self.handle_event(routable_event);
+                }
+                dns_message = self.dns_message_rx.recv() => {
+                    #[expect(clippy::missing_panics_doc, reason = "tx held by SourceIO. Will not close")]
+                    let dns_message = dns_message.unwrap();
+                    self.handle_dns_message(dns_message);
                 }
             }
         }
@@ -255,8 +281,26 @@ impl Daemon {
         }
     }
 
+    // Should only be called from the run fn
+    fn handle_dns_message(&mut self, dns_message: DnsMessage) {
+        let mut source_mutator = SourceMutator::new(
+            &mut self.io_front_end,
+            &mut self.clock_sync_algorithm,
+            &mut self.receiver_stream,
+        );
+        match dns_message {
+            DnsMessage::AddPoolAddr(msg) => {
+                source_mutator.add_pool_source(msg.pool_domain, msg.addr, MAX_DISPERSION_GROWTH);
+            }
+            DnsMessage::RemovePoolAddr(msg) => {
+                source_mutator.remove_pool_source(msg.pool_domain, msg.addr);
+            }
+        }
+    }
+
     /// Handle a clock disruption event
     fn handle_disruption(&mut self) {
+        // using destructure pattern ensure that all fields are handled
         let Self {
             io_front_end: _,
             clock_sync_algorithm,
@@ -264,6 +308,7 @@ impl Daemon {
             clock_disruption_receiver,
             cancellation_token: _,
             clock_state_handle,
+            dns_message_rx: _,
         } = self;
 
         let ClockStateHandle {

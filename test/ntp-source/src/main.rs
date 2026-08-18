@@ -8,6 +8,7 @@ use clock_bound::daemon::async_ring_buffer::{self, BufferClosedError, Receiver};
 use clock_bound::daemon::event::{Ntp, Stratum, ValidStratumLevel};
 use clock_bound::daemon::io::ip_addr_source::Sender as IpAddrSourceSender;
 use clock_bound::daemon::io::{SourceIO, ntp::DaemonInfo};
+use clock_bound::daemon::message::Dns as DnsMessage;
 use clock_bound::daemon::selected_clock::{ClockSource, SelectedClockSource};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -40,7 +41,10 @@ fn setup() -> (Vec<Receiver<Ntp>>, Arc<SelectedClockSource>, SourceIO) {
 
     let selected_clock = Arc::new(SelectedClockSource::default());
 
-    let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info);
+    let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info, {
+        let (tx, _) = tokio::sync::mpsc::channel::<DnsMessage>(1);
+        tx
+    });
     let mut receiver_vec: Vec<Receiver<Ntp>> = Vec::new();
 
     for address in AWS_TEMP_PUBLIC_TIME_ADDRESSES {

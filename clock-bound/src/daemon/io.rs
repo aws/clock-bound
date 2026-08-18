@@ -11,14 +11,15 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn};
 
 pub mod ntp;
+use crate::daemon::io::dns::Pool;
 use crate::daemon::io::ntp::DaemonInfo;
 use crate::daemon::selected_clock::SelectedClockSource;
-use crate::daemon::{async_ring_buffer, event};
+use crate::daemon::{self, async_ring_buffer, event};
 
 pub mod amazon_time_sync;
 use amazon_time_sync::AmazonTimeSync;
 
-mod dns;
+pub mod dns;
 
 pub mod in_use_ip_addrs;
 use in_use_ip_addrs::InUseIpAddrs;
@@ -45,6 +46,8 @@ pub struct SourceIO {
     ip_addr_sources: HashMap<SocketAddr, Source<IpAddrSource>>,
     /// The PHC source.
     phc: Option<Source<Phc>>,
+    /// Mapping of pool domain to the pool struct
+    dns_pools: HashMap<String, Pool>,
     /// The VMClock source
     vmclock: Option<Source<VMClock>>,
     /// Contains the channel used to communicate clock disruption events.
@@ -55,13 +58,21 @@ pub struct SourceIO {
     daemon_info: DaemonInfo,
     /// `tokio::task::TaskTracker` to manage lifecycle of the individual IO tasks
     task_tracker: TaskTracker,
+    /// DNS message sender
+    ///
+    /// Passed into resolver structs to construct and delete NTP sources
+    _dns_message_tx: mpsc::Sender<daemon::DnsMessage>,
     /// Shared tracker of IP addresses currently in use by NTP IO tasks
     in_use_ip_addrs: InUseIpAddrs,
 }
 
 impl SourceIO {
     /// Constructs a new `SourceIO` object and constructs the necessary resources.
-    pub fn construct(selected_clock: Arc<SelectedClockSource>, daemon_info: DaemonInfo) -> Self {
+    pub fn construct(
+        selected_clock: Arc<SelectedClockSource>,
+        daemon_info: DaemonInfo,
+        dns_message_tx: mpsc::Sender<daemon::DnsMessage>,
+    ) -> Self {
         let (sender, _) = watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
 
         // Task tracker is closed on initialization. We only open it during calls to spawn
@@ -73,12 +84,14 @@ impl SourceIO {
         SourceIO {
             amazon_time_sync: None,
             ip_addr_sources: HashMap::new(),
+            dns_pools: HashMap::new(),
             phc: None,
             vmclock: None,
             clock_disruption_channels: ClockDisruptionChannels { sender },
             selected_clock,
             daemon_info,
             task_tracker,
+            _dns_message_tx: dns_message_tx,
             in_use_ip_addrs: InUseIpAddrs::new(),
         }
     }
@@ -146,6 +159,27 @@ impl SourceIO {
         }
 
         info!("Source NTP update complete.");
+    }
+
+    /// Initializes an NTP pool
+    #[tracing::instrument(level = "info", skip(self))]
+    pub fn create_pool(&mut self, pool_domain: String) {
+        info!("Creating DnsPool IO");
+
+        if self.dns_pools.contains_key(&pool_domain) {
+            info!("DnsPool IO already exists");
+            return;
+        }
+
+        let dns_pool = Pool::new(pool_domain.clone());
+        self.dns_pools.insert(pool_domain, dns_pool);
+
+        info!("DnsPool IO constructed");
+    }
+
+    /// Pools getter
+    pub fn pools(&self) -> &HashMap<String, Pool> {
+        &self.dns_pools
     }
 
     /// Initializes the IO task for sampling the PHC source.
@@ -308,6 +342,12 @@ impl SourceIO {
             }
         }
 
+        #[expect(clippy::never_loop, reason = "DNS pool spawning not yet implemented")]
+        for key in self.dns_pools.keys() {
+            debug!("Attempting to spawn {key} dns pool.");
+            unimplemented!("requires resolver impl to spawn");
+        }
+
         self.task_tracker.close();
     }
 
@@ -464,9 +504,50 @@ mod tests {
             startup_id: 0xABCD_BCDE_CDEF_DEFA,
         };
 
-        let mut source_io = SourceIO::construct(Arc::new(SelectedClockSource::default()), info);
+        let (dns_message_tx, _dns_message_rx) = mpsc::channel::<daemon::DnsMessage>(1);
+        let mut source_io = SourceIO::construct(
+            Arc::new(SelectedClockSource::default()),
+            info,
+            dns_message_tx,
+        );
         source_io.create_amazon_time_sync(event_sender);
 
         assert!(source_io.amazon_time_sync.is_some())
+    }
+
+    fn make_source_io() -> SourceIO {
+        let info = DaemonInfo {
+            major_version: 2,
+            minor_version: 100,
+            startup_id: 0xABCD_BCDE_CDEF_DEFA,
+        };
+        let (dns_message_tx, _) = mpsc::channel::<daemon::DnsMessage>(1);
+        SourceIO::construct(
+            Arc::new(SelectedClockSource::default()),
+            info,
+            dns_message_tx,
+        )
+    }
+
+    #[test]
+    fn create_pool_adds_pool() {
+        let mut source_io = make_source_io();
+
+        assert!(source_io.pools().is_empty());
+        source_io.create_pool("pool.ntp.org".to_string());
+        assert_eq!(source_io.pools().len(), 1);
+
+        // Calling again with the same domain is idempotent (no panic)
+        source_io.create_pool("pool.ntp.org".to_string());
+        assert_eq!(source_io.pools().len(), 1);
+    }
+
+    #[test]
+    fn create_multiple_pools() {
+        let mut source_io = make_source_io();
+
+        source_io.create_pool("pool1.ntp.org".to_string());
+        source_io.create_pool("pool2.ntp.org".to_string());
+        assert_eq!(source_io.pools().len(), 2);
     }
 }

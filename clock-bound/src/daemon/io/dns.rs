@@ -7,5 +7,16 @@ mod resolver;
 // IO task which performs NTP requests to a DNS-resolved address
 pub mod ntp_source;
 
-/// Struct that lives in [`SourceIO`](super::SourceIO) to act as the interface to a DNS pool
-pub struct DnsPool {}
+/// Struct that lives in [`SourceIO`](super::SourceIO)
+/// to act as the interface to a DNS pool
+#[derive(Debug)]
+pub struct Pool {
+    pool_domain: String,
+}
+
+impl Pool {
+    /// Constructor
+    pub fn new(pool_domain: String) -> Self {
+        Self { pool_domain }
+    }
+}

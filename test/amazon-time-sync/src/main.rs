@@ -9,6 +9,7 @@ use clock_bound::daemon::selected_clock::{ClockSource, SelectedClockSource};
 use clock_bound::daemon::{
     async_ring_buffer::{self, BufferClosedError, Receiver},
     io::ntp::DaemonInfo,
+    message::Dns as DnsMessage,
 };
 use std::fs::OpenOptions;
 use std::io::Seek;
@@ -54,7 +55,10 @@ fn setup() -> (Receiver<Ntp>, Arc<SelectedClockSource>, SourceIO) {
 
     let selected_clock = Arc::new(SelectedClockSource::default());
 
-    let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info);
+    let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info, {
+        let (tx, _) = tokio::sync::mpsc::channel::<DnsMessage>(1);
+        tx
+    });
     sourceio.create_amazon_time_sync(sender);
     sourceio.spawn_all();
     (receiver, selected_clock, sourceio)
@@ -137,10 +141,11 @@ async fn test_clock_disruption_polling_rate(receiver: &Receiver<Ntp>, sourceio: 
     let post_base_line_polling_rate = measure_polling_rate(receiver, Duration::from_secs(10)).await;
     println!("Base line Polling rate avg: {post_base_line_polling_rate:?}");
 
-    // The pre and post clock disruption event polling rates should be the same.
+    // The pre and post clock disruption event polling rates *should* be the same.
+    // However, some NTP packets post disruption may be dropped due to rate limiting.
     assert!(
         pre_base_line_polling_rate.abs_diff(post_base_line_polling_rate)
-            < time::Duration::from_millis(100)
+            < time::Duration::from_secs(1)
     );
 
     println!("Clock disruption rate test PASSED");

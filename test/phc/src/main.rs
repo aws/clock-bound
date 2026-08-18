@@ -4,6 +4,7 @@
 //! and that the rate of receiving PHC events closely matches the expected PHC polling rate.
 
 use clock_bound::daemon::io::SourceIO;
+use clock_bound::daemon::message::Dns as DnsMessage;
 use clock_bound::daemon::selected_clock::SelectedClockSource;
 use clock_bound::daemon::{async_ring_buffer, io::ntp::DaemonInfo};
 use std::sync::Arc;
@@ -28,7 +29,11 @@ async fn main() {
         startup_id: rng().next_u64(),
     };
 
-    let mut sourceio = SourceIO::construct(Arc::new(SelectedClockSource::default()), daemon_info);
+    let mut sourceio =
+        SourceIO::construct(Arc::new(SelectedClockSource::default()), daemon_info, {
+            let (tx, _) = tokio::sync::mpsc::channel::<DnsMessage>(1);
+            tx
+        });
     sourceio.create_phc(phc_sender).await;
     sourceio.spawn_all();
 

@@ -20,7 +20,7 @@ pub mod source;
 
 /// ClockBound's Clock Sync Algorithm
 ///
-/// The ClockBound clock sync algorithm’s role is to consume, transform, and relay input
+/// The ClockBound clock sync algorithm's role is to consume, transform, and relay input
 /// clock sources to answer the singular question:
 /// > What time is it?
 ///
@@ -34,9 +34,12 @@ pub mod source;
 pub struct ClockSyncAlgorithm {
     /// The Amazon Time Sync reference clock's ff algorithm
     amazon_time_sync: Option<source::AmazonTimeSync>,
-    // A Vector of ff algorithms for ntp source reference clocks
+    /// A vector of ff algorithms for ntp source reference clocks.
+    ///
+    /// This includes both standalone NTP sources and pool-resolved sources.
+    /// Pool sources are distinguished by having `pool_domain` set on the [`source::NtpSource`].
     #[builder(default)]
-    pub ntp_sources: Vec<source::NtpSource>,
+    ntp_sources: Vec<source::NtpSource>,
     /// The PHC device
     ///
     /// Optional since not every instance supports this
@@ -70,8 +73,39 @@ impl ClockSyncAlgorithm {
     }
 
     /// Add a new NTP source to the clock sync algorithm
+    ///
+    /// # Panics
+    ///
+    /// Panics if adding a source that already exists
     pub fn add_ntp_source(&mut self, source: source::NtpSource) {
+        assert!(
+            self.ntp_sources
+                .iter()
+                .find(|s| s.socket_address() == source.socket_address())
+                .is_none(),
+            "duplicate addr"
+        );
         self.ntp_sources.push(source);
+    }
+
+    /// Remove an NTP source
+    ///
+    /// # Panics
+    ///
+    /// Panics if the source does not exist
+    pub fn remove_ntp_source(&mut self, addr: &SocketAddr) {
+        let removed_index = self
+            .ntp_sources
+            .iter()
+            .position(|s| s.socket_address() == *addr)
+            .unwrap();
+
+        self.ntp_sources.swap_remove(removed_index);
+    }
+
+    /// NTP sources getter
+    pub fn ntp_sources(&self) -> &[source::NtpSource] {
+        &self.ntp_sources
     }
 
     /// Set the PHC source used by the clock sync algorithm
@@ -200,7 +234,9 @@ impl ClockSyncAlgorithm {
             .map(|params| (params, SourceInfo::AmazonTimeSync(address, stratum)))
     }
 
-    /// Feed event into ntp source
+    /// Feed event into an ntp source (standalone or pool-resolved)
+    ///
+    /// Matches by socket address against all `ntp_sources`.
     fn feed_ntp_source(
         ntp_sources: &mut [source::NtpSource],
         sender_address: SocketAddr,
@@ -343,5 +379,89 @@ mod tests {
         let (clock_source, stratum) = selected_clock_source.get();
         assert_eq!(clock_source, expected_clock_source);
         assert_eq!(stratum, expected_stratum);
+    }
+
+    fn make_ntp_event(pre: i64, post: i64) -> event::Ntp {
+        event::Ntp::builder()
+            .counter_pre(TscCount::new(pre))
+            .counter_post(TscCount::new(post))
+            .ntp_data(event::NtpData {
+                server_recv_time: Instant::from_days(1),
+                server_send_time: Instant::from_days(2),
+                root_delay: Duration::from_micros(50),
+                root_dispersion: Duration::from_millis(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap()
+    }
+
+    fn make_csa() -> ClockSyncAlgorithm {
+        ClockSyncAlgorithm::builder()
+            .selected_clock(Arc::new(SelectedClockSource::default()))
+            .selector(Selector::new(Skew::from_ppm(15.0)))
+            .build()
+    }
+
+    #[test]
+    fn add_pool_source_and_feed() {
+        let mut csa = make_csa();
+        let pool_domain = "pool.ntp.org".to_string();
+        let addr: SocketAddr = "192.0.2.1:123".parse().unwrap();
+
+        csa.add_ntp_source(source::NtpSource::new_with_pool(
+            addr,
+            pool_domain,
+            Skew::from_ppm(15.0),
+        ));
+
+        let event = RoutableEvent::NtpSource(addr, make_ntp_event(500, 1000));
+        // First feed won't produce parameters (fresh ff algorithm)
+        let result = csa.feed(event);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn remove_pool_source_removes_correct_source() {
+        let mut csa = make_csa();
+        let pool_domain = "pool.ntp.org".to_string();
+        let addr: SocketAddr = "192.0.2.1:123".parse().unwrap();
+
+        csa.add_ntp_source(source::NtpSource::new_with_pool(
+            addr,
+            pool_domain,
+            Skew::from_ppm(15.0),
+        ));
+        assert_eq!(csa.ntp_sources().len(), 1);
+
+        csa.remove_ntp_source(&addr);
+        assert_eq!(csa.ntp_sources().len(), 0);
+    }
+
+    #[test]
+    fn handle_disruption_propagates_to_pool_sources() {
+        let mut csa = make_csa();
+        let pool_domain = "pool.ntp.org".to_string();
+        let addr: SocketAddr = "192.0.2.1:123".parse().unwrap();
+
+        csa.add_ntp_source(source::NtpSource::new_with_pool(
+            addr,
+            pool_domain.clone(),
+            Skew::from_ppm(15.0),
+        ));
+
+        // Feed an event to build internal state
+        let event = RoutableEvent::NtpSource(addr, make_ntp_event(500, 1000));
+        csa.feed(event);
+
+        // handle_disruption should not panic and should clear source state
+        csa.handle_disruption();
+
+        // Verify the source still exists structurally after disruption
+        assert_eq!(csa.ntp_sources().len(), 1);
+        assert_eq!(
+            csa.ntp_sources()[0].pool_domain(),
+            Some(pool_domain.as_str())
+        );
     }
 }

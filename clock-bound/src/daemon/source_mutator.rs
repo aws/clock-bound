@@ -110,23 +110,60 @@ impl<'a> SourceMutator<'a> {
     /// Add an NTP source in the daemon
     pub fn add_ntp_source(&mut self, socket_addr: SocketAddr, max_dispersion: Skew) {
         self.clock_sync_algorithm
-            .add_ntp_source(source::NtpSource::new(socket_addr, max_dispersion));
+            .add_ntp_source(source::NtpSource::new_ip_addr_source(
+                socket_addr,
+                max_dispersion,
+            ));
 
         let (tx, rx) = async_ring_buffer::create(2);
         self.receiver_stream.add_ntp_source((socket_addr, rx));
         self.io_front_end.create_ip_addr_source((socket_addr, tx));
+    }
+
+    /// Add an NTP pool to the daemon
+    ///
+    /// Registers the pool in IO so that resolved sources can later be added
+    /// via [`add_pool_source`](Self::add_pool_source).
+    pub fn add_pool(&mut self, pool_domain: String) {
+        self.io_front_end.create_pool(pool_domain);
+    }
+
+    /// Add a source to a pool
+    pub fn add_pool_source(
+        &mut self,
+        pool_domain: String,
+        socket_addr: SocketAddr,
+        max_dispersion: Skew,
+    ) {
+        let source = source::NtpSource::new_with_pool(socket_addr, pool_domain, max_dispersion);
+        self.clock_sync_algorithm.add_ntp_source(source);
+
+        let (_tx, rx) = async_ring_buffer::create(2);
+        self.receiver_stream.add_ntp_source((socket_addr, rx));
+        unimplemented!("install NTP IO task to io front end. make sure to spawn it")
+    }
+
+    /// Remove a source from a pool
+    pub fn remove_pool_source(&mut self, _pool_domain: String, socket_addr: SocketAddr) {
+        self.clock_sync_algorithm.remove_ntp_source(&socket_addr);
+        self.receiver_stream.remove_ntp_source(&socket_addr);
+        unimplemented!("bring down ntp io task. Probably async just to send message");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::str::FromStr;
     use std::sync::Arc;
+
+    use tokio::sync::mpsc;
 
     use crate::daemon::ClockSyncAlgorithm;
     use crate::daemon::clock_sync_algorithm::Selector;
     use crate::daemon::io::SourceIO;
     use crate::daemon::io::ntp::DaemonInfo;
+    use crate::daemon::message::Dns as DnsMessage;
     use crate::daemon::receiver_stream::ReceiverStream;
     use crate::daemon::selected_clock::SelectedClockSource;
     use crate::daemon::time::tsc::Skew;
@@ -142,7 +179,8 @@ mod tests {
             startup_id: 0xDEAD_BEEF_CAFE_BABE,
         };
 
-        let io = SourceIO::construct(selected_clock.clone(), daemon_info);
+        let (dns_message_tx, _dns_message_rx) = mpsc::channel::<DnsMessage>(1);
+        let io = SourceIO::construct(selected_clock.clone(), daemon_info, dns_message_tx);
         let csa = ClockSyncAlgorithm::builder()
             .selected_clock(selected_clock)
             .selector(Selector::new(Skew::from_ppm(15.0)))
@@ -172,21 +210,21 @@ mod tests {
 
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 123);
 
-        assert!(csa.ntp_sources.is_empty());
+        assert!(csa.ntp_sources().is_empty());
 
         let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
         mutator.add_ntp_source(addr, Skew::from_ppm(15.0));
 
-        assert_eq!(csa.ntp_sources.len(), 1);
-        assert_eq!(csa.ntp_sources[0].socket_address(), addr);
+        assert_eq!(csa.ntp_sources().len(), 1);
+        assert_eq!(csa.ntp_sources()[0].socket_address(), addr);
     }
 
     #[tokio::test]
     async fn add_multiple_ntp_sources() {
         let (mut io, mut csa, mut rs) = setup();
 
-        let addr1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 123);
-        let addr2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)), 123);
+        let addr1 = SocketAddr::from_str("192.0.1.1:123").unwrap();
+        let addr2 = SocketAddr::from_str("192.0.2.2:123").unwrap();
 
         {
             let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
@@ -194,8 +232,20 @@ mod tests {
             mutator.add_ntp_source(addr2, Skew::from_ppm(10.0));
         }
 
-        assert_eq!(csa.ntp_sources.len(), 2);
-        assert_eq!(csa.ntp_sources[0].socket_address(), addr1);
-        assert_eq!(csa.ntp_sources[1].socket_address(), addr2);
+        assert_eq!(csa.ntp_sources().len(), 2);
+        assert_eq!(csa.ntp_sources()[0].socket_address(), addr1);
+        assert_eq!(csa.ntp_sources()[1].socket_address(), addr2);
+    }
+
+    #[test]
+    fn add_pool_populates_io() {
+        let (mut io, mut csa, mut rs) = setup();
+        let pool_domain = "pool.ntp.org".to_string();
+
+        let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
+        mutator.add_pool(pool_domain.clone());
+
+        // Verify pool exists in IO
+        assert!(io.pools().contains_key(&pool_domain));
     }
 }

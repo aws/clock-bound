@@ -5,6 +5,7 @@
 
 use clock_bound::daemon::io::SourceIO;
 use clock_bound::daemon::io::ntp::DaemonInfo;
+use clock_bound::daemon::message::Dns as DnsMessage;
 use clock_bound::daemon::selected_clock::SelectedClockSource;
 use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 
@@ -26,7 +27,10 @@ async fn main() {
     };
 
     let selected_clock = Arc::new(SelectedClockSource::default());
-    let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info);
+    let mut sourceio = SourceIO::construct(selected_clock.clone(), daemon_info, {
+        let (tx, _) = tokio::sync::mpsc::channel::<DnsMessage>(1);
+        tx
+    });
 
     println!("Attempting to create vmclock runner using {VMCLOCK_SHM_DEFAULT_PATH:?} file.");
     sourceio.create_vmclock(VMCLOCK_SHM_DEFAULT_PATH).await;

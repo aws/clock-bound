@@ -57,9 +57,7 @@ impl ReceiverStream {
 
     /// Removes an ntp source from `ntp_sources`
     pub fn remove_ntp_source(&mut self, id: &SocketAddr) {
-        if self.ntp_sources.contains_key(id) {
-            self.ntp_sources.remove(id);
-        }
+        self.ntp_sources.remove(id);
     }
 
     /// Set the amazon time sync source used by the receiver stream
@@ -405,7 +403,7 @@ mod tests {
                     );
                 }
                 RoutableEvent::Phc(_data) => {
-                    assert!(false, "Phc event delivery has yet to be implemented")
+                    panic!("Phc event delivery has yet to be implemented")
                 }
             };
         }
@@ -485,6 +483,41 @@ mod tests {
         assert!(rx_stream.ntp_sources.is_empty());
     }
 
+    #[tokio::test]
+    async fn pool_source_delivered_as_ntp_source() {
+        let (_amazon_time_sync_tx, amazon_time_sync_rx) = create(1);
+        let (pool_source_tx, pool_source_rx) = create(1);
+
+        let source_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 123);
+
+        // Pool sources are just NTP sources in the receiver stream
+        let mut rx_stream = ReceiverStream::builder()
+            .amazon_time_sync(amazon_time_sync_rx)
+            .ntp_sources(HashMap::from([(source_addr, pool_source_rx)]))
+            .build();
+
+        let dummy_ntp_data = Ntp::builder()
+            .counter_pre(TscCount::new(1))
+            .counter_post(TscCount::new(2))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::new(1),
+                server_send_time: Instant::new(2),
+                root_delay: Duration::new(3),
+                root_dispersion: Duration::new(4),
+                stratum: Stratum::ONE,
+            })
+            .build()
+            .unwrap();
+
+        pool_source_tx.send(dummy_ntp_data.clone()).unwrap();
+
+        let result = rx_stream.recv().await.unwrap();
+        let RoutableEvent::NtpSource(addr, data) = result else {
+            panic!("Expected NtpSource event, got {result:?}");
+        };
+        assert_eq!(addr, source_addr);
+        assert_eq!(data, dummy_ntp_data);
+    }
     // --- RoutableEvent serialization tests ---
 
     #[test]
