@@ -13,18 +13,15 @@ use crate::daemon::{
 /// Contains the NTP and time stamp counter samples to be used by synchronization algorithm.
 ///
 /// `counter_post` must be greater than `counter_pre`
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ntp {
     /// TSC value before sending event
-    #[serde(alias = "tsc_pre")] // for backwards compatibility on ff-tester repro
     counter_pre: TscCount,
     /// TSC value after sending event
-    #[serde(alias = "tsc_post")] // for backwards compatibility on ff-tester repro
     counter_post: TscCount,
     /// NTP Packet data
     data: NtpData,
     #[cfg(not(test))]
-    #[serde(skip)]
     system_clock: Option<super::SystemClockMeasurement>,
 }
 
@@ -207,20 +204,16 @@ impl TscRtt for Ntp {
 }
 
 /// NTP-specific data
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NtpData {
     /// NTP Server recv time
-    #[serde(rename = "server_recv_time_ns")]
     pub server_recv_time: Instant,
     /// NTP Server send time
-    #[serde(rename = "server_send_time_ns")]
     pub server_send_time: Instant,
 
     /// Root Delay of NTP packet
-    #[serde(rename = "root_delay_ns")]
     pub root_delay: Duration,
     /// Root Dispersion of NTP packet
-    #[serde(rename = "root_dispersion_ns")]
     pub root_dispersion: Duration,
 
     /// NTP Stratum. Used in reporting, not used in ff-sync

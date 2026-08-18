@@ -11,12 +11,18 @@ use crate::time::CbBridge;
 use clock_bound::daemon::{
     clock_parameters::ClockParameters,
     event,
+    logging::ffevents::types::{ClockParametersLog, RoutableEventLog, RoutableEventLogError},
     receiver_stream::RoutableEvent,
     time::{Duration, Instant},
 };
 
 /// Events fed into the `ClockSyncAlgorithm`
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+///
+/// Serialization is delegated to [`ReproEventLog`], which composes the
+/// log-owned mirror types so the on-disk schema stays byte-identical to the
+/// `ffevents.log` `feed` payload.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(into = "ReproEventLog", try_from = "ReproEventLog")]
 pub enum ReproEvent {
     /// Feed a routable event into the clock sync algorithm
     Feed {
@@ -27,6 +33,46 @@ pub enum ReproEvent {
     Init,
     /// A disruption event came in. Call `handle_disruption`
     Disruption,
+}
+
+/// Log mirror for [`ReproEvent`]: an externally tagged enum whose `Feed`
+/// payload embeds the log-owned schema mirrors.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum ReproEventLog {
+    Feed {
+        event: RoutableEventLog,
+        output: Option<ClockParametersLog>,
+    },
+    Init,
+    Disruption,
+}
+
+impl From<ReproEvent> for ReproEventLog {
+    fn from(event: ReproEvent) -> Self {
+        match event {
+            ReproEvent::Feed { event, output } => ReproEventLog::Feed {
+                event: RoutableEventLog::from(&event),
+                output: output.as_ref().map(ClockParametersLog::from),
+            },
+            ReproEvent::Init => ReproEventLog::Init,
+            ReproEvent::Disruption => ReproEventLog::Disruption,
+        }
+    }
+}
+
+impl TryFrom<ReproEventLog> for ReproEvent {
+    type Error = RoutableEventLogError;
+
+    fn try_from(log: ReproEventLog) -> Result<Self, Self::Error> {
+        Ok(match log {
+            ReproEventLog::Feed { event, output } => ReproEvent::Feed {
+                event: event.try_into()?,
+                output: output.map(ClockParameters::from),
+            },
+            ReproEventLog::Init => ReproEvent::Init,
+            ReproEventLog::Disruption => ReproEvent::Disruption,
+        })
+    }
 }
 
 /// Write a collection of [`ReproEvent`] items into a writeable sink

@@ -8,7 +8,10 @@
 
 use anyhow::Context;
 
-use clock_bound::daemon::{clock_parameters::ClockParameters, receiver_stream::RoutableEvent};
+use clock_bound::daemon::{
+    clock_parameters::ClockParameters,
+    logging::ffevents::types::{ClockParametersLog, RoutableEventLog},
+};
 
 use super::{ReproEvent, log_format_primer};
 
@@ -216,8 +219,11 @@ fn parse_ffevents_line(json_str: &str, idx: usize) -> anyhow::Result<(String, Re
                 anyhow::anyhow!("Line {idx}: event is 'feed' but no 'feed' payload found")
             })?;
             ReproEvent::Feed {
-                event: feed.input,
-                output: feed.output,
+                event: feed
+                    .input
+                    .try_into()
+                    .with_context(|| format!("Line {idx}: invalid ffevents feed event"))?,
+                output: feed.output.map(ClockParameters::from),
             }
         }
         other => anyhow::bail!("Line {idx}: unknown event type: {other}"),
@@ -239,8 +245,8 @@ struct FfeventsLine {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct FeedPayload {
-    input: RoutableEvent,
-    output: Option<ClockParameters>,
+    input: RoutableEventLog,
+    output: Option<ClockParametersLog>,
 }
 
 #[cfg(test)]

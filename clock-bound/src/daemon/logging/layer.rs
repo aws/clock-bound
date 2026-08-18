@@ -19,6 +19,8 @@ use tracing::{
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
+use super::StructuredLog;
+
 /// A handle to a structured log file that supports reopening.
 ///
 /// Used to implement lossless log rotation: an external tool (e.g., logrotate)
@@ -35,7 +37,7 @@ impl LogHandle {
     /// On failure, logs an error to stderr and drops the writer so the old fd
     /// is closed (freeing disk space). A subsequent successful `reopen` call
     /// will restore logging.
-    pub fn reopen(&self) {
+    pub(super) fn reopen(&self) {
         let new_writer = match OpenOptions::new()
             .create(true)
             .append(true)
@@ -51,10 +53,6 @@ impl LogHandle {
             }
         };
 
-        #[expect(
-            clippy::missing_panics_doc,
-            reason = "only fails if the mutex is poisoned"
-        )]
         let mut guard = self.writer.lock().unwrap();
         *guard = new_writer;
     }
@@ -88,7 +86,7 @@ impl StructuredLogLayer {
     ///
     /// # Panics
     /// Panics if the log file cannot be opened or created at `log_directory/filename`.
-    pub fn new(
+    fn new(
         log_directory: impl AsRef<Path>,
         filename: &str,
         target_prefix: &'static str,
@@ -115,6 +113,18 @@ impl StructuredLogLayer {
         let handle = LogHandle { writer, path };
 
         (layer, handle)
+    }
+
+    /// Convenience constructor that derives the log file name and target prefix
+    /// from a [`StructuredLog`] stream instead of taking raw strings.
+    ///
+    /// Delegates to [`new`](StructuredLogLayer::new); see it for panic behavior.
+    pub fn for_stream(
+        log_directory: impl AsRef<Path>,
+        stream: StructuredLog,
+        version: &'static str,
+    ) -> (Self, LogHandle) {
+        Self::new(log_directory, stream.file_name(), stream.target(), version)
     }
 }
 

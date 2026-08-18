@@ -14,7 +14,7 @@ use tracing_subscriber::{
 };
 
 use clock_bound::daemon::logging::{
-    ALGO_ANALYSIS_TARGET, is_structured_target, layer::StructuredLogLayer,
+    StructuredLog, is_structured_target, layer::StructuredLogLayer,
 };
 
 // TODO: implement logging initialization for other use cases (simulator, etc)
@@ -28,10 +28,9 @@ pub fn init_for_synchronization_replay(log_directory: impl AsRef<Path>) {
     std::fs::create_dir_all(&log_directory)
         .expect("Failed to create the algo analysis log directory");
 
-    let (algo_analysis_layer, _algo_handle) = StructuredLogLayer::new(
+    let (algo_analysis_layer, _algo_handle) = StructuredLogLayer::for_stream(
         &log_directory,
-        "algo_analysis.log",
-        ALGO_ANALYSIS_TARGET,
+        StructuredLog::AlgoAnalysis,
         env!("CARGO_PKG_VERSION"),
     );
 

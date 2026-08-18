@@ -11,25 +11,23 @@ use crate::daemon::time::{
 ///
 /// These values are calculated by the [`ClockSyncAlgorithm`](super::clock_sync_algorithm)
 /// and used by the [`ClockState`](super::clock_state)
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+///
+/// The presentation (log) schema for this type lives in
+/// [`ClockParametersLog`](crate::daemon::logging::ffevents::types::ClockParametersLog).
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClockParameters {
     /// The tsc values that these account for
-    #[serde(rename = "counter_sync")]
     pub tsc_count: TscCount,
     /// The time at `tsc_count`
-    #[serde(rename = "time_sync_ns")]
     pub time: Instant,
     /// The clock error bound of `time` at `tsc_count`
-    #[serde(rename = "clock_error_bound_ns")]
     pub clock_error_bound: Duration,
     /// The period of the TSC clock at `tsc_count`
-    #[serde(rename = "period_s")]
     pub period: Period,
     /// The max error of the `period` at `tsc_count`
     pub period_max_error: Period,
     /// The `CLOCK_MONOTONIC_COARSE` time just before these parameters are calculated.
     /// FIXME: remove when ClockBound 2.0 clients are not supported anymore.
-    #[serde(skip)]
     pub as_of_monotonic: Instant,
 }
 

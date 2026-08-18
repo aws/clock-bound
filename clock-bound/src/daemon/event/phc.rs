@@ -10,18 +10,15 @@ use super::TscRtt;
 /// Contains the PHC and time stamp counter samples to be used by the synchronization algorithm
 ///
 /// `counter_post` must be greater than `counter_pre`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phc {
     /// TSC value before reading reference clock
-    #[serde(alias = "tsc_pre")] // for backwards compatibility on ff-tester repro
     counter_pre: TscCount,
     /// TSC value after reading reference clock
-    #[serde(alias = "tsc_post")] // for backwards compatibility on ff-tester repro
     counter_post: TscCount,
     /// PHC reference clock info
     data: PhcData,
     #[cfg(not(test))]
-    #[serde(skip)]
     system_clock: Option<super::SystemClockMeasurement>,
 }
 
@@ -172,13 +169,11 @@ impl TscRtt for Phc {
 }
 
 /// PHC specific data
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhcData {
     /// Reference clock time
-    #[serde(rename = "time_ns")]
     pub time: Instant,
     /// Clock error bound of this measurement
-    #[serde(rename = "clock_error_bound_ns")]
     pub clock_error_bound: Duration,
 }
 

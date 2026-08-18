@@ -4,15 +4,51 @@
 //! and provides helper functions to serialize and emit them through the tracing
 //! infrastructure via [`super::StructuredLogLayer`].
 
-use crate::daemon::{clock_parameters::ClockParameters, receiver_stream::RoutableEvent};
+use serde::Serialize;
 
-/// Tracing target for the feed-forward events log.
-///
-/// Used by [`super::StructuredLogLayer`] to route events to `ffevents.log`.
-pub const TARGET: &str = "clock_bound::ffevents";
+use super::{LogEvent, StructuredLog, emit_event_with_seq};
+use crate::daemon::{
+    clock_parameters::ClockParameters, logging::ffevents::types::ClockParametersLog,
+    receiver_stream::RoutableEvent,
+};
 
-/// File name for the feed-forward events log.
-pub const FILE_NAME: &str = "ffevents.log";
+pub mod types;
+
+/// Body of an `init` event, emitted once at daemon startup to delimit log
+/// replay boundaries.
+#[derive(Serialize)]
+struct Init {
+    message: &'static str,
+}
+
+impl LogEvent for Init {
+    const STREAM: StructuredLog = StructuredLog::FFEvents;
+    const EVENT: &'static str = "init";
+}
+
+/// Body of a `disruption` event, emitted when a clock discontinuity is detected
+/// and state is reset.
+#[derive(Serialize)]
+struct Disruption {
+    message: &'static str,
+}
+
+impl LogEvent for Disruption {
+    const STREAM: StructuredLog = StructuredLog::FFEvents;
+    const EVENT: &'static str = "disruption";
+}
+
+/// Body of a `feed` event, carrying the input event and resulting clock output.
+#[derive(Serialize)]
+struct Feed {
+    input: types::RoutableEventLog,
+    output: Option<types::ClockParametersLog>,
+}
+
+impl LogEvent for Feed {
+    const STREAM: StructuredLog = StructuredLog::FFEvents;
+    const EVENT: &'static str = "feed";
+}
 
 /// Emit an `init` event to the ffevents log.
 ///
@@ -21,17 +57,13 @@ pub const FILE_NAME: &str = "ffevents.log";
 /// `seq` is the event sequence number. Callers should start numbering at zero
 /// for the `init` event and increment by one for every subsequent `feed` or
 /// `disruption` event.
-#[expect(clippy::missing_panics_doc, reason = "infallible")]
-pub fn log_init(seq: u64) {
-    let envelope = serde_json::json!({
-        "event": "init",
-        "seq": seq,
-        "init": {
-            "message": "Clock Sync Algorithm initialized"
-        }
-    });
-    let entry = serde_json::to_string(&envelope).unwrap();
-    tracing::info!(target: TARGET, entry = entry.as_str());
+pub(crate) fn log_init(seq: u64) {
+    emit_event_with_seq(
+        &Init {
+            message: "Clock Sync Algorithm initialized",
+        },
+        seq,
+    );
 }
 
 /// Emit a `disruption` event to the ffevents log.
@@ -39,53 +71,40 @@ pub fn log_init(seq: u64) {
 /// Called when a clock discontinuity is detected and state is reset.
 ///
 /// `seq` is the event sequence number. See [`log_init`] for numbering rules.
-#[expect(clippy::missing_panics_doc, reason = "infallible")]
-pub fn log_disruption(seq: u64) {
-    let envelope = serde_json::json!({
-        "event": "disruption",
-        "seq": seq,
-        "disruption": {
-            "message": "Disruption occurred"
-        }
-    });
-    let entry = serde_json::to_string(&envelope).unwrap();
-    tracing::info!(target: TARGET, entry = entry.as_str());
+pub(crate) fn log_disruption(seq: u64) {
+    emit_event_with_seq(
+        &Disruption {
+            message: "Disruption occurred",
+        },
+        seq,
+    );
 }
 
 /// Emit a `feed` event to the ffevents log containing input and output data.
 ///
 /// `seq` is the event sequence number. See [`log_init`] for numbering rules.
-#[expect(clippy::missing_panics_doc, reason = "infallible")]
-pub fn log_feed(input: &RoutableEvent, output: Option<&ClockParameters>, seq: u64) {
-    let envelope = serde_json::json!({
-        "event": "feed",
-        "seq": seq,
-        "feed": {
-            "input": input,
-            "output": output
-        }
-    });
-    let entry = serde_json::to_string(&envelope).unwrap();
-    tracing::info!(target: TARGET, entry = entry.as_str());
+pub(crate) fn log_feed(input: &RoutableEvent, output: Option<&ClockParameters>, seq: u64) {
+    emit_event_with_seq(
+        &Feed {
+            input: input.into(),
+            output: output.map(ClockParametersLog::from),
+        },
+        seq,
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
-
-    use serde_json::Value;
-    use tempfile::TempDir;
-    use tracing_subscriber::layer::SubscriberExt;
-
     use crate::daemon::{
         clock_parameters::ClockParameters,
         event::{Ntp, NtpData, Phc, PhcData, Stratum},
-        logging::{StructuredLogLayer, ffevents::FILE_NAME},
+        logging::{
+            StructuredLog,
+            test_support::{assert_matches_expected, with_layer},
+        },
         receiver_stream::RoutableEvent,
         time::{Duration, Instant, TscCount, tsc::Period},
     };
-
-    use super::TARGET;
 
     const TEST_VERSION: &str = "3.0.0-test";
 
@@ -132,34 +151,8 @@ mod tests {
     /// Set up a StructuredLogLayer targeting ffevents, run a closure, return
     /// the file contents. The `TempDir` is returned to keep it alive for the
     /// caller's scope.
-    fn with_ffevents_layer(f: impl FnOnce()) -> (String, TempDir) {
-        let tmp_dir = TempDir::new().unwrap();
-        let (layer, _handle) =
-            StructuredLogLayer::new(tmp_dir.path(), FILE_NAME, TARGET, TEST_VERSION);
-
-        let subscriber = tracing_subscriber::registry().with(layer);
-        tracing::subscriber::with_default(subscriber, f);
-
-        let mut contents = String::new();
-        std::fs::File::open(tmp_dir.path().join(FILE_NAME))
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
-        (contents, tmp_dir)
-    }
-
-    /// Parse output line into Value, compare against expected JSON (copying
-    /// the dynamic timestamp from actual into expected before assertion).
-    fn assert_matches_expected(actual_line: &str, expected_json: &str) {
-        let actual: Value =
-            serde_json::from_str(actual_line).expect("actual output is not valid JSON");
-        let mut expected: Value =
-            serde_json::from_str(expected_json).expect("expected JSON is not valid JSON");
-
-        // Timestamp is dynamic — copy from actual so comparison passes
-        expected["timestamp"] = actual["timestamp"].clone();
-
-        assert_eq!(actual, expected);
+    fn with_ffevents_layer(f: impl FnOnce()) -> (String, tempfile::TempDir) {
+        with_layer(StructuredLog::FFEvents, TEST_VERSION, f)
     }
 
     // --- End-to-end tests ---
@@ -268,7 +261,7 @@ mod tests {
                         "time_sync_ns": 1500,
                         "clock_error_bound_ns": 75,
                         "period_s": 4.0e-10,
-                        "period_max_error": 1.0e-16
+                        "period_max_error_s": 1.0e-16
                     }
                 },
                 "version": "3.0.0-test"

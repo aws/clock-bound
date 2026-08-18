@@ -12,10 +12,8 @@ use tracing_subscriber::{
     EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
-use super::LogHandles;
 use super::layer::StructuredLogLayer;
-use super::synchronization;
-use super::{CLOCK_METRICS_TARGET, ffevents, is_structured_target};
+use super::{CLOCK_METRICS_TARGET, LogHandles, StructuredLog, is_structured_target};
 
 /// Initialize the tracing subscriber.
 ///
@@ -23,12 +21,17 @@ use super::{CLOCK_METRICS_TARGET, ffevents, is_structured_target};
 pub fn init(log_directory: impl AsRef<Path>) -> LogHandles {
     let cargo_version = env!("CARGO_PKG_VERSION");
 
-    let (ffevents_layer, ffevents_handle) = StructuredLogLayer::new(
-        &log_directory,
-        ffevents::FILE_NAME,
-        ffevents::TARGET,
-        cargo_version,
-    );
+    // Structured streams owned by the daemon. Add a stream here to wire it up
+    // automatically; omit one to disable it (its handle is simply never pushed).
+    let daemon_streams = [StructuredLog::FFEvents, StructuredLog::Synchronization];
+
+    let mut structured_layers = Vec::new();
+    let mut handles = Vec::new();
+    for stream in daemon_streams {
+        let (layer, handle) = StructuredLogLayer::for_stream(&log_directory, stream, cargo_version);
+        structured_layers.push(layer);
+        handles.push(handle);
+    }
 
     let clock_metrics_writer =
         tracing_appender::rolling::hourly(&log_directory, "clock_metrics.log");
@@ -38,13 +41,6 @@ pub fn init(log_directory: impl AsRef<Path>) -> LogHandles {
         .with_filter(filter_fn(|md| {
             md.target().starts_with(CLOCK_METRICS_TARGET)
         }));
-
-    let (synchronization_layer, synchronization_handle) = StructuredLogLayer::new(
-        &log_directory,
-        synchronization::FILE_NAME,
-        synchronization::TARGET,
-        cargo_version,
-    );
 
     // Logging layer for regular log events (progress, warnings) being pushed to stdout.
     // Verbose messages to export ffevents, synchronization and source events are filtered out.
@@ -60,16 +56,12 @@ pub fn init(log_directory: impl AsRef<Path>) -> LogHandles {
 
     tracing_subscriber::registry()
         .with(log_layer)
-        .with(ffevents_layer)
+        .with(structured_layers)
         .with(clock_metrics_layer)
-        .with(synchronization_layer)
         .init();
 
     tracing::info!("Initialized tracing subscriber");
     tracing::info!(log_directory = %log_directory.as_ref().display(), "Initialized log directory");
 
-    LogHandles {
-        ffevents: Some(ffevents_handle),
-        synchronization: Some(synchronization_handle),
-    }
+    LogHandles { handles }
 }

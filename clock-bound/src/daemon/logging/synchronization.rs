@@ -14,66 +14,74 @@
 
 use serde::Serialize;
 
-use super::{ClockStatusName, FFClock, Source};
-use crate::daemon::clock_parameters::ClockParameters;
-use crate::daemon::clock_sync_algorithm::SourceInfo;
+use super::{ClockStatusName, FFClock, LogEvent, Source, StructuredLog, emit_event};
+use crate::daemon::clock_sync_algorithm::SyncParameters;
 use crate::shm::ClockStatus;
 
-/// Tracing target for the synchronization log.
-pub const TARGET: &str = "clock_bound::synchronization";
+/// Body of a `daemon_started` event, emitted once when the daemon starts.
+#[derive(Serialize)]
+struct DaemonStarted {
+    message: &'static str,
+}
 
-/// Filename for the synchronization log.
-pub const FILE_NAME: &str = "synchronization.log";
+impl LogEvent for DaemonStarted {
+    const STREAM: StructuredLog = StructuredLog::Synchronization;
+    const EVENT: &'static str = "daemon_started";
+}
+
+/// Body of a `clock_status_change` event, capturing a clock status transition.
+#[derive(Serialize)]
+struct ClockStatusChange {
+    from: ClockStatusName,
+    to: ClockStatusName,
+}
+
+impl LogEvent for ClockStatusChange {
+    const STREAM: StructuredLog = StructuredLog::Synchronization;
+    const EVENT: &'static str = "clock_status_change";
+}
+
+/// Body of a `synchronization` snapshot event.
+#[derive(Serialize)]
+struct SyncSnapshot {
+    source: Option<Source>,
+    ffclock: Option<FFClock>,
+}
+
+impl LogEvent for SyncSnapshot {
+    const STREAM: StructuredLog = StructuredLog::Synchronization;
+    const EVENT: &'static str = "synchronization";
+}
 
 /// Log that the daemon has started to the synchronization log.
 pub fn log_daemon_started() {
-    let envelope = serde_json::json!({
-        "event": "daemon_started",
+    emit_event(&DaemonStarted {
+        message: "ClockBound daemon started",
     });
-    emit(&envelope);
 }
 
 /// Log a clock status transition to the synchronization log.
 pub fn log_clock_status_change(from: ClockStatus, to: ClockStatus) {
-    let envelope = serde_json::json!({
-        "event": "clock_status_change",
-        "clock_status_change": {
-            "from": ClockStatusName::from(from),
-            "to": ClockStatusName::from(to),
-        }
+    emit_event(&ClockStatusChange {
+        from: from.into(),
+        to: to.into(),
     });
-    emit(&envelope);
 }
 
 /// Log a synchronization snapshot to the synchronization log.
-pub fn log_sync_snapshot(
-    source_info: Option<SourceInfo>,
-    clock_parameters: Option<&ClockParameters>,
-    clock_status: ClockStatus,
-) {
-    let source = source_info.map(Source::from);
-    let ffclock = clock_parameters.map(|params| FFClock::from_params(params, clock_status));
+pub fn log_sync_snapshot(sync_parameters: Option<&SyncParameters>, clock_status: ClockStatus) {
+    let source = sync_parameters.map(|sp| Source::from(sp.source_info));
+    let ffclock =
+        sync_parameters.map(|sp| FFClock::from_params(&sp.clock_parameters, clock_status));
 
-    let envelope = serde_json::json!({
-        "event": "synchronization",
-        "synchronization": {
-            "source": source,
-            "ffclock": ffclock,
-        }
-    });
-    emit(&envelope);
-}
-
-// This function requires a `StructuredLogLayer` to be registered for the `synchronization.log` target.
-// If there is no such tracing layer registered, then this function will silently drop the logs.
-fn emit(entry: &impl Serialize) {
-    let json = serde_json::to_string(entry).unwrap();
-    tracing::info!(target: TARGET, entry = json.as_str());
+    emit_event(&SyncSnapshot { source, ffclock });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::clock_parameters::ClockParameters;
+    use crate::daemon::clock_sync_algorithm::SourceInfo;
     use crate::daemon::time::{Duration, Instant, TscCount, tsc::Period};
 
     fn sample_clock_parameters() -> ClockParameters {
@@ -103,13 +111,13 @@ mod tests {
     mod end_to_end {
         use super::*;
         use crate::daemon::event::Stratum;
-        use crate::daemon::logging::layer::StructuredLogLayer;
+        use crate::daemon::logging::{
+            StructuredLog,
+            test_support::{assert_matches_expected, with_layer},
+        };
         use serde_json::{Map, Value};
-        use std::fs::File;
-        use std::io::Read;
         use std::net::SocketAddr;
         use tempfile::TempDir;
-        use tracing_subscriber::layer::SubscriberExt;
 
         const TEST_VERSION: &str = "0.1.0-test";
 
@@ -117,33 +125,7 @@ mod tests {
         /// closure with the subscriber active, and return the raw file contents.
         /// The `TempDir` is returned to keep it alive for the caller's scope.
         fn with_synchronization_layer(f: impl FnOnce()) -> (String, TempDir) {
-            let tmp_dir = TempDir::new().unwrap();
-            let (layer, _handle) =
-                StructuredLogLayer::new(tmp_dir.path(), FILE_NAME, TARGET, TEST_VERSION);
-
-            let subscriber = tracing_subscriber::registry().with(layer);
-            tracing::subscriber::with_default(subscriber, f);
-
-            let mut contents = String::new();
-            File::open(tmp_dir.path().join(FILE_NAME))
-                .unwrap()
-                .read_to_string(&mut contents)
-                .unwrap();
-            (contents, tmp_dir)
-        }
-
-        /// Parse an output line into a Value, compare against expected JSON (copying
-        /// the dynamic timestamp from actual into expected before assertion).
-        fn assert_matches_expected(actual_line: &str, expected_json: &str) {
-            let actual: Value =
-                serde_json::from_str(actual_line).expect("actual output is not valid JSON");
-            let mut expected: Value =
-                serde_json::from_str(expected_json).expect("expected JSON is not valid JSON");
-
-            // Timestamp is dynamic — copy from actual so comparison passes.
-            expected["timestamp"] = actual["timestamp"].clone();
-
-            assert_eq!(actual, expected);
+            with_layer(StructuredLog::Synchronization, TEST_VERSION, f)
         }
 
         #[test]
@@ -155,6 +137,9 @@ mod tests {
                 r#"{
                     "timestamp": "",
                     "event": "daemon_started",
+                    "daemon_started": {
+                        "message": "ClockBound daemon started"
+                    },
                     "version": "0.1.0-test"
                 }"#,
             );
@@ -226,15 +211,14 @@ mod tests {
 
         #[test]
         fn log_sync_snapshot_with_ntp_source_schema() {
-            let params = sample_clock_parameters();
             let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
+            let sync_parameters = SyncParameters {
+                clock_parameters: sample_clock_parameters(),
+                source_info: SourceInfo::AmazonTimeSync(addr, Stratum::ONE),
+            };
 
             let (output, _tmp) = with_synchronization_layer(|| {
-                log_sync_snapshot(
-                    Some(SourceInfo::AmazonTimeSync(addr, Stratum::ONE)),
-                    Some(&params),
-                    ClockStatus::Synchronized,
-                );
+                log_sync_snapshot(Some(&sync_parameters), ClockStatus::Synchronized);
             });
 
             assert_matches_expected(
@@ -260,14 +244,13 @@ mod tests {
 
         #[test]
         fn log_sync_snapshot_with_phc_source_schema() {
-            let params = sample_clock_parameters();
+            let sync_parameters = SyncParameters {
+                clock_parameters: sample_clock_parameters(),
+                source_info: SourceInfo::Phc,
+            };
 
             let (output, _tmp) = with_synchronization_layer(|| {
-                log_sync_snapshot(
-                    Some(SourceInfo::Phc),
-                    Some(&params),
-                    ClockStatus::Synchronized,
-                );
+                log_sync_snapshot(Some(&sync_parameters), ClockStatus::Synchronized);
             });
 
             assert_matches_expected(
@@ -294,7 +277,7 @@ mod tests {
         #[test]
         fn log_sync_snapshot_without_source_schema() {
             let (output, _tmp) = with_synchronization_layer(|| {
-                log_sync_snapshot(None, None, ClockStatus::Unknown);
+                log_sync_snapshot(None, ClockStatus::Unknown);
             });
 
             assert_matches_expected(
@@ -316,7 +299,7 @@ mod tests {
             let (output, _tmp) = with_synchronization_layer(|| {
                 log_daemon_started();
                 log_clock_status_change(ClockStatus::Unknown, ClockStatus::Synchronized);
-                log_sync_snapshot(None, None, ClockStatus::Unknown);
+                log_sync_snapshot(None, ClockStatus::Unknown);
             });
 
             let lines: Vec<&str> = output.lines().collect();
@@ -334,12 +317,13 @@ mod tests {
         use tempfile::TempDir;
 
         let tmp_dir = TempDir::new().unwrap();
-        let log_path = tmp_dir.path().join(FILE_NAME);
+        let log_path = tmp_dir
+            .path()
+            .join(StructuredLog::Synchronization.file_name());
 
         // No subscriber is set up — emit should silently succeed without panic
         // and nothing should be written to disk.
-        let entry = serde_json::json!({"event": "daemon_started"});
-        emit(&entry);
+        log_daemon_started();
 
         assert!(
             !log_path.exists(),

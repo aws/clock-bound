@@ -126,7 +126,7 @@ impl ClockState {
         let mut clock_offset_metric_interval =
             tokio::time::interval(tokio::time::Duration::from_secs(1));
         let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
-        snapshot_interval.tick().await; // discard the immediate first tick
+        snapshot_interval.reset(); // delay the first tick by one period
         info!("Starting run for ClockState");
         // FIXME: This clears the SHM segment quite early, before we have
         // even received `ClockParameters` and started trying to adjust the clock -
@@ -145,11 +145,7 @@ impl ClockState {
                     self.handle_sync_update(source_params.unwrap()); // todo fixme
                 },
                 _ = snapshot_interval.tick() => {
-                    log_sync_snapshot(
-                        self.sync_parameters.as_ref().map(|sp| sp.source_info),
-                        self.sync_parameters.as_ref().map(|sp| &sp.clock_parameters),
-                        self.clock_status,
-                    );
+                    log_sync_snapshot(self.sync_parameters.as_ref(), self.clock_status);
                 },
                 _ = clock_offset_metric_interval.tick() => {
                     self.emit_clock_offsets();
@@ -222,6 +218,15 @@ impl ClockState {
         }
     }
 
+    /// Assign `new` to `status`, logging the transition to the synchronization log.
+    fn set_clock_status(status: &mut ClockStatus, new: ClockStatus) {
+        let previous = *status;
+        *status = new;
+        if new != previous {
+            log_clock_status_change(previous, new);
+        }
+    }
+
     fn handle_tick(&mut self, now: tokio::time::Instant) {
         if let Some(sp) = &self.sync_parameters {
             let parameters = &sp.clock_parameters;
@@ -236,11 +241,7 @@ impl ClockState {
                 ClockState::determine_clock_error_bound_v3_status(clock_params_age_v3);
 
             // Log clock status transitions and update shared state
-            let previous_status = self.clock_status;
-            self.clock_status = clock_status_v3;
-            if clock_status_v3 != previous_status {
-                log_clock_status_change(previous_status, clock_status_v3);
-            }
+            Self::set_clock_status(&mut self.clock_status, clock_status_v3);
 
             self.state_writer
                 .handle_clock_parameters_shm1(parameters, clock_status_v3);
@@ -293,11 +294,7 @@ impl ClockState {
             clock_adjuster.handle_disruption(disruption_marker);
 
             // Log clock status transition to Disrupted and update shared state
-            let previous_status = *clock_status;
-            *clock_status = ClockStatus::Disrupted;
-            if previous_status != ClockStatus::Disrupted {
-                log_clock_status_change(previous_status, ClockStatus::Disrupted);
-            }
+            Self::set_clock_status(clock_status, ClockStatus::Disrupted);
 
             tracing::info!("Handled clock disruption event");
         }
@@ -615,5 +612,32 @@ mod tests {
             ClockState::determine_clock_error_bound_v3_status(clock_params_age),
             expected_clock_error_bound_v3_status
         );
+    }
+
+    #[test]
+    fn set_clock_status_logs_only_on_transition() {
+        use crate::daemon::logging::StructuredLog;
+        use crate::daemon::logging::test_support::with_layer;
+        use serde_json::Value;
+
+        let (output, _tmp) = with_layer(StructuredLog::Synchronization, "0.1.0-test", || {
+            let mut status = ClockStatus::Unknown;
+            // A real transition must be logged.
+            ClockState::set_clock_status(&mut status, ClockStatus::Synchronized);
+            // A same-value assignment must not be logged.
+            ClockState::set_clock_status(&mut status, ClockStatus::Synchronized);
+            assert_eq!(status, ClockStatus::Synchronized);
+        });
+
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "only the actual transition should be logged"
+        );
+        let entry: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(entry["event"], "clock_status_change");
+        assert_eq!(entry["clock_status_change"]["from"], "UNKNOWN");
+        assert_eq!(entry["clock_status_change"]["to"], "SYNCHRONIZED");
     }
 }

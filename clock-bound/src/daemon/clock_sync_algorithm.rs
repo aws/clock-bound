@@ -352,9 +352,12 @@ mod tests {
         let clock_parameters = csa.feed(event.clone());
         assert!(clock_parameters.is_none());
 
-        let serialized_event = serde_json::to_string(&event).unwrap();
-        let serialized_output =
-            serde_json::to_string(&clock_parameters.map(|sp| &sp.clock_parameters)).unwrap();
+        use crate::daemon::logging::ffevents::types::{ClockParametersLog, RoutableEventLog};
+        let serialized_event = serde_json::to_string(&RoutableEventLog::from(&event)).unwrap();
+        let serialized_output = serde_json::to_string(
+            &clock_parameters.map(|sp| ClockParametersLog::from(&sp.clock_parameters)),
+        )
+        .unwrap();
 
         // tracing escapes quotes
         let serialized_event = serialized_event.replace("\"", r#"\""#);
