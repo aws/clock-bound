@@ -2,7 +2,7 @@
 
 mod log_format_primer;
 mod log_parse;
-pub use log_parse::{repro_events_from_log_file, repro_events_from_reader};
+pub use log_parse::{ReproEventReader, repro_events_from_log_file};
 
 use std::{borrow::Borrow, io::Write};
 
@@ -129,6 +129,7 @@ mod tests {
 
     use crate::time::{EstimateDuration, EstimateInstant};
 
+    use super::log_parse::repro_events_from_reader;
     use super::*;
 
     #[test]

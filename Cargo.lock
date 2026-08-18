@@ -355,6 +355,7 @@ dependencies = [
  "anyhow",
  "approx",
  "bon",
+ "chrono",
  "clap",
  "clock-bound",
  "flate2",

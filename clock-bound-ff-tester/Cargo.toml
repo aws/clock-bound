@@ -16,6 +16,7 @@ version.workspace = true
 anyhow = "1.0.100"
 approx = "0.5"
 bon = "3.8.1"
+chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 clock-bound = { path = "../clock-bound", features = [
   "algorithm",

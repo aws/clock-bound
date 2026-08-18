@@ -6,6 +6,7 @@
     reason = "Treating these functions as main()"
 )]
 
+pub mod fix_log_order;
 pub mod oscillator_generator;
 pub mod repro_replay;
 pub mod scenario_generator;

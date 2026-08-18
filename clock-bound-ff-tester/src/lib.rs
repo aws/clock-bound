@@ -2,6 +2,7 @@
 
 pub mod events;
 pub mod logging;
+pub mod logs;
 pub mod repro;
 pub mod simulation;
 pub mod time;

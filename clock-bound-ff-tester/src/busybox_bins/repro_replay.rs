@@ -41,21 +41,44 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
     // respective log files.
     logging::init_for_synchronization_replay(args.output_dir);
 
-    let repro_events = repro::repro_events_from_log_file(&args.logfile)?;
+    let mut repro_events = repro::repro_events_from_log_file(&args.logfile)?;
 
-    for event in repro_events {
-        match event {
-            ReproEvent::Init => tracing::warn!("Received init."), // TODO: Better breakdown into scenarios
+    // Stream events straight from the log: memory usage is bounded by the longest
+    // line, not the file size. Parse errors abort the replay, as a partially
+    // replayed log would produce misleading analysis data.
+    let (mut feeds, mut inits, mut disruptions) = (0usize, 0usize, 0usize);
+    for event in &mut repro_events {
+        match event? {
+            ReproEvent::Init => {
+                inits += 1;
+                tracing::warn!("Received init."); // TODO: Better breakdown into scenarios
+            }
             ReproEvent::Disruption => {
+                disruptions += 1;
                 tracing::warn!("Received disruption.");
                 alg.handle_disruption();
             }
             ReproEvent::Feed { event, .. } => {
+                feeds += 1;
                 // unused result since output log directory will contain this
                 let _ = alg.feed(event);
             }
         }
     }
+    anyhow::ensure!(
+        feeds + inits + disruptions > 0,
+        "No events found in log file"
+    );
+
+    tracing::info!(
+        lines_read = repro_events.lines_read(),
+        events = feeds + inits + disruptions,
+        feeds,
+        inits,
+        disruptions,
+        ordering = %repro_events.order_summary(),
+        "replay complete"
+    );
 
     Ok(())
 }

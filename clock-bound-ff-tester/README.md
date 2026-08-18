@@ -46,6 +46,41 @@ results into another logfile. If the clock sync algorithm is the same as the one
 Where this adds value is when exploring changes in the clock sync algorithm. By making changes to the underlying algorithm, one can test the effects
 of that change against the same scenario.
 
+Input logs may be gzip compressed (detected from content, not file extension). Logs are
+streamed: memory usage is bounded by the longest line, not the file size, so multi-GB
+captures replay in constant memory. Every run ends with a summary of the lines read,
+events fed by type, and ordering observations.
+
+#### Event ordering
+Events are replayed strictly in file order, which is the order the daemon processed
+them. The replay never reorders events: analysis of real captures showed that both
+plausible sort keys can misrepresent what the daemon experienced — timestamps regress
+across legitimate clock steps (the wall clock is the clock under adjustment), and
+counter (I/O completion) order can legitimately differ from processing order when
+source I/O windows overlap. Both anomalies are detected, classified, and reported with
+their magnitude during the replay.
+
+### Fixing Logs Pulled from CloudWatch
+Logs pulled via `aws logs tail` are not directly replayable: each line carries a
+delivery prefix (ingestion timestamp, instance id), and lines sharing the same
+ingestion timestamp may be delivered out of order. The replay rejects such logs and
+directs to the `fix-log-order` command, which produces a replay-ready NDJSON file:
+
+```bash
+# Analyze only: report scrambles, clock steps and async reorderings, write nothing
+clock-bound-ff-tester fix-log-order --logfile pulled.log --check
+
+# Fix: strip prefixes and repair delivery scrambles (gzip output via .gz extension)
+clock-bound-ff-tester fix-log-order --logfile pulled.log --output fixed.log.gz
+```
+
+The repair is deliberately conservative: a group of lines is reordered only when the
+two independent physical signals in the records — the inner timestamp and the I/O
+completion counter — agree on an order that differs from the delivered one. Anomalies
+where the signals disagree are the daemon's own dynamics (clock steps, async I/O
+reordering) and are preserved and reported, not "repaired". Fix once per dataset;
+repeated replays for algorithm tuning then never pay the cost again.
+
 ## Simulations
 This crate has the capability to simulate NTP and PHC events and replay them into the clock synchronization algorithm.
 One can use this by first creating a local oscillator model with the `oscillator-generator` command, and then modelling the sources with the
