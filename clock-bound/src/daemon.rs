@@ -30,6 +30,9 @@ pub mod io;
 #[cfg(feature = "daemon")]
 pub mod clock_state;
 
+#[cfg(feature = "daemon")]
+pub mod config;
+
 pub mod logging;
 
 // --- Everything below is only needed for the full daemon ---

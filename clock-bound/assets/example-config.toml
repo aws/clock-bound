@@ -1,0 +1,41 @@
+# ClockBound configuration — a recommended example to copy and edit.
+# Read once at startup; restart the daemon to apply changes.
+# Full reference: ClockBound configuration documentation.
+
+# Enabled file streams grow without bound; pair them with a log-rotation
+# strategy sized to your retention and disk budget.
+[logging]
+# Directory for the log streams below.
+log_directory = "/var/log/clockbound"
+
+# Human-readable clock sync history.
+[logging.synchronization]
+enabled = true
+
+# Periodic snapshot of every source's health.
+[logging.sources]
+enabled = true
+
+# Raw sync data for expert replay; highest volume.
+[logging.ffevents]
+enabled = true
+
+# Additional NTP sources examples to copy. Uncomment a block, edit the
+# value, and repeat the block for more than one. Each block sets exactly one
+# of `server` or `pool`.
+
+# A single server, by IPv4.
+#[[sources.ntp]]
+#server = "192.0.2.1"
+
+# A single server, by IPv6.
+#[[sources.ntp]]
+#server = "2001:db8::123"
+
+# A single server, by hostname.
+#[[sources.ntp]]
+#server = "ntp.corp.example"
+
+# A name expected to resolve to several servers.
+#[[sources.ntp]]
+#pool = "pool.ntp.example"

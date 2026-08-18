@@ -30,6 +30,12 @@ reqwest = { version = "0.12.24", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
 thiserror = { version = "2.0", optional = true }
+toml = { version = "1.1", default-features = false, features = [
+  "parse",
+  "display",
+  "serde",
+  "std",
+], optional = true }
 tokio = { version = "1.47.1", features = [
   "fs",
   "net",
@@ -85,6 +91,7 @@ daemon = [
   "dep:nom",
   "dep:reqwest",
   "dep:thiserror",
+  "dep:toml",
   "dep:tracing-appender",
   "nix/feature",
   "nix/ioctl",
