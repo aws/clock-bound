@@ -48,6 +48,7 @@ use {
             autodetect::Autodetect,
             clock_state::ClockState,
             clock_sync_algorithm::{ClockSyncAlgorithm, Selector, SyncParameters},
+            config::SourcesConfig,
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
             message::Dns as DnsMessage,
             receiver_stream::{ReceiverStream, RoutableEvent},
@@ -96,13 +97,21 @@ pub struct Daemon {
     cancellation_token: CancellationToken,
     clock_state_handle: ClockStateHandle,
     dns_message_rx: mpsc::Receiver<DnsMessage>,
+    #[expect(
+        dead_code,
+        reason = "Only until configured sources are wired into source management"
+    )]
+    configured_sources: SourcesConfig,
 }
 
 #[cfg(feature = "daemon")]
 impl Daemon {
     /// Construct and initialize a new daemon
     /// FIXME: Make this function not async. (Currently required for the io.run methods)
-    pub async fn construct(cancellation_token: CancellationToken) -> Self {
+    pub async fn construct(
+        configured_sources: SourcesConfig,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let daemon_info = DaemonInfo {
             major_version: 2,
             minor_version: 100,
@@ -182,6 +191,7 @@ impl Daemon {
             cancellation_token,
             clock_state_handle,
             dns_message_rx,
+            configured_sources,
         }
     }
 
@@ -302,6 +312,7 @@ impl Daemon {
             cancellation_token: _,
             clock_state_handle,
             dns_message_rx: _,
+            configured_sources: _,
         } = self;
 
         let ClockStateHandle {
@@ -356,6 +367,7 @@ mod tests {
         async_ring_buffer,
         clock_state::ClockState,
         clock_sync_algorithm::{ClockSyncAlgorithm, Selector},
+        config::SourcesConfig,
         io::SourceIO,
         io::dns::resolver::{Message as ResolverMessage, Resolver},
         io::ntp::DaemonInfo,
@@ -425,6 +437,7 @@ mod tests {
             cancellation_token: CancellationToken::new(),
             clock_state_handle,
             dns_message_rx,
+            configured_sources: SourcesConfig::default(),
         };
 
         TestDaemon {

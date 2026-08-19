@@ -14,8 +14,7 @@
 # Install to: /etc/logrotate.d/clockbound
 
 /var/log/clockbound/synchronization.log
-/var/log/clockbound/ffevents.log
-/var/log/clockbound/sources.log {
+/var/log/clockbound/ffevents.log {
     daily
     rotate 7
     missingok

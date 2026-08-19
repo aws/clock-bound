@@ -78,7 +78,7 @@ impl StructuredLog {
     }
 
     /// On-disk file name for this stream's log file.
-    const fn file_name(self) -> &'static str {
+    pub const fn file_name(self) -> &'static str {
         match self {
             Self::FFEvents => "ffevents.log",
             Self::Synchronization => "synchronization.log",

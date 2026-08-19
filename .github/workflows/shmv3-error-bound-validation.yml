@@ -101,9 +101,22 @@ jobs:
             fi
           fi
 
+      - name: Write clockbound configuration
+        run: |
+          cat > /tmp/clockbound.toml <<EOF
+          [logging]
+          log_directory = "$PRIMER_LOG_DIR"
+
+          [logging.synchronization]
+          enabled = true
+
+          [logging.ffevents]
+          enabled = true
+          EOF
+
       - name: Start clockbound
         run: |
-          sudo ./clockbound --log-dir "$PRIMER_LOG_DIR" &
+          sudo ./clockbound -c /tmp/clockbound.toml &
           echo $! > /tmp/clockbound.pid
 
       - name: Run SHM validation test

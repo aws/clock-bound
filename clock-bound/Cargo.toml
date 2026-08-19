@@ -62,6 +62,7 @@ tokio-retry = "0.3"
 [dev-dependencies]
 approx = "0.5"
 hex-literal = "0.4"
+indoc = "2"
 mockall = "0.13.1"
 mockall_double = "0.3.1"
 rstest = "0.26"

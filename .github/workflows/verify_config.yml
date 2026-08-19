@@ -1,0 +1,30 @@
+name: Configuration Test
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  Configuration_Tests:
+    name: Configuration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build clockbound binary
+        run: cargo build --bin clockbound --features daemon --release
+
+      - name: Build clock-bound-configuration-test binary
+        run: cargo build --bin clock-bound-configuration-test --release
+
+      - name: Run configuration test
+        run: ./target/release/clock-bound-configuration-test

@@ -275,6 +275,7 @@ dependencies = [
  "errno",
  "futures",
  "hex-literal",
+ "indoc",
  "libc",
  "md5",
  "mockall",
@@ -347,6 +348,16 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "clock-bound-configuration-test"
+version = "3.0.0-alpha.2"
+dependencies = [
+ "clap",
+ "clock-bound",
+ "indoc",
+ "tempfile",
 ]
 
 [[package]]
@@ -1007,6 +1018,15 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "indoc"
+version = "2.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]

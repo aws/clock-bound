@@ -1,0 +1,24 @@
+[package]
+name = "clock-bound-configuration-test"
+description = "An integration test of the ClockBound daemon's configuration handling."
+license = "MIT OR Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "clock-bound-configuration-test"
+path = "src/main.rs"
+
+[dependencies]
+clock-bound = { path = "../../clock-bound", features = ["daemon"] }
+clap = { version = "4", features = ["derive"] }
+indoc = "2"
+tempfile = "3"

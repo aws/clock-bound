@@ -55,8 +55,6 @@ pub struct LoggingConfig {
     log_directory: Option<PathBuf>,
     /// Human-readable clock synchronization history.
     synchronization: StreamConfig,
-    /// Periodic snapshot of every source's health.
-    sources: StreamConfig,
     /// Raw sync data for expert replay.
     ffevents: StreamConfig,
 }
@@ -70,11 +68,6 @@ impl LoggingConfig {
     /// The synchronization stream.
     pub fn synchronization(&self) -> &StreamConfig {
         &self.synchronization
-    }
-
-    /// The sources stream.
-    pub fn sources(&self) -> &StreamConfig {
-        &self.sources
     }
 
     /// The ffevents stream.
@@ -407,9 +400,8 @@ impl Config {
 
         // The reverse is permitted: a directory with no stream enabled writes
         // nothing, which is what the toggles say.
-        let any_stream_enabled = self.logging.synchronization.enabled
-            || self.logging.sources.enabled
-            || self.logging.ffevents.enabled;
+        let any_stream_enabled =
+            self.logging.synchronization.enabled || self.logging.ffevents.enabled;
         if any_stream_enabled && self.logging.log_directory.is_none() {
             violations
                 .push("`log_directory` is required when any log stream is enabled".to_string());
@@ -430,6 +422,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::indoc;
 
     /// The example config carried in the repository, which has to stay parseable.
     const EXAMPLE_CONFIG: &str = include_str!("../../assets/example-config.toml");
@@ -458,54 +451,48 @@ mod tests {
             ("empty", ""),
             (
                 "logging with every stream",
-                r#"
-                [logging]
-                log_directory = "/var/log/clockbound"
+                indoc! {r#"
+                    [logging]
+                    log_directory = "/var/log/clockbound"
 
-                [logging.synchronization]
-                enabled = true
+                    [logging.synchronization]
+                    enabled = true
 
-                [logging.sources]
-                enabled = true
-
-                [logging.ffevents]
-                enabled = true
-                "#,
+                    [logging.ffevents]
+                    enabled = true
+                "#},
             ),
             (
                 "addresses, names and a pool",
-                r#"
-                [[sources.ntp]]
-                server = "192.0.2.1"
+                indoc! {r#"
+                    [[sources.ntp]]
+                    server = "192.0.2.1"
 
-                [[sources.ntp]]
-                server = "2001:db8::123"
+                    [[sources.ntp]]
+                    server = "2001:db8::123"
 
-                [[sources.ntp]]
-                server = "ntp.corp.example"
+                    [[sources.ntp]]
+                    server = "ntp.corp.example"
 
-                [[sources.ntp]]
-                pool = "pool.ntp.example"
-                "#,
+                    [[sources.ntp]]
+                    pool = "pool.ntp.example"
+                "#},
             ),
             (
                 "logging and sources together",
-                r#"
-                [logging]
-                log_directory = "/var/log/clockbound"
+                indoc! {r#"
+                    [logging]
+                    log_directory = "/var/log/clockbound"
 
-                [logging.synchronization]
-                enabled = true
+                    [logging.synchronization]
+                    enabled = true
 
-                [logging.sources]
-                enabled = false
+                    [[sources.ntp]]
+                    server = "192.0.2.1"
 
-                [[sources.ntp]]
-                server = "192.0.2.1"
-
-                [[sources.ntp]]
-                pool = "pool.ntp.example"
-                "#,
+                    [[sources.ntp]]
+                    pool = "pool.ntp.example"
+                "#},
             ),
         ] {
             parse(contents).unwrap_or_else(|e| panic!("expected {name:?} to be accepted: {e}"));
@@ -518,85 +505,131 @@ mod tests {
         for (name, contents, expected) in [
             (
                 "malformed syntax",
-                "[logging]\nlog_directory = = \"/var/log/clockbound\"\n",
+                indoc! {r#"
+                    [logging]
+                    log_directory = = "/var/log/clockbound"
+                "#},
                 "Invalid configuration syntax",
             ),
             (
                 "unknown setting",
-                "[logging]\nlog_directory = \"/var/log/clockbound\"\nrotate = true\n",
+                indoc! {r#"
+                    [logging]
+                    log_directory = "/var/log/clockbound"
+                    rotate = true
+                "#},
                 "unknown field `rotate`",
             ),
             (
                 "both server and pool in one block",
-                "[[sources.ntp]]\nserver = \"ntp.corp.example\"\npool = \"pool.ntp.example\"\n",
+                indoc! {r#"
+                    [[sources.ntp]]
+                    server = "ntp.corp.example"
+                    pool = "pool.ntp.example"
+                "#},
                 "Invalid configuration syntax",
             ),
             (
                 "enabled stream without a log directory",
-                "[logging.ffevents]\nenabled = true\n",
+                indoc! {r#"
+                    [logging.ffevents]
+                    enabled = true
+                "#},
                 "`log_directory` is required when any log stream is enabled",
             ),
             (
                 "relative log directory",
-                "[logging]\nlog_directory = \"clockbound/logs\"\n\n[logging.sources]\nenabled = true\n",
+                indoc! {r#"
+                    [logging]
+                    log_directory = "clockbound/logs"
+
+                    [logging.ffevents]
+                    enabled = true
+                "#},
                 "`log_directory` must be an absolute path",
             ),
             (
                 "wrong type for a setting",
-                "[logging.ffevents]\nenabled = \"yes\"\n",
+                indoc! {r#"
+                    [logging.ffevents]
+                    enabled = "yes"
+                "#},
                 "Invalid configuration syntax",
             ),
             (
                 "a source block naming neither a server nor a pool",
-                "[[sources.ntp]]\n",
+                indoc! {r#"
+                    [[sources.ntp]]
+                "#},
                 "Invalid configuration syntax",
             ),
             (
                 "pool given an address",
-                "[[sources.ntp]]\npool = \"192.0.2.1\"\n",
+                indoc! {r#"
+                    [[sources.ntp]]
+                    pool = "192.0.2.1"
+                "#},
                 "\"192.0.2.1\" is an IP address, not a name",
             ),
             (
                 "pool given something that cannot be a name",
-                "[[sources.ntp]]\npool = \"192.0.2.999\"\n",
+                indoc! {r#"
+                    [[sources.ntp]]
+                    pool = "192.0.2.999"
+                "#},
                 "\"192.0.2.999\" is not a valid name",
             ),
             (
                 "source that is neither an address nor a name",
-                "[[sources.ntp]]\nserver = \"192.0.2.999\"\n",
+                indoc! {r#"
+                    [[sources.ntp]]
+                    server = "192.0.2.999"
+                "#},
                 "\"192.0.2.999\" is not an IP address or a valid name",
             ),
             (
                 "more pools than are supported",
-                "[[sources.ntp]]\npool = \"a.example\"\n\n[[sources.ntp]]\npool = \"b.example\"\n",
+                indoc! {r#"
+                    [[sources.ntp]]
+                    pool = "a.example"
+
+                    [[sources.ntp]]
+                    pool = "b.example"
+                "#},
                 "at most 1 `pool` entry is supported, found 2",
             ),
             (
                 "more servers than are supported",
-                r#"
-                [[sources.ntp]]
-                server = "192.0.2.1"
+                indoc! {r#"
+                    [[sources.ntp]]
+                    server = "192.0.2.1"
 
-                [[sources.ntp]]
-                server = "192.0.2.2"
+                    [[sources.ntp]]
+                    server = "192.0.2.2"
 
-                [[sources.ntp]]
-                server = "192.0.2.3"
+                    [[sources.ntp]]
+                    server = "192.0.2.3"
 
-                [[sources.ntp]]
-                server = "192.0.2.4"
+                    [[sources.ntp]]
+                    server = "192.0.2.4"
 
-                [[sources.ntp]]
-                server = "192.0.2.5"
+                    [[sources.ntp]]
+                    server = "192.0.2.5"
 
-                [[sources.ntp]]
-                server = "192.0.2.6"
-                "#,
+                    [[sources.ntp]]
+                    server = "192.0.2.6"
+                "#},
                 "at most 5 `server` entries are supported, found 6",
             ),
             (
                 "the same source twice",
-                "[[sources.ntp]]\nserver = \"ntp.corp.example\"\n\n[[sources.ntp]]\nserver = \"ntp.corp.example\"\n",
+                indoc! {r#"
+                    [[sources.ntp]]
+                    server = "ntp.corp.example"
+
+                    [[sources.ntp]]
+                    server = "ntp.corp.example"
+                "#},
                 "duplicate source value",
             ),
         ] {
@@ -631,34 +664,40 @@ mod tests {
         // defaults spelled out rather than omitted, and text that parses back. An
         // address is rendered rather than echoed, so `2001:0db8::1` comes back in
         // its canonical spelling.
-        let config = parse(
-            "[logging]\nlog_directory = \"/var/log/clockbound\"\n\n\
-             [logging.ffevents]\nenabled = true\n\n\
-             [[sources.ntp]]\nserver = \"2001:0db8::1\"\n\n\
-             [[sources.ntp]]\npool = \"pool.ntp.example\"\n",
-        )
+        let config = parse(indoc! {r#"
+            [logging]
+            log_directory = "/var/log/clockbound"
+
+            [logging.ffevents]
+            enabled = true
+
+            [[sources.ntp]]
+            server = "2001:0db8::1"
+
+            [[sources.ntp]]
+            pool = "pool.ntp.example"
+        "#})
         .unwrap();
 
         let rendered = toml::to_string(&config).unwrap();
         assert_eq!(
             rendered,
-            "[logging]\n\
-             log_directory = \"/var/log/clockbound\"\n\
-             \n\
-             [logging.synchronization]\n\
-             enabled = false\n\
-             \n\
-             [logging.sources]\n\
-             enabled = false\n\
-             \n\
-             [logging.ffevents]\n\
-             enabled = true\n\
-             \n\
-             [[sources.ntp]]\n\
-             server = \"2001:db8::1\"\n\
-             \n\
-             [[sources.ntp]]\n\
-             pool = \"pool.ntp.example\"\n",
+            indoc! {r#"
+                [logging]
+                log_directory = "/var/log/clockbound"
+
+                [logging.synchronization]
+                enabled = false
+
+                [logging.ffevents]
+                enabled = true
+
+                [[sources.ntp]]
+                server = "2001:db8::1"
+
+                [[sources.ntp]]
+                pool = "pool.ntp.example"
+            "#},
         );
         assert_eq!(parse(&rendered).unwrap(), config);
     }
@@ -679,7 +718,10 @@ mod tests {
     #[test]
     fn unknown_field_rejected_nested() {
         assert!(matches!(
-            parse("[logging]\nbogus = true\n"),
+            parse(indoc! {r"
+                [logging]
+                bogus = true
+            "}),
             Err(ConfigError::Parse(_))
         ));
     }
@@ -687,7 +729,11 @@ mod tests {
     #[test]
     fn unknown_field_rejected_in_stream() {
         assert!(matches!(
-            parse("[logging.ffevents]\nenabled = true\nbogus = 1\n"),
+            parse(indoc! {r"
+                [logging.ffevents]
+                enabled = true
+                bogus = 1
+            "}),
             Err(ConfigError::Parse(_))
         ));
     }
@@ -695,7 +741,10 @@ mod tests {
     #[test]
     fn unknown_field_rejected_in_sources() {
         assert!(matches!(
-            parse("[sources]\nbogus = 1\n"),
+            parse(indoc! {r"
+                [sources]
+                bogus = 1
+            "}),
             Err(ConfigError::Parse(_))
         ));
     }
@@ -705,7 +754,10 @@ mod tests {
         // An unknown key in an `[[sources.ntp]]` block is rejected as an unknown
         // variant (only `server`/`pool` are valid keys).
         assert!(matches!(
-            parse("[[sources.ntp]]\nbogus = \"x\"\n"),
+            parse(indoc! {r#"
+                [[sources.ntp]]
+                bogus = "x"
+            "#}),
             Err(ConfigError::Parse(_))
         ));
     }
@@ -727,7 +779,10 @@ mod tests {
     #[test]
     fn type_error_rejected() {
         assert!(matches!(
-            parse("[logging.ffevents]\nenabled = \"yes\"\n"),
+            parse(indoc! {r#"
+                [logging.ffevents]
+                enabled = "yes"
+            "#}),
             Err(ConfigError::Parse(_))
         ));
     }
@@ -735,7 +790,11 @@ mod tests {
     #[test]
     fn both_server_and_pool_rejected() {
         assert!(matches!(
-            parse("[[sources.ntp]]\nserver = \"192.0.2.1\"\npool = \"pool.ntp.example\"\n"),
+            parse(indoc! {r#"
+                [[sources.ntp]]
+                server = "192.0.2.1"
+                pool = "pool.ntp.example"
+            "#}),
             Err(ConfigError::Parse(_))
         ));
     }
@@ -750,17 +809,23 @@ mod tests {
 
     #[test]
     fn server_alone_accepted() {
-        let (_, sources) = parse("[[sources.ntp]]\nserver = \"192.0.2.1\"\n")
-            .unwrap()
-            .into_parts();
+        let (_, sources) = parse(indoc! {r#"
+            [[sources.ntp]]
+            server = "192.0.2.1"
+        "#})
+        .unwrap()
+        .into_parts();
         assert_eq!(sources.ntp(), [server("192.0.2.1")]);
     }
 
     #[test]
     fn pool_alone_accepted() {
-        let (_, sources) = parse("[[sources.ntp]]\npool = \"pool.ntp.example\"\n")
-            .unwrap()
-            .into_parts();
+        let (_, sources) = parse(indoc! {r#"
+            [[sources.ntp]]
+            pool = "pool.ntp.example"
+        "#})
+        .unwrap()
+        .into_parts();
         assert_eq!(sources.ntp(), [pool("pool.ntp.example")]);
     }
 
@@ -1033,7 +1098,13 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         write!(
             file,
-            "[logging]\nlog_directory = \"/var/log/clockbound\"\n\n[logging.ffevents]\nenabled = true\n"
+            indoc! {r#"
+                [logging]
+                log_directory = "/var/log/clockbound"
+
+                [logging.ffevents]
+                enabled = true
+            "#}
         )
         .unwrap();
 
@@ -1044,6 +1115,31 @@ mod tests {
         assert_eq!(
             logging.log_directory(),
             Some(Path::new("/var/log/clockbound"))
+        );
+    }
+
+    #[test]
+    fn load_rejects_a_semantic_violation() {
+        // Parseable and schema-clean, so only the semantic pass rejects it.
+        use std::io::Write as _;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            file,
+            indoc! {r#"
+                [[sources.ntp]]
+                pool = "a.example"
+
+                [[sources.ntp]]
+                pool = "b.example"
+            "#}
+        )
+        .unwrap();
+
+        assert_eq!(
+            Config::load(Some(file.path().to_path_buf()))
+                .unwrap_err()
+                .to_string(),
+            "Invalid configuration:\n  - at most 1 `pool` entry is supported, found 2",
         );
     }
 

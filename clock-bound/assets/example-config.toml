@@ -12,10 +12,6 @@ log_directory = "/var/log/clockbound"
 [logging.synchronization]
 enabled = true
 
-# Periodic snapshot of every source's health.
-[logging.sources]
-enabled = true
-
 # Raw sync data for expert replay; highest volume.
 [logging.ffevents]
 enabled = true
