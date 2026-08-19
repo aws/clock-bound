@@ -23,11 +23,13 @@ errno = { version = "0.3.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = [
   "extra_traits",
 ] }
-md5 = "0.8.0"
+md5 = { version = "0.8.0", optional = true }
 nix = { version = "0.26" }
 nom = { version = "8", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0.145", features = ["preserve_order"] }
+serde_json = { version = "1.0.145", features = [
+  "preserve_order",
+], optional = true }
 thiserror = { version = "2.0", optional = true }
 toml = { version = "1.1", default-features = false, features = [
   "parse",
@@ -53,10 +55,9 @@ tracing-subscriber = { version = "0.3", features = [
   "fmt",
   "json",
   "registry",
-] }
-futures = "0.3"
-rand = "0.9.2"
-tokio-retry = "0.3"
+], optional = true }
+futures = { version = "0.3", optional = true }
+rand = { version = "0.9.2", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
@@ -92,6 +93,11 @@ daemon = [
   "dep:thiserror",
   "dep:toml",
   "dep:tracing-appender",
+  "dep:futures",
+  "dep:md5",
+  "dep:rand",
+  "dep:serde_json",
+  "tracing-subscriber",
   "nix/feature",
   "nix/ioctl",
   "nix/time",
@@ -107,6 +113,8 @@ algorithm = [
   "dep:serde",
   "dep:thiserror",
   "dep:tracing-appender",
+  "dep:serde_json",
+  "dep:md5",
   "tracing-subscriber/env-filter",
 ] # clock sync algorithm for replay and analysis tooling (e.g. ff-tester): compiles
 # the algorithm without daemon I/O or clock adjustment, and enables emission of
