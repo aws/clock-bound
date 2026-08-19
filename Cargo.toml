@@ -35,7 +35,7 @@ authors = [
   "Wei-Han Huang <danny87123@gmail.com>",
   "Wenhao Piao <wenhao.piao@outlook.com>",
 ]
-categories = [ "date-and-time" ]
+categories = ["date-and-time"]
 edition = "2024"
 exclude = []
 keywords = ["aws", "ntp", "ec2", "time"]
@@ -43,6 +43,15 @@ publish = false
 repository = "https://github.com/aws/clock-bound"
 version = "3.0.0-alpha.2"
 
-
+# Duplicate profile config as clock_bound/Cargo.toml
+# https://github.com/rust-lang/cargo/issues/8264
+#
+# Duplicating to ensure release config is expected when
+# publishing to crates.io
+#
+# Ensure changes are kept in lockstep
 [profile.release]
-panic = "abort"
+panic = "abort"   # Not just binary size, but desired behavior of clockbound bin
+strip = true
+lto = "fat"
+codegen-units = 1

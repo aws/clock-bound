@@ -126,6 +126,19 @@ name = "cbctl"
 path = "src/bin/cbctl/main.rs"
 required-features = ["client", "daemon"]
 
+# Duplicate profile config from the workspace root
+# https://github.com/rust-lang/cargo/issues/8264
+#
+# Duplicating to ensure release config is expected when
+# publishing to crates.io.
+#
+# Ensure changes are kept in lockstep
+[profile.release]
+panic = "abort"   # Not just binary size, but desired behavior of clockbound bin
+strip = true
+lto = "fat"
+codegen-units = 1
+
 [package.metadata.generate-rpm]
 name = "clockbound"
 assets = [
