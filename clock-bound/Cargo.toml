@@ -96,8 +96,13 @@ daemon = [
   "nix/feature",
   "nix/ioctl",
   "nix/time",
-  "tracing-subscriber/env-filter",
 ]
+
+env-filter = [
+  "tracing-subscriber/env-filter",
+] # Enable granular logging control via env variables
+# Not enabled by default due to code size
+
 algorithm = [
   "dep:chrono",
   "dep:serde",

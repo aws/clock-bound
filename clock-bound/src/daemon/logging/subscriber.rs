@@ -8,9 +8,9 @@
 use std::path::Path;
 
 use tracing::Level;
-use tracing_subscriber::{
-    EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
-};
+use tracing_subscriber::Registry;
+use tracing_subscriber::layer::Filter;
+use tracing_subscriber::{Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt};
 
 use super::layer::StructuredLogLayer;
 use super::{CLOCK_METRICS_TARGET, LogHandles, StructuredLog, is_structured_target};
@@ -47,11 +47,7 @@ pub fn init(log_directory: impl AsRef<Path>) -> LogHandles {
     // Defaults to INFO.
     let log_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout) // this is the default, just making it explicit
-        .with_filter(
-            EnvFilter::builder()
-                .with_default_directive(Level::INFO.into())
-                .from_env_lossy(),
-        )
+        .with_filter(clockbound_filter(Level::INFO))
         .with_filter(filter_fn(|md| !is_structured_target(md.target())));
 
     // `tracing_subscriber` implements `Layer` for `Vec<L>`, so the structured
@@ -66,4 +62,20 @@ pub fn init(log_directory: impl AsRef<Path>) -> LogHandles {
     tracing::info!(log_directory = %log_directory.as_ref().display(), "Initialized log directory");
 
     LogHandles { handles }
+}
+
+// this pattern would be a lot cleaner with `cfg_select`, however that was only stabilized in rust this year
+// Out of precaution on MSRV, not using it.
+#[cfg(feature = "env-filter")]
+fn clockbound_filter(level: Level) -> impl Filter<Registry> {
+    use tracing_subscriber::filter::EnvFilter;
+    EnvFilter::builder()
+        .with_default_directive(level.into())
+        .from_env_lossy()
+}
+
+#[cfg(not(feature = "env-filter"))]
+fn clockbound_filter(level: Level) -> impl Filter<Registry> {
+    use tracing_subscriber::filter::Targets;
+    Targets::new().with_default(level)
 }
