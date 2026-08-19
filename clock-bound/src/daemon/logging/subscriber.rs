@@ -13,7 +13,7 @@ use tracing_subscriber::layer::Filter;
 use tracing_subscriber::{Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt};
 
 use super::layer::StructuredLogLayer;
-use super::{CLOCK_METRICS_TARGET, LogHandles, StructuredLog, is_structured_target};
+use super::{LogHandles, StructuredLog, is_structured_target};
 
 /// The effective logging settings the subscriber initializes with, after merging
 /// the configuration file with the command line.
@@ -61,7 +61,6 @@ pub fn init(settings: &LogSettings) -> LogHandles {
 
     let mut structured_layers = Vec::new();
     let mut handles = Vec::new();
-    let mut clock_metrics_layer = None;
 
     if let Some(streams) = streams {
         for stream in daemon_streams
@@ -73,17 +72,6 @@ pub fn init(settings: &LogSettings) -> LogHandles {
             structured_layers.push(layer);
             handles.push(handle);
         }
-
-        let clock_metrics_writer =
-            tracing_appender::rolling::hourly(&streams.directory, "clock_metrics.log");
-        clock_metrics_layer = Some(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_writer(clock_metrics_writer)
-                .with_filter(filter_fn(|md| {
-                    md.target().starts_with(CLOCK_METRICS_TARGET)
-                })),
-        );
     }
 
     // Logging layer for regular log events (progress, warnings) being pushed to stdout.
@@ -102,7 +90,6 @@ pub fn init(settings: &LogSettings) -> LogHandles {
     tracing_subscriber::registry()
         .with(log_layer)
         .with(structured_layers)
-        .with(clock_metrics_layer)
         .init();
 
     tracing::debug!("Initialized tracing subscriber");

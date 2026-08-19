@@ -24,12 +24,11 @@ use crate::daemon::clock_sync_algorithm::SyncParameters;
 use crate::daemon::io::ClockDisruptionEvent;
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::io::vmclock::{State as VMClockState, VMClockParams};
-use crate::daemon::logging::CLOCK_METRICS_TARGET;
 use crate::daemon::logging::synchronization::{
     log_clock_status_change, log_sync_snapshot, log_system_clock_step, log_system_clock_summary,
 };
-use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse, MonotonicRaw, RealTime};
-use crate::daemon::time::{Clock, ClockExt, Duration};
+use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse};
+use crate::daemon::time::{Clock, Duration};
 use crate::shm::{
     CLOCKBOUND_SHM_DEFAULT_PATH_V0, CLOCKBOUND_SHM_DEFAULT_PATH_V1, ClockErrorBoundLayoutVersion,
     ClockStatus, ShmWriter,
@@ -150,8 +149,6 @@ impl ClockState {
     }
 
     pub async fn run(&mut self) {
-        let mut clock_offset_metric_interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(1));
         let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_mins(1));
         snapshot_interval.reset(); // delay the first tick by one period
         let mut clock_adjust_summary_interval = tokio::time::interval(
@@ -182,9 +179,6 @@ impl ClockState {
                 _ = clock_adjust_summary_interval.tick() => {
                     self.flush_clock_adjust_summary();
                 },
-                _ = clock_offset_metric_interval.tick() => {
-                    self.emit_clock_offsets();
-                },
                 () = self.cancellation_token.cancelled() => {
                     // nothing fancy for now. just exit
                     // TODO: we may want to clean-up SHM here.
@@ -194,30 +188,6 @@ impl ClockState {
             }
         }
         debug!("ClockState runner exiting.");
-    }
-
-    fn emit_clock_offsets(&self) {
-        let realtime_to_monotonic_raw = RealTime.get_offset_and_rtt(&MonotonicRaw);
-        tracing::info!(
-            target: CLOCK_METRICS_TARGET,
-            realtime_to_monotonic_raw = serde_json::to_string(&realtime_to_monotonic_raw).unwrap(),
-            "metrics"
-        );
-        if let Some(sp) = &self.sync_parameters {
-            let clockbound_clock = ClockBound::new(sp.clock_parameters.clone(), ReadTscImpl);
-            let clockbound_to_realtime = clockbound_clock.get_offset_and_rtt(&RealTime);
-            let clockbound_to_monotonic_raw = clockbound_clock.get_offset_and_rtt(&MonotonicRaw);
-            tracing::info!(
-                target: CLOCK_METRICS_TARGET,
-                clockbound_to_realtime = serde_json::to_string(&clockbound_to_realtime).unwrap(),
-                "metrics"
-            );
-            tracing::info!(
-                target: CLOCK_METRICS_TARGET,
-                clockbound_to_monotonic_raw = serde_json::to_string(&clockbound_to_monotonic_raw).unwrap(),
-                "metrics"
-            );
-        }
     }
 
     /// Determines the `ClockStatus` to write to the SHM for `ClockErrorBoundV2`, which depends on the system

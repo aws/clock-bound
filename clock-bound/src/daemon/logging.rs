@@ -44,9 +44,6 @@ impl LogHandles {
     }
 }
 
-/// Tracing target for the clock metrics log.
-pub(crate) const CLOCK_METRICS_TARGET: &str = "clock_bound::clock_metrics";
-
 /// Identifies a structured log stream, binding its tracing target and on-disk
 /// file name together at a single definition site.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -92,10 +89,6 @@ pub fn is_structured_target(target: &str) -> bool {
     StructuredLog::ALL
         .iter()
         .map(|stream| stream.target())
-        // CLOCK_METRICS_TARGET has no StructuredLog variant because that stream
-        // is slated for deletion; until then it must still be filtered out of
-        // the human-readable layers, so append it as a one-off here.
-        .chain(std::iter::once(CLOCK_METRICS_TARGET))
         .any(|t| target.starts_with(t))
 }
 
