@@ -1,4 +1,5 @@
 //! Adjust system clock and clockbound shared memory
+pub mod adjust_data;
 pub mod clock_adjust;
 pub mod clock_state_writer;
 
@@ -11,11 +12,12 @@ use tracing::info;
 use crate::daemon::MAX_DISPERSION_GROWTH_PPB;
 use crate::daemon::async_ring_buffer::Receiver;
 use crate::daemon::clock_parameters::ClockParameters;
+use crate::daemon::clock_state::adjust_data::ClockAdjustData;
 #[cfg(not(feature = "test-side-by-side"))]
 use crate::daemon::clock_state::clock_adjust::KAPIClockAdjuster;
 #[cfg(feature = "test-side-by-side")]
 use crate::daemon::clock_state::clock_adjust::NoopClockAdjuster;
-use crate::daemon::clock_state::clock_adjust::{ClockAdjust, ClockAdjuster};
+use crate::daemon::clock_state::clock_adjust::{ClockAdjust, ClockAdjuster, ClockCorrection};
 use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
 use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
 use crate::daemon::clock_sync_algorithm::SyncParameters;
@@ -23,7 +25,9 @@ use crate::daemon::io::ClockDisruptionEvent;
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::io::vmclock::{State as VMClockState, VMClockParams};
 use crate::daemon::logging::CLOCK_METRICS_TARGET;
-use crate::daemon::logging::synchronization::{log_clock_status_change, log_sync_snapshot};
+use crate::daemon::logging::synchronization::{
+    log_clock_status_change, log_sync_snapshot, log_system_clock_step, log_system_clock_summary,
+};
 use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse, MonotonicRaw, RealTime};
 use crate::daemon::time::{Clock, ClockExt, Duration};
 use crate::shm::{
@@ -32,6 +36,8 @@ use crate::shm::{
 };
 
 const FREE_RUNNING_GRACE_PERIOD: Duration = Duration::from_secs(60);
+
+const CLOCK_ADJUST_SUMMARY_PERIOD_SECS: u64 = 600;
 
 /// The whole `ClockState` component struct.
 /// This encompasses both `ClockAdjust` component which interfaces
@@ -48,6 +54,7 @@ pub(crate) struct ClockState {
     clock_params_receiver: Receiver<SyncParameters>,
     cancellation_token: CancellationToken,
     vmclock_state: Option<Arc<Mutex<VMClockState>>>,
+    adjust_data: ClockAdjustData,
 }
 
 impl ClockState {
@@ -71,6 +78,7 @@ impl ClockState {
             clock_status,
             cancellation_token,
             vmclock_state,
+            adjust_data: ClockAdjustData::default(),
         }
     }
 
@@ -149,6 +157,10 @@ impl ClockState {
             tokio::time::interval(tokio::time::Duration::from_secs(1));
         let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
         snapshot_interval.reset(); // delay the first tick by one period
+        let mut clock_adjust_summary_interval = tokio::time::interval(
+            tokio::time::Duration::from_secs(CLOCK_ADJUST_SUMMARY_PERIOD_SECS),
+        );
+        clock_adjust_summary_interval.reset();
         info!("Starting run for ClockState");
         // FIXME: This clears the SHM segment quite early, before we have
         // even received `ClockParameters` and started trying to adjust the clock -
@@ -168,6 +180,9 @@ impl ClockState {
                 },
                 _ = snapshot_interval.tick() => {
                     log_sync_snapshot(self.sync_parameters.as_ref(), self.clock_status);
+                },
+                _ = clock_adjust_summary_interval.tick() => {
+                    self.flush_clock_adjust_summary();
                 },
                 _ = clock_offset_metric_interval.tick() => {
                     self.emit_clock_offsets();
@@ -256,7 +271,12 @@ impl ClockState {
 
         if let Some(sp) = &self.sync_parameters {
             let parameters = &sp.clock_parameters;
-            self.clock_adjuster.handle_clock_parameters(now, parameters);
+            match self.clock_adjuster.handle_clock_parameters(now, parameters) {
+                ClockCorrection::Step { step_ns } => log_system_clock_step(step_ns),
+                ClockCorrection::Smooth { correction_ns } => {
+                    self.adjust_data.record(correction_ns);
+                }
+            }
 
             // Handle SHM1 (`ClockErrorboundV3`) first
             let clockbound_clock = ClockBound::new(parameters.clone(), ReadTscImpl);
@@ -283,6 +303,13 @@ impl ClockState {
             self.state_writer
                 .handle_clock_parameters_shm0(parameters, clock_status_v2);
         }
+    }
+
+    /// Emit a `system_clock_summary` for the smooth phase corrections accumulated
+    /// over the current window and reset the window.
+    fn flush_clock_adjust_summary(&mut self) {
+        log_system_clock_summary(CLOCK_ADJUST_SUMMARY_PERIOD_SECS, &self.adjust_data);
+        self.adjust_data = ClockAdjustData::default();
     }
 
     /// Handles `SyncParameters` passed out from the `ClockSyncAlgorithm` selector.
@@ -313,6 +340,7 @@ impl ClockState {
             clock_status,
             cancellation_token: _,
             vmclock_state: _,
+            adjust_data: _,
         } = self;
 
         let val = clock_disruption_receiver.borrow_and_update().clone();
@@ -367,10 +395,7 @@ mod tests {
         let clock_parameters = get_sample_clock_parameters();
         let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
-        mock_clock_adjuster
-            .expect_handle_clock_parameters()
-            .never()
-            .return_const(());
+        mock_clock_adjuster.expect_handle_clock_parameters().never();
 
         let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         mock_clock_state_writer
@@ -466,10 +491,7 @@ mod tests {
     async fn handle_tick_no_parameters() {
         let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
-        mock_clock_adjuster
-            .expect_handle_clock_parameters()
-            .never()
-            .return_const(());
+        mock_clock_adjuster.expect_handle_clock_parameters().never();
 
         let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         mock_clock_state_writer
@@ -520,7 +542,7 @@ mod tests {
                     && *actual_clock_params == expected_clock_params_clone
             })
             .in_sequence(&mut sequence)
-            .return_const(());
+            .return_const(ClockCorrection::Smooth { correction_ns: 0 });
 
         let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
         let expected_clock_params_clone = expected_clock_params.clone();
@@ -585,7 +607,7 @@ mod tests {
         mock_clock_adjuster
             .expect_handle_clock_parameters()
             .once()
-            .return_const(());
+            .return_const(ClockCorrection::Smooth { correction_ns: 0 });
         // `determine_clock_error_bound_v2_status` still queries the adjuster; its result is
         // overridden to Unknown afterwards because the VMClock is Failed.
         mock_clock_adjuster
@@ -643,7 +665,7 @@ mod tests {
         mock_clock_adjuster
             .expect_handle_clock_parameters()
             .once()
-            .return_const(());
+            .return_const(ClockCorrection::Smooth { correction_ns: 0 });
         mock_clock_adjuster
             .expect_get_clock_realtime_status()
             .once()

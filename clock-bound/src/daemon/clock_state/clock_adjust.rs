@@ -13,13 +13,22 @@ pub use ntp_adjtime::{NtpAdjTimeError, NtpAdjTimeExt};
 
 use state_machine::{Initializing, State};
 
+/// Method and magnitude of a `CLOCK_REALTIME` correction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClockCorrection {
+    Step { step_ns: i64 },
+    Smooth { correction_ns: i64 },
+}
+
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait ClockAdjust: Send + Sync {
+    /// Apply the clock parameters, returning how the clock was corrected (see
+    /// [`ClockCorrection`]).
     fn handle_clock_parameters(
         &mut self,
         now: tokio::time::Instant,
         clock_parameters: &ClockParameters,
-    );
+    ) -> ClockCorrection;
     fn handle_disruption(&mut self, new_disruption_marker: u64);
     /// Returns `Unknown` until the first successful adjustment, `Synchronized` thereafter.
     fn get_clock_realtime_status(&self) -> ClockStatus;
@@ -44,15 +53,19 @@ impl<T: NtpAdjTimeExt + Send + Sync> ClockAdjust for ClockAdjuster<T> {
         &mut self,
         _now: tokio::time::Instant,
         clock_parameters: &ClockParameters,
-    ) {
-        self.state = match &self.state {
+    ) -> ClockCorrection {
+        let (new_state, correction) = match &self.state {
             State::Initializing(inner) => {
-                State::Running(inner.to_running(&self.ntp_adjtime, clock_parameters))
+                let (running, correction) = inner.to_running(&self.ntp_adjtime, clock_parameters);
+                (State::Running(running), correction)
             }
             State::Running(inner) => {
-                State::Running(inner.apply_offset(&self.ntp_adjtime, clock_parameters))
+                let (running, correction) = inner.apply_offset(&self.ntp_adjtime, clock_parameters);
+                (State::Running(running), correction)
             }
         };
+        self.state = new_state;
+        correction
     }
 
     fn handle_disruption(&mut self, _new_disruption_marker: u64) {

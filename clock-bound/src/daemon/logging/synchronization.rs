@@ -18,6 +18,9 @@ use super::{ClockStatusName, FFClock, LogEvent, Source, StructuredLog, emit_even
 use crate::daemon::clock_sync_algorithm::SyncParameters;
 use crate::shm::ClockStatus;
 
+#[cfg(feature = "daemon")]
+use crate::daemon::clock_state::adjust_data::ClockAdjustData;
+
 /// Body of a `daemon_started` event, emitted once when the daemon starts.
 #[derive(Serialize)]
 struct DaemonStarted {
@@ -53,6 +56,59 @@ impl LogEvent for SyncSnapshot {
     const EVENT: &'static str = "synchronization";
 }
 
+/// Body of a `system_clock_step` event.
+#[cfg(feature = "daemon")]
+#[derive(Serialize)]
+struct SystemClockStep {
+    /// Signed phase correction applied to `CLOCK_REALTIME`, in nanoseconds.
+    /// Negative means the clock was moved backward.
+    step_ns: i64,
+}
+
+#[cfg(feature = "daemon")]
+impl LogEvent for SystemClockStep {
+    const STREAM: StructuredLog = StructuredLog::Synchronization;
+    const EVENT: &'static str = "system_clock_step";
+}
+
+#[cfg(feature = "daemon")]
+/// Signed min/max/mean of the smooth phase corrections observed over a window,
+/// in nanoseconds.
+#[derive(Serialize)]
+struct CorrectionNs {
+    min: i64,
+    max: i64,
+    mean: i64,
+}
+
+#[cfg(feature = "daemon")]
+impl From<&ClockAdjustData> for CorrectionNs {
+    fn from(data: &ClockAdjustData) -> Self {
+        Self {
+            min: data.min_ns(),
+            max: data.max_ns(),
+            mean: data.mean_ns(),
+        }
+    }
+}
+
+/// Body of a `system_clock_summary` event, emitted periodically to summarize the
+/// smooth phase corrections fed to the kernel PLL over the preceding window.
+#[cfg(feature = "daemon")]
+#[derive(Serialize)]
+struct SystemClockSummary {
+    window_width_s: u64,
+    correction_count: u64,
+    /// Signed min/max/mean of the corrections, or `null` when there were none.
+    correction_ns: Option<CorrectionNs>,
+}
+
+#[cfg(feature = "daemon")]
+impl LogEvent for SystemClockSummary {
+    const STREAM: StructuredLog = StructuredLog::Synchronization;
+    const EVENT: &'static str = "system_clock_summary";
+}
+
 /// Log that the daemon has started to the synchronization log.
 pub fn log_daemon_started() {
     emit_event(&DaemonStarted {
@@ -77,12 +133,37 @@ pub fn log_sync_snapshot(sync_parameters: Option<&SyncParameters>, clock_status:
     emit_event(&SyncSnapshot { source, ffclock });
 }
 
+/// Log a one-time system clock step to the synchronization log.
+#[cfg(feature = "daemon")]
+pub fn log_system_clock_step(step_ns: i64) {
+    emit_event(&SystemClockStep { step_ns });
+}
+
+/// Log a windowed summary of smooth phase corrections to the synchronization log.
+///
+/// `correction_ns` is `null` when the window contained no corrections
+/// (`adjust_data.count() == 0`).
+#[cfg(feature = "daemon")]
+pub(crate) fn log_system_clock_summary(window_width_s: u64, adjust_data: &ClockAdjustData) {
+    let correction_ns = if adjust_data.count() > 0 {
+        Some(CorrectionNs::from(adjust_data))
+    } else {
+        None
+    };
+    emit_event(&SystemClockSummary {
+        window_width_s,
+        correction_count: adjust_data.count(),
+        correction_ns,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::daemon::clock_parameters::ClockParameters;
     use crate::daemon::clock_sync_algorithm::SourceInfo;
     use crate::daemon::time::{Duration, Instant, TscCount, tsc::Period};
+    use indoc::indoc;
 
     fn sample_clock_parameters() -> ClockParameters {
         ClockParameters {
@@ -299,6 +380,85 @@ mod tests {
                     },
                     "version": "0.1.0-test"
                 }"#,
+            );
+        }
+
+        #[cfg(feature = "daemon")]
+        #[test]
+        fn log_system_clock_step_schema() {
+            let (output, _tmp) = with_synchronization_layer(|| {
+                log_system_clock_step(-842_000_000);
+            });
+
+            assert_matches_expected(
+                output.lines().next().unwrap(),
+                indoc! {r#"
+                {
+                    "timestamp": "",
+                    "event": "system_clock_step",
+                    "system_clock_step": {
+                        "step_ns": -842000000
+                    },
+                    "version": "0.1.0-test"
+                }
+                "#},
+            );
+        }
+
+        #[cfg(feature = "daemon")]
+        #[test]
+        fn log_system_clock_summary_schema() {
+            let (output, _tmp) = with_synchronization_layer(|| {
+                let mut adjust_data = ClockAdjustData::default();
+                // min -4800, max -3200, sum -16400 over 4 → mean -4100.
+                for correction in [-4800, -3200, -4200, -4200] {
+                    adjust_data.record(correction);
+                }
+                log_system_clock_summary(600, &adjust_data);
+            });
+
+            assert_matches_expected(
+                output.lines().next().unwrap(),
+                indoc! {r#"
+                {
+                    "timestamp": "",
+                    "event": "system_clock_summary",
+                    "system_clock_summary": {
+                        "window_width_s": 600,
+                        "correction_count": 4,
+                        "correction_ns": {
+                            "min": -4800,
+                            "max": -3200,
+                            "mean": -4100
+                        }
+                    },
+                    "version": "0.1.0-test"
+                }
+                "#},
+            );
+        }
+
+        #[cfg(feature = "daemon")]
+        #[test]
+        fn log_system_clock_summary_empty_window_schema() {
+            let (output, _tmp) = with_synchronization_layer(|| {
+                log_system_clock_summary(600, &ClockAdjustData::default());
+            });
+
+            assert_matches_expected(
+                output.lines().next().unwrap(),
+                indoc! {r#"
+                {
+                    "timestamp": "",
+                    "event": "system_clock_summary",
+                    "system_clock_summary": {
+                        "window_width_s": 600,
+                        "correction_count": 0,
+                        "correction_ns": null
+                    },
+                    "version": "0.1.0-test"
+                }
+                "#},
             );
         }
 
