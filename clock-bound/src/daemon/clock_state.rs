@@ -3,6 +3,7 @@ pub mod clock_adjust;
 pub mod clock_state_writer;
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -20,6 +21,7 @@ use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWri
 use crate::daemon::clock_sync_algorithm::SyncParameters;
 use crate::daemon::io::ClockDisruptionEvent;
 use crate::daemon::io::tsc::ReadTscImpl;
+use crate::daemon::io::vmclock::{State as VMClockState, VMClockParams};
 use crate::daemon::logging::CLOCK_METRICS_TARGET;
 use crate::daemon::logging::synchronization::{log_clock_status_change, log_sync_snapshot};
 use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse, MonotonicRaw, RealTime};
@@ -45,6 +47,7 @@ pub(crate) struct ClockState {
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     clock_params_receiver: Receiver<SyncParameters>,
     cancellation_token: CancellationToken,
+    vmclock_state: Option<Arc<Mutex<VMClockState>>>,
 }
 
 impl ClockState {
@@ -55,6 +58,7 @@ impl ClockState {
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         cancellation_token: CancellationToken,
         clock_status: ClockStatus,
+        vmclock_state: Option<Arc<Mutex<VMClockState>>>,
     ) -> Self {
         let interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
         Self {
@@ -66,6 +70,7 @@ impl ClockState {
             sync_parameters: None,
             clock_status,
             cancellation_token,
+            vmclock_state,
         }
     }
 
@@ -73,10 +78,17 @@ impl ClockState {
         clock_params_receiver: Receiver<SyncParameters>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         cancellation_token: CancellationToken,
-        disruption_marker: u64,
-        clock_disruption_support_enabled: bool,
+        vmclock_params: Option<VMClockParams>,
         clock_status: ClockStatus,
     ) -> Self {
+        // Clock disruption support is enabled whenever a VMClock source exists (i.e. we expected
+        // one on this platform), even if it failed to initialize.
+        let clock_disruption_support_enabled = vmclock_params.is_some();
+        let disruption_marker = vmclock_params
+            .as_ref()
+            .map_or(0, |params| params.disruption_marker);
+        let vmclock_state = vmclock_params.map(|params| params.shared_state);
+
         // Build two writers, each writing to a specific shared memory segment path.
         //
         // FIXME: given these path are const strings, would be worth looking into moving the
@@ -119,7 +131,17 @@ impl ClockState {
             clock_disruption_receiver,
             cancellation_token,
             clock_status,
+            vmclock_state,
         )
+    }
+
+    /// Returns `true` if a VMClock source exists but its shared state is currently `Failed`.
+    ///
+    /// In this case the `ClockStatus` written to SHM must be forced to `ClockStatus::Unknown`.
+    fn is_vmclock_in_failed_state(&self) -> bool {
+        self.vmclock_state
+            .as_ref()
+            .is_some_and(|state| *state.lock().unwrap() == VMClockState::Failed)
     }
 
     pub async fn run(&mut self) {
@@ -228,6 +250,10 @@ impl ClockState {
     }
 
     fn handle_tick(&mut self, now: tokio::time::Instant) {
+        // If a VMClock was expected but has failed, the clock status is untrustworthy and both SHM
+        // segments must report `ClockStatus::Unknown`.
+        let vmclock_failed = self.is_vmclock_in_failed_state();
+
         if let Some(sp) = &self.sync_parameters {
             let parameters = &sp.clock_parameters;
             self.clock_adjuster.handle_clock_parameters(now, parameters);
@@ -235,10 +261,13 @@ impl ClockState {
             // Handle SHM1 (`ClockErrorboundV3`) first
             let clockbound_clock = ClockBound::new(parameters.clone(), ReadTscImpl);
             // Get the age of the `ClockParameters`, to determine if we're Synchronized or FreeRunning.
-            // Inherently, we can't be `Unknown` or `Disrupted` anymore if we've gotten any `ClockParameters`.
+            // Inherently, we can't be `Disrupted` anymore if we've gotten any `ClockParameters`.
             let clock_params_age_v3 = clockbound_clock.get_time() - parameters.time;
-            let clock_status_v3 =
+            let mut clock_status_v3 =
                 ClockState::determine_clock_error_bound_v3_status(clock_params_age_v3);
+            if vmclock_failed {
+                clock_status_v3 = ClockStatus::Unknown;
+            }
 
             // Log clock status transitions and update shared state
             Self::set_clock_status(&mut self.clock_status, clock_status_v3);
@@ -247,7 +276,10 @@ impl ClockState {
                 .handle_clock_parameters_shm1(parameters, clock_status_v3);
 
             // Handle SHM0 (`ClockErrorboundV2`) after SHM1.
-            let clock_status_v2 = self.determine_clock_error_bound_v2_status(parameters);
+            let mut clock_status_v2 = self.determine_clock_error_bound_v2_status(parameters);
+            if vmclock_failed {
+                clock_status_v2 = ClockStatus::Unknown;
+            }
             self.state_writer
                 .handle_clock_parameters_shm0(parameters, clock_status_v2);
         }
@@ -280,6 +312,7 @@ impl ClockState {
             sync_parameters,
             clock_status,
             cancellation_token: _,
+            vmclock_state: _,
         } = self;
 
         let val = clock_disruption_receiver.borrow_and_update().clone();
@@ -355,6 +388,7 @@ mod tests {
             clock_disruption_receiver,
             cancellation_token,
             ClockStatus::Unknown,
+            None,
         );
         assert_eq!(clock_state.sync_parameters, None);
         clock_state.handle_sync_update(SyncParameters {
@@ -411,6 +445,7 @@ mod tests {
             clock_disruption_receiver,
             cancellation_token,
             ClockStatus::Unknown,
+            None,
         );
         clock_state.sync_parameters = Some(SyncParameters {
             clock_parameters,
@@ -455,6 +490,7 @@ mod tests {
             clock_disruption_receiver,
             cancellation_token,
             ClockStatus::Unknown,
+            None,
         );
         clock_state.sync_parameters = None;
         clock_state.handle_tick(tokio::time::Instant::now());
@@ -525,6 +561,7 @@ mod tests {
             clock_disruption_receiver,
             cancellation_token,
             ClockStatus::Unknown,
+            None,
         );
         clock_state.sync_parameters = Some(SyncParameters {
             clock_parameters: expected_clock_params,
@@ -533,6 +570,146 @@ mod tests {
             selected_at_clock_error_bound: Duration::new(0),
         });
         clock_state.handle_tick(expected_instant);
+    }
+
+    /// When a VMClock is present but in the `Failed` state, both SHM segments must be written with
+    /// `ClockStatus::Unknown`, regardless of what the clock parameters would otherwise imply.
+    #[tokio::test(start_paused = true)]
+    async fn handle_tick_vmclock_failed_forces_unknown() {
+        let mut expected_clock_params = get_sample_clock_parameters();
+        expected_clock_params.as_of_monotonic = MonotonicCoarse.get_time();
+        let expected_instant = tokio::time::Instant::now();
+        let cancellation_token = CancellationToken::new();
+
+        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
+        mock_clock_adjuster
+            .expect_handle_clock_parameters()
+            .once()
+            .return_const(());
+        // `determine_clock_error_bound_v2_status` still queries the adjuster; its result is
+        // overridden to Unknown afterwards because the VMClock is Failed.
+        mock_clock_adjuster
+            .expect_get_clock_realtime_status()
+            .once()
+            .return_const(ClockStatus::Synchronized);
+
+        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
+        mock_clock_state_writer
+            .expect_handle_clock_parameters_shm1()
+            .once()
+            .withf(|_clock_params, clock_status| *clock_status == ClockStatus::Unknown)
+            .return_const(());
+        mock_clock_state_writer
+            .expect_handle_clock_parameters_shm0()
+            .once()
+            .withf(|_clock_params, clock_status| *clock_status == ClockStatus::Unknown)
+            .return_const(());
+
+        let (_tx, rx) = async_ring_buffer::create(1);
+        let (_, clock_disruption_receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
+        let vmclock_state = Some(Arc::new(Mutex::new(VMClockState::Failed)));
+        let mut clock_state = ClockState::new(
+            Box::new(mock_clock_state_writer),
+            Box::new(mock_clock_adjuster),
+            rx,
+            clock_disruption_receiver,
+            cancellation_token,
+            ClockStatus::Unknown,
+            vmclock_state,
+        );
+        clock_state.sync_parameters = Some(SyncParameters {
+            clock_parameters: expected_clock_params,
+            source_info: SourceInfo::Phc("/dev/ptp0".into()),
+            selected_at: Instant::new(0),
+            selected_at_clock_error_bound: Duration::new(0),
+        });
+        clock_state.handle_tick(expected_instant);
+    }
+
+    /// When no VMClock is present (`None`) or one is present and `Running`, `handle_tick` behaves
+    /// nominally (no forced Unknown): a fresh set of clock parameters yields `Synchronized`.
+    #[rstest]
+    #[case::vmclock_none(None)]
+    #[case::vmclock_running(Some(Arc::new(Mutex::new(VMClockState::Running))))]
+    #[tokio::test(start_paused = true)]
+    async fn handle_tick_nominal(#[case] vmclock_state: Option<Arc<Mutex<VMClockState>>>) {
+        let mut expected_clock_params = get_sample_clock_parameters();
+        expected_clock_params.as_of_monotonic = MonotonicCoarse.get_time();
+        let expected_instant = tokio::time::Instant::now();
+        let cancellation_token = CancellationToken::new();
+
+        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
+        mock_clock_adjuster
+            .expect_handle_clock_parameters()
+            .once()
+            .return_const(());
+        mock_clock_adjuster
+            .expect_get_clock_realtime_status()
+            .once()
+            .return_const(ClockStatus::Synchronized);
+
+        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
+        mock_clock_state_writer
+            .expect_handle_clock_parameters_shm1()
+            .once()
+            .withf(|_clock_params, clock_status| *clock_status == ClockStatus::Synchronized)
+            .return_const(());
+        mock_clock_state_writer
+            .expect_handle_clock_parameters_shm0()
+            .once()
+            .withf(|_clock_params, clock_status| *clock_status == ClockStatus::Synchronized)
+            .return_const(());
+
+        let (_tx, rx) = async_ring_buffer::create(1);
+        let (_, clock_disruption_receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
+        let mut clock_state = ClockState::new(
+            Box::new(mock_clock_state_writer),
+            Box::new(mock_clock_adjuster),
+            rx,
+            clock_disruption_receiver,
+            cancellation_token,
+            ClockStatus::Unknown,
+            vmclock_state,
+        );
+        clock_state.sync_parameters = Some(SyncParameters {
+            clock_parameters: expected_clock_params,
+            source_info: SourceInfo::Phc("/dev/ptp0".into()),
+            selected_at: Instant::new(0),
+            selected_at_clock_error_bound: Duration::new(0),
+        });
+        clock_state.handle_tick(expected_instant);
+    }
+
+    /// `vmclock_failed` reflects the shared state: `None` and `Some(Running)` are not failed,
+    /// `Some(Failed)` is.
+    #[tokio::test]
+    async fn vmclock_failed_reflects_shared_state() {
+        let cancellation_token = CancellationToken::new();
+        let (_, clock_disruption_receiver) =
+            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
+
+        let build = |vmclock_state: Option<Arc<Mutex<VMClockState>>>| {
+            let (_, rx) = async_ring_buffer::create(1);
+            ClockState::new(
+                Box::new(MockClockStateWrite::new()),
+                Box::new(MockClockAdjust::new()),
+                rx,
+                clock_disruption_receiver.clone(),
+                cancellation_token.clone(),
+                ClockStatus::Unknown,
+                vmclock_state,
+            )
+        };
+
+        assert!(!build(None).is_vmclock_in_failed_state());
+        assert!(
+            !build(Some(Arc::new(Mutex::new(VMClockState::Running)))).is_vmclock_in_failed_state()
+        );
+        assert!(
+            build(Some(Arc::new(Mutex::new(VMClockState::Failed)))).is_vmclock_in_failed_state()
+        );
     }
 
     #[rstest]
@@ -597,6 +774,7 @@ mod tests {
             clock_disruption_receiver,
             cancellation_token,
             ClockStatus::Unknown,
+            None,
         );
 
         let mut clock_parameters = get_sample_clock_parameters();

@@ -151,13 +151,8 @@ impl Daemon {
         // Install default pool
         source_mutator.add_pool(String::from("time.aws.com"));
 
-        // Read VMClock state (may have been created by init_amazon_sources above).
-        #[expect(clippy::redundant_closure_for_method_calls)]
-        let disruption_marker = io_front_end
-            .vmclock()
-            .map(|vmclock| vmclock.last_disruption_marker())
-            .unwrap_or_default();
-        let clock_disruption_support_enabled = io_front_end.vmclock().is_some();
+        // Read VMClock params (the source may have been created by init_amazon_sources above).
+        let vmclock_params = io_front_end.vmclock_params();
 
         // Initialize the Clock State component
         let (clock_state_tx, clock_state) = {
@@ -166,8 +161,7 @@ impl Daemon {
                 rx,
                 clock_disruption_receiver.clone(),
                 clock_state_cancellation_token.clone(),
-                disruption_marker,
-                clock_disruption_support_enabled,
+                vmclock_params,
                 ClockStatus::Unknown,
             );
             (tx, clock_state)

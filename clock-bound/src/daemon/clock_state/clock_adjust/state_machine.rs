@@ -82,7 +82,7 @@ impl Initializing {
                 "Clock smooth-slewed by {offset:?} (|offset| <= {threshold:?}); entering Running"
             );
         }
-        debug!("Initializing now transitioning to Running");
+        info!("Initializing now transitioning to Running");
         Running
     }
 }
@@ -101,7 +101,7 @@ impl Running {
         let result = ntp_adjtime
             .apply_phase_correction_smooth(offset)
             .expect("failed to smooth-apply phase correction");
-        info!(
+        debug!(
             "ntp_adjtime apply_phase_correction_smooth returned kernel state: {:?}",
             result
         );

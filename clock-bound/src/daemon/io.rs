@@ -32,8 +32,15 @@ use phc::Phc;
 
 pub mod tsc;
 
-mod vmclock;
-use vmclock::VMClock;
+pub mod vmclock;
+use vmclock::{VMClock, VMClockParams};
+
+/// Number of times to attempt to initialize the VMClock before giving up and running in the
+/// `Failed` state.
+const VMCLOCK_INIT_ATTEMPTS: u32 = 3;
+
+/// Delay between VMClock initialization attempts.
+const VMCLOCK_INIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// `SourceIO` acts as the front end for IO tasks.
 ///
@@ -306,8 +313,15 @@ impl SourceIO {
     /// The caller is responsible for ensuring this is only called on supported instance types
     /// This method does not perform any platform checks.
     ///
+    /// The VMClock is constructed (no IO) and then initialized, retrying up to
+    /// [`VMCLOCK_INIT_ATTEMPTS`] times with [`VMCLOCK_INIT_RETRY_DELAY`] between attempts. The
+    /// source is always stored and spawned regardless of whether initialization succeeds: if
+    /// initialization fails, the VMClock task runs in the `Failed` state (emitting a periodic
+    /// error log), and the shared state reflects `Failed` so the `ClockState` writes
+    /// `ClockStatus::Unknown`.
+    ///
     /// # Panics
-    /// - When the vmclock device cannot be constructed using the provided shared memory path.
+    /// - If not called within the `tokio` runtime.
     pub async fn create_vmclock(&mut self, vmclock_shm_path: &str) {
         info!("Creating VMClock source.");
 
@@ -317,13 +331,31 @@ impl SourceIO {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
 
                 info!("Enabling VMClock.");
-                let vmclock = VMClock::construct(
+                let mut vmclock = VMClock::construct(
                     vmclock_shm_path,
                     ctrl_receiver,
                     self.clock_disruption_channels.sender.clone(),
-                )
-                .await
-                .unwrap_or_else(|_| panic!("vmclock device not found {vmclock_shm_path}"));
+                );
+
+                for attempt in 1..=VMCLOCK_INIT_ATTEMPTS {
+                    match vmclock.initialize().await {
+                        Ok(()) => {
+                            info!("VMClock initialized successfully.");
+                            break;
+                        }
+                        Err(e) => {
+                            warn!(?e, attempt, "Failed to initialize VMClock.");
+                            if attempt < VMCLOCK_INIT_ATTEMPTS {
+                                tokio::time::sleep(VMCLOCK_INIT_RETRY_DELAY).await;
+                            } else {
+                                warn!(
+                                    "VMClock could not be initialized after {VMCLOCK_INIT_ATTEMPTS} attempts. \
+                                     Running in Failed state."
+                                );
+                            }
+                        }
+                    }
+                }
 
                 let source = Source {
                     state: SourceState::Initialized(vmclock),
@@ -342,6 +374,18 @@ impl SourceIO {
                 SourceState::Initialized(vmclock) => Some(vmclock),
                 SourceState::Running => None,
             })
+    }
+
+    /// Returns the [`VMClockParams`] for the VMClock source, if one exists.
+    ///
+    /// Returns `Some` whenever a VMClock source has been created (even if it failed to
+    /// initialize), so the `ClockState` knows clock disruption support was expected. The shared
+    /// state within reflects whether the VMClock is `Running` or `Failed`.
+    pub fn vmclock_params(&self) -> Option<VMClockParams> {
+        self.vmclock().map(|vmclock| VMClockParams {
+            shared_state: vmclock.shared_state(),
+            disruption_marker: vmclock.last_disruption_marker(),
+        })
     }
 
     // Creates a new [`watch::Receiver`] connected to the clock distribution watch [`watch::Sender`].
