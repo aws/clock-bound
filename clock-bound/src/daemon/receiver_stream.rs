@@ -176,7 +176,7 @@ impl ReceiverStream {
         let mut result_stream = self.get_aggregate_stream();
         // Handle first result from the stream
         let Some(event_result) = result_stream.next().await else {
-            info!("Aggregate stream is empty, no futures to await");
+            info!("Aggregate stream is empty, no futures to await.");
             return None;
         };
 

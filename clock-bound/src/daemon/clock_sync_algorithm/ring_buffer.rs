@@ -163,12 +163,10 @@ impl<T: TscRtt + Debug> RingBuffer<T> {
         self.buffer.retain(|event| {
             // Now, I would normally like to NOT have any logging in a low level function like this
             // But I don't have a way of returning the dropped values without allocating.
-            //
-            // Logging at a debug level
             if event.counter_post() >= before {
                 true
             } else {
-                tracing::debug!(?event, "Purging stale event");
+                tracing::trace!(?event, "Purging stale event.");
                 false
             }
         });

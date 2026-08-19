@@ -7,7 +7,7 @@ use tokio::{
     sync::{mpsc, watch},
     time::Duration,
 };
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use super::ntp::{DaemonInfo, ExtensionField, Ntp, NtpIoError};
 use super::{ClockDisruptionEvent, ControlRequest};
@@ -73,7 +73,7 @@ impl IpAddrSource {
     /// Returns error if loop exits unexpectedly
     #[tracing::instrument(level = "info", skip_all, fields(identifier = %self.ntp.socket_address()))]
     pub async fn run(&mut self) -> Result<(), NtpIoError> {
-        info!("Starting IP Addr Source IO sampling loop.");
+        debug!("Starting IP addr source sampling loop.");
         loop {
             let branches = self.ntp.select_branches();
             tokio::select! {
@@ -83,7 +83,7 @@ impl IpAddrSource {
                         error!(?e, "Clock disruption receiver dropped.");
                         break;
                     }
-                    info!("Received clock disruption signal.");
+                    debug!("Received clock disruption signal.");
                     self.ntp.handle_disruption();
                 }
                 ctrl_req = branches.ctrl_receiver.recv() => {
@@ -93,7 +93,7 @@ impl IpAddrSource {
                             break;
                         },
                         Some(ControlRequest::Shutdown) => {
-                            info!("Received shutdown signal. Exiting.");
+                            debug!("Received shutdown signal. Exiting.");
                             break;
                         },
                     }
@@ -103,7 +103,7 @@ impl IpAddrSource {
                 }
             }
         }
-        info!("IP Addr Source IO runner exiting.");
+        debug!("IP addr source runner exiting.");
         Ok(())
     }
 

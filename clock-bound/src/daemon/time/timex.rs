@@ -68,7 +68,7 @@ impl Timex {
     pub fn apply_phase_correction(mut offset: Duration) -> Self {
         if offset > Self::MAX_PHASE_OFFSET || offset < -Self::MAX_PHASE_OFFSET {
             warn!(
-                "Offset of {}ns is outside of bounds +/-{}ns, clamping the value",
+                "Offset of {}ns is outside of bounds +/-{}ns. Clamping the value.",
                 offset.as_nanos(),
                 Self::MAX_PHASE_OFFSET.as_nanos()
             );

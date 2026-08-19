@@ -12,7 +12,7 @@ use tokio::{
     sync::{mpsc, watch},
     time::{self, Duration, Instant, Interval, MissedTickBehavior, interval_at},
 };
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 pub mod packet;
 pub use packet::{ExtensionField, Fec2V1Value as DaemonInfo, Packet};
@@ -278,7 +278,7 @@ impl Ntp {
             }
             Err(SendError::Disrupted(_)) => {
                 // next await of this task will respond with a disruption notification
-                info!("Trying to send when there was a disruption event.");
+                debug!("Trying to send when there was a disruption event.");
                 Ok(())
             }
             Err(SendError::BufferClosed(e)) => Err(e),
@@ -416,21 +416,24 @@ async fn inner_timeout(
             continue;
         }
         let Ok((_, ntp_packet)) = Packet::parse_from_bytes(&send_recv_buffer[..len])
-            .inspect_err(|e| trace!(parse_error = ?e.to_string(), "Parsing error"))
+            .inspect_err(|e| trace!(parse_error = ?e.to_string(), "Parsing error."))
         else {
             continue;
         };
 
         if ntp_packet.origin_timestamp.get() != expected_counter {
-            trace!(error = ?InnerSamplePacketError::OriginMismatch {
-                expected: expected_counter,
-                received: ntp_packet.origin_timestamp.get(),
-            });
+            trace!(
+                error = ?InnerSamplePacketError::OriginMismatch {
+                    expected: expected_counter,
+                    received: ntp_packet.origin_timestamp.get(),
+                },
+                "Origin timestamp mismatch."
+            );
             continue;
         }
 
         let Ok(ntp_data) = NtpData::try_from(ntp_packet)
-            .inspect_err(|e| trace!(error = ?InnerSamplePacketError::PacketParsing(e.to_string()), "NtpData try from error")) else {
+            .inspect_err(|e| trace!(error = ?InnerSamplePacketError::PacketParsing(e.to_string()), "Failed to parse NTP data.")) else {
                 continue;
             };
 

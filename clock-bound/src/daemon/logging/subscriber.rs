@@ -105,7 +105,7 @@ pub fn init(settings: &LogSettings) -> LogHandles {
         .with(clock_metrics_layer)
         .init();
 
-    tracing::info!("Initialized tracing subscriber");
+    tracing::debug!("Initialized tracing subscriber");
     if let Some(streams) = streams {
         tracing::info!(log_directory = %streams.directory.display(), "Initialized log directory");
     }

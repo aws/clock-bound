@@ -108,9 +108,8 @@ impl SourceIO {
     /// # Panics
     /// - If not called within the `tokio` runtime.
     pub fn create_amazon_time_sync(&mut self, event_sender: async_ring_buffer::Sender<event::Ntp>) {
-        info!("Creating Amazon Time Sync source.");
-
-        debug!(?self.amazon_time_sync, "Current source entry status");
+        debug!("Creating Amazon Time Sync source.");
+        debug!(?self.amazon_time_sync, "Current source entry status.");
         if self.amazon_time_sync.is_none() {
             self.amazon_time_sync = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
@@ -129,7 +128,7 @@ impl SourceIO {
             };
         }
 
-        info!("Source Amazon Time Sync update complete.");
+        info!("Amazon Time Sync source registered.");
     }
 
     /// Initializes the IO task for sampling a specific NTP Server source.
@@ -139,10 +138,7 @@ impl SourceIO {
     /// - If a duplicate IP is added (global to the app)
     pub fn create_ip_addr_source(&mut self, source: ip_addr_source::Sender) {
         let (server_address, event_sender) = source;
-        info!(
-            "Creating IO source from ntp server at {:#?}.",
-            server_address.ip().to_string()
-        );
+        debug!("Creating IP addr source at {}.", server_address.ip());
 
         if !self.ip_addr_sources.contains_key(&server_address) {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
@@ -165,7 +161,7 @@ impl SourceIO {
             self.in_use_ip_addrs.add(server_address.ip()).unwrap();
         }
 
-        info!("Source NTP update complete.");
+        info!("IP addr source registered at {}.", server_address.ip());
     }
 
     /// Initializes an NTP pool
@@ -174,10 +170,10 @@ impl SourceIO {
     /// resolver maintains.
     #[tracing::instrument(level = "info", skip(self))]
     pub fn create_pool(&mut self, pool_domain: String, max_sources: usize) {
-        info!("Creating DnsPool IO");
+        debug!("Creating DnsPool IO");
 
         if self.dns_pools.contains_key(&pool_domain) {
-            info!("DnsPool IO already exists");
+            warn!("DnsPool IO already exists");
             return;
         }
 
@@ -188,7 +184,7 @@ impl SourceIO {
         );
         self.dns_pools.insert(pool_domain, dns_pool);
 
-        info!("DnsPool IO constructed");
+        debug!("DnsPool IO constructed");
     }
 
     /// Pools getter
@@ -250,7 +246,7 @@ impl SourceIO {
         // Spawn the NtpSource task — move the constructed runner into the task
         let mut runner = ntp_source;
         self.task_tracker.spawn(async move { runner.run().await });
-        info!("Spawned DNS pool NTP source");
+        info!("DNS pool NTP source registered.");
     }
 
     /// Removes an NTP source from a DNS pool and sends it a shutdown signal.
@@ -272,7 +268,7 @@ impl SourceIO {
             .send(ControlRequest::Shutdown)
             .await
             .unwrap();
-        info!("Sent shutdown to DNS pool NTP source");
+        debug!("Sent shutdown to DNS pool NTP source");
     }
 
     /// Initializes the IO task for sampling the PHC source.
@@ -280,9 +276,8 @@ impl SourceIO {
     /// # Panics
     /// - If not called within the `tokio` runtime.
     pub async fn create_phc(&mut self, event_sender: async_ring_buffer::Sender<event::Phc>) {
-        info!("Creating PHC source.");
-
-        debug!(?self.phc, "Current PHC source entry status");
+        debug!("Creating PHC source.");
+        debug!(?self.phc, "Current PHC source entry status.");
         if self.phc.is_none() {
             self.phc = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
@@ -293,14 +288,16 @@ impl SourceIO {
                         ctrl_sender,
                     }),
                     Err(e) => {
-                        warn!("{}", e);
+                        warn!(error = %e, "Failed to construct PHC source.");
                         None
                     }
                 }
             };
         }
 
-        info!("Source PHC update complete.");
+        if let Some(phc) = self.phc() {
+            info!("PHC source registered at {}.", phc.device_path());
+        }
     }
 
     pub fn phc(&self) -> Option<&Phc> {
@@ -330,14 +327,13 @@ impl SourceIO {
     /// # Panics
     /// - If not called within the `tokio` runtime.
     pub async fn create_vmclock(&mut self, vmclock_shm_path: &str) {
-        info!("Creating VMClock source.");
-
-        info!(?self.vmclock, "Current source entry status.");
+        debug!("Creating VMClock source.");
+        debug!(?self.vmclock, "Current source entry status.");
         if self.vmclock.is_none() {
             self.vmclock = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
 
-                info!("Enabling VMClock.");
+                debug!("Enabling VMClock.");
                 let mut vmclock = VMClock::construct(
                     vmclock_shm_path,
                     ctrl_receiver,
@@ -416,14 +412,14 @@ impl SourceIO {
             if let SourceState::Initialized(mut amazon_time_sync) = state.transition_to_running() {
                 self.task_tracker
                     .spawn(async move { amazon_time_sync.run().await });
-                info!("Successfully spawned Amazon Time Sync source.");
+                debug!("Successfully spawned Amazon Time Sync source.");
             } else {
                 warn!(
-                    "Attempted to spawn a Amazon Time Sync source when one is currently running."
+                    "Attempted to spawn an Amazon Time Sync source when it is currently running."
                 );
             }
         } else {
-            debug!("Could not spawn a Amazon Time Sync source. No source data provided.");
+            debug!("Could not spawn an Amazon Time Sync source. No source data provided.");
         }
 
         // Spawn PHC source
@@ -435,9 +431,9 @@ impl SourceIO {
             debug!("Attempting to spawn PHC source.");
             if let SourceState::Initialized(mut phc) = state.transition_to_running() {
                 self.task_tracker.spawn(async move { phc.run().await });
-                info!("Successfully spawned PHC source.");
+                debug!("Successfully spawned PHC source.");
             } else {
-                warn!("Attempted to spawn a PHC source when one is currently running.");
+                warn!("Attempted to spawn a PHC source when it is currently running.");
             }
         } else {
             debug!("Could not spawn a PHC source. No source data provided.");
@@ -451,31 +447,31 @@ impl SourceIO {
         {
             if let SourceState::Initialized(mut vmclock) = state.transition_to_running() {
                 self.task_tracker.spawn(async move { vmclock.run().await });
-                info!("Spawned vmclock task");
+                debug!("Spawned VMClock.");
             } else {
-                warn!("Attempted to spawn a vmclock source when one is currently running.");
+                warn!("Attempted to spawn a VMClock source when it is currently running.");
             }
         } else {
-            debug!("Could not spawn a vmclock source. No source data provided.");
+            debug!("Could not spawn a VMClock source. No source data provided.");
         }
 
         // Spawn ip addr sources
         for (key, ip_addr_source) in &mut self.ip_addr_sources {
-            debug!("Attempting to spawn {key:?} ip addr source.");
+            debug!("Attempting to spawn {key:?} IP addr source.");
             if let SourceState::Initialized(mut ip_addr_source) =
                 ip_addr_source.state.transition_to_running()
             {
                 self.task_tracker
                     .spawn(async move { ip_addr_source.run().await });
-                info!(ip_addr = %key, "Successfully spawned ip addr source.");
+                debug!("Successfully spawned IP addr source.");
             } else {
-                warn!("Attempted to spawn an ip addr source when one is currently running.");
+                warn!("Attempted to spawn an IP addr source when it is currently running.");
             }
         }
 
         // Spawn dns pool resolvers
         for (key, pool) in &mut self.dns_pools {
-            info!("Attempting to spawn {key} dns pool resolver.");
+            debug!("Attempting to spawn {key} dns pool resolver.");
             pool.spawn_resolver(&self.task_tracker);
         }
 
@@ -487,7 +483,7 @@ impl SourceIO {
     /// This function sequentially sends `ControlRequest::Shutdown` signals to all
     /// io tasks and then waits for all io tasks to exit.
     pub async fn shutdown_all(&mut self) {
-        info!("Starting shutdown of SourceIO components.");
+        debug!("Starting shutdown of SourceIO components.");
         // Shutdown Amazon Time Sync source
         if let Some(Source {
             state: _,
@@ -495,7 +491,7 @@ impl SourceIO {
         }) = &mut self.amazon_time_sync
         {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
-                Ok(()) => info!("Successfully sent shutdown signal to Amazon Time Sync source."),
+                Ok(()) => debug!("Successfully sent shutdown signal to Amazon Time Sync source."),
                 Err(e) => warn!(
                     ?e,
                     "Failed to send shutdown signal to Amazon Time Sync source."
@@ -510,8 +506,8 @@ impl SourceIO {
         }) = &mut self.phc
         {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
-                Ok(()) => info!("Successfully sent shutdown signal to phc source."),
-                Err(e) => warn!(?e, "Failed to send shutdown signal to phc source."),
+                Ok(()) => debug!("Successfully sent shutdown signal to PHC source."),
+                Err(e) => warn!(?e, "Failed to send shutdown signal to PHC source."),
             }
         }
 
@@ -522,8 +518,8 @@ impl SourceIO {
         }) = &mut self.vmclock
         {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
-                Ok(()) => info!("Successfully sent shutdown signal to vmclock source."),
-                Err(e) => warn!(?e, "Failed to send shutdown signal to vmclock source."),
+                Ok(()) => debug!("Successfully sent shutdown signal to VMClock source."),
+                Err(e) => warn!(?e, "Failed to send shutdown signal to VMClock source."),
             }
         }
 
@@ -534,8 +530,8 @@ impl SourceIO {
                 .send(ControlRequest::Shutdown)
                 .await
             {
-                Ok(()) => info!("Successfully sent shutdown signal to ip addr source."),
-                Err(e) => warn!(?e, "Failed to send shutdown signal to ip addr source."),
+                Ok(()) => debug!("Successfully sent shutdown signal to IP addr source."),
+                Err(e) => warn!(?e, "Failed to send shutdown signal to IP addr source."),
             }
         }
 
@@ -545,9 +541,9 @@ impl SourceIO {
         }
 
         // Wait for all io tasks to exit
-        info!("Waiting for {} io tasks to exit.", self.task_tracker.len());
+        debug!("Waiting for {} IO tasks to exit.", self.task_tracker.len());
         self.task_tracker.wait().await;
-        info!("All tasks exited. Shutdown of io complete.");
+        debug!("All tasks exited. Shutdown of IO complete.");
     }
 }
 

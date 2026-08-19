@@ -116,7 +116,7 @@ impl Pool {
             tracker.spawn(async move { resolver.run().await });
             info!("Successfully spawned Resolver.");
         } else {
-            warn!("Attempted to spawn Resolver when one is already running.");
+            warn!("Attempted to spawn Resolver when it is already running.");
         }
     }
 
@@ -143,7 +143,7 @@ impl Pool {
                 .send(ControlRequest::Shutdown)
                 .await
                 .unwrap();
-            info!(%address, pool = %self.domain, "Sent shutdown to DNS pool NTP source");
+            debug!(%address, pool = %self.domain, "Sent shutdown to DNS pool NTP source");
         }
 
         // Shutdown the Resolver

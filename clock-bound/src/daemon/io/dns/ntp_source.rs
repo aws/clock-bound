@@ -95,7 +95,7 @@ impl NtpSource {
     /// Returns error if loop exits unexpectedly
     #[tracing::instrument(level = "info", skip_all, fields(pool = self.pool_domain, identifier = %self.ntp.socket_address()))]
     pub async fn run(&mut self) -> Result<(), NtpIoError> {
-        info!("Starting DNS NTP Source IO sampling loop.");
+        debug!("Starting DNS NTP Source IO sampling loop.");
         self.register_with_resolver().await;
         loop {
             let branches = self.ntp.select_branches();
@@ -116,7 +116,7 @@ impl NtpSource {
                             break;
                         },
                         Some(ControlRequest::Shutdown) => {
-                            info!("Received shutdown signal. Exiting.");
+                            debug!("Received shutdown signal. Exiting.");
                             break;
                         },
                     }
@@ -126,7 +126,7 @@ impl NtpSource {
                 }
             }
         }
-        info!("DNS NTP Source IO runner exiting.");
+        debug!("DNS NTP Source IO runner exiting.");
         self.notify_resolver_shutdown().await;
         Ok(())
     }
@@ -212,7 +212,7 @@ impl NtpSource {
         {
             // Resolver has exited (e.g. during shutdown). This is expected when
             // a shutdown command races with timeout detection.
-            info!("Resolver channel closed during unregister notification, source will exit.");
+            debug!("Resolver channel closed during unregister notification, source will exit.");
         }
     }
 }

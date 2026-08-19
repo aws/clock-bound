@@ -97,7 +97,7 @@ pub trait NtpAdjTimeExt: NtpAdjTime {
         phase_correction: Duration,
     ) -> Result<Timex, NtpAdjTimeError> {
         let mut tx = Timex::apply_phase_correction(phase_correction);
-        debug!("calling ntp_adjtime to smooth-apply phase correction {phase_correction:?}");
+        debug!("Calling ntp_adjtime to smooth-apply phase correction {phase_correction:?}.");
         match self.ntp_adjtime(&mut tx) {
             TIME_OK => Ok(tx),
             cs @ (TIME_ERROR | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
@@ -121,7 +121,7 @@ pub trait NtpAdjTimeExt: NtpAdjTime {
         let mut tx = Timex::clock_step()
             .phase_correction(phase_correction)
             .call();
-        debug!("calling ntp_adjtime to step-apply phase correction {phase_correction:?}");
+        debug!("Calling ntp_adjtime to step-apply phase correction {phase_correction:?}.");
         // TIME_ERROR is expected after a step — the clock is now "unsynchronized"
         match self.ntp_adjtime(&mut tx) {
             TIME_ERROR => Ok(tx),
@@ -141,7 +141,7 @@ pub trait NtpAdjTimeExt: NtpAdjTime {
     /// `NtpAdjTimeError::InvalidState` if an invalid state is returned
     fn read_adjtime(&self) -> Result<Timex, NtpAdjTimeError> {
         let mut tx = Timex::retrieve();
-        debug!("calling ntp_adjtime to retrieve kernel params");
+        debug!("Calling ntp_adjtime to retrieve kernel params.");
         match self.ntp_adjtime(&mut tx) {
             TIME_OK | TIME_ERROR | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT => Ok(tx),
             -1 => Err(NtpAdjTimeError::Failure(errno::errno())),

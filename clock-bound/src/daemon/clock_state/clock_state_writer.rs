@@ -78,7 +78,9 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
     /// This is a minor change in behavior compared to how ClockBound 2.0 manages the SHM segment
     /// upon restart.
     fn initialize_ceb_v2_shm(&mut self) {
-        info!("Initializing SHM segment to status `ClockStatus::Unknown` and zeroing other fields");
+        info!(
+            "Initializing SHM segment to status `ClockStatus::Unknown` and zeroing other fields."
+        );
         let clock_parameters = ClockParameters {
             tsc_count: TscCount::new(0),
             time: Instant::new(0),
@@ -150,7 +152,7 @@ impl<T: ShmWrite + Send + Sync> ClockStateWrite for ClockStateWriter<T> {
         self.write_shm1(clock_parameters, ClockStatus::Disrupted);
         self.write_shm0(clock_parameters, ClockStatus::Disrupted);
 
-        tracing::info!("Handled clock disruption event");
+        tracing::debug!("Handled clock disruption event.");
     }
 }
 
@@ -194,7 +196,7 @@ impl<T: ShmWrite> ClockStateWriter<T> {
             Skew::from_period_and_error(clock_parameters.period, clock_parameters.period_max_error);
         let Some(software_skew_ppb) = software_skew.to_ppb() else {
             tracing::error!(
-                "Software skew is too large to be expressed as a ppb, skipping writing to SHM"
+                "Software skew is too large to be expressed as a ppb. Skipping writing to SHM."
             );
             return;
         };

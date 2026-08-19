@@ -168,7 +168,7 @@ impl<T> AsRef<RingBuffer<T>> for Local<T> {
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum FeedError<T: std::fmt::Debug> {
     #[error(
-        "event is older than latest event. Buffer's latest event TSC {latest_tsc:?}, event: {event:?}"
+        "Event is older than latest event. Buffer's latest event TSC {latest_tsc:?}, event: {event:?}."
     )]
     Old { latest_tsc: TscCount, event: T },
 }

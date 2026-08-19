@@ -165,7 +165,7 @@ impl<T> Receiver<T> {
                 }
                 if let Some(Side::Sender) = guard.disruption_handled {
                     // it's a bug for this to repeatedly fire from the same channel
-                    tracing::debug!("Receiving when sender handled disruption");
+                    tracing::debug!("Receiving when sender handled disruption.");
                 }
                 if let Some(value) = guard.pop() {
                     return Ok(value);
@@ -247,7 +247,7 @@ impl<T> Buffer<T> {
                 self.data.clear();
                 self.disruption_handled = Some(Side::Sender);
             }
-            Some(Side::Sender) => tracing::warn!("handle disruption sender called multiple times"),
+            Some(Side::Sender) => tracing::warn!("Handle disruption sender called multiple times."),
             Some(Side::Receiver) => {
                 // already handled. Clear disruption_handled flag
                 self.disruption_handled = None;
@@ -267,7 +267,7 @@ impl<T> Buffer<T> {
                 self.disruption_handled = None;
             }
             Some(Side::Receiver) => {
-                tracing::warn!("handle disruption receiver called multiple times");
+                tracing::warn!("Handle disruption receiver called multiple times.");
             }
         }
     }

@@ -49,7 +49,18 @@ impl<'a> SourceMutator<'a> {
         max_dispersion: Skew,
     ) {
         match autodetect {
-            Autodetect::Amazon(amazon) => self.init_amazon_sources(amazon, max_dispersion).await,
+            Autodetect::Amazon(amazon) => {
+                match amazon {
+                    autodetect::Amazon::Nitro(instance_type) => info!(
+                        "Amazon EC2 Nitro instance detected (instance type: {instance_type}). \
+                         Installing Amazon-specific sources."
+                    ),
+                    autodetect::Amazon::Xen => info!(
+                        "Amazon EC2 Xen instance detected. Installing Amazon-specific sources."
+                    ),
+                }
+                self.init_amazon_sources(amazon, max_dispersion).await;
+            }
             Autodetect::Other => {
                 info!("Non-Amazon platform detected. Skipping Amazon-specific sources.");
             }
@@ -96,7 +107,7 @@ impl<'a> SourceMutator<'a> {
 
         let Some(phc) = self.io_front_end.phc() else {
             tracing::info!(
-                "PHC device was not initialized. Not installing into clock sync algorithm"
+                "PHC device was not initialized. Not installing into clock sync algorithm."
             );
             return;
         };

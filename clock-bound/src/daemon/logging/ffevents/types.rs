@@ -48,6 +48,7 @@ pub struct NtpDataLog {
     stratum: Stratum,
 }
 
+/// Log schema for [`PhcData`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhcDataLog {
     time_ns: Instant,

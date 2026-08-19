@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::ntp::{BurstConfig, Ntp, NtpIoError};
 use super::{ClockDisruptionEvent, ControlRequest};
@@ -74,7 +74,7 @@ impl AmazonTimeSync {
     /// Returns error if loop exits unexpectedly
     #[tracing::instrument(level = "info", skip_all, fields(identifier = %self.ntp.socket_address()))]
     pub async fn run(&mut self) -> Result<(), NtpIoError> {
-        info!("Starting sampling loop.");
+        debug!("Starting Amazon Time Sync sampling loop.");
         loop {
             let branches = self.ntp.select_branches();
             tokio::select! {
@@ -85,7 +85,7 @@ impl AmazonTimeSync {
                         break;
                     }
                     if self.ntp.handle_disruption() {
-                        info!("Received clock disruption signal. Entering Burst mode.");
+                        info!("Amazon Time Sync source transitioning from `Normal` mode to `Burst` mode.");
                     }
                 }
                 ctrl_req = branches.ctrl_receiver.recv() => {
@@ -95,7 +95,7 @@ impl AmazonTimeSync {
                             break;
                         },
                         Some(ControlRequest::Shutdown) => {
-                            info!("Received shutdown signal. Exiting.");
+                            debug!("Received shutdown signal. Exiting.");
                             break;
                         },
                     }
@@ -105,7 +105,7 @@ impl AmazonTimeSync {
                 }
             }
         }
-        info!("runner exiting.");
+        debug!("Amazon Time Sync runner exiting.");
         Ok(())
     }
 
@@ -114,7 +114,7 @@ impl AmazonTimeSync {
         let ntp_event = match self.ntp.sample().await {
             Ok(ntp_event) => ntp_event,
             Err(e) => {
-                tracing::debug!(?e, "Failed to sample source.");
+                tracing::debug!(?e, "Failed to sample Amazon Time Sync source.");
                 return;
             }
         };
@@ -125,7 +125,7 @@ impl AmazonTimeSync {
         }
 
         if self.ntp.handle_burst_expiry() {
-            info!("Transitioning from `Burst` mode to `Normal` mode.");
+            info!("Amazon Time Sync source transitioning from `Burst` mode to `Normal` mode.");
         }
     }
 }

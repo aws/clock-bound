@@ -98,8 +98,8 @@ impl Phc {
         let within_threshold = self
             .feed_internal_buffers(event)
             .inspect_err(|error_msg| match error_msg {
-                FeedError::Old { event, .. } => {
-                    tracing::warn!(?event, ?error_msg);
+                FeedError::Old { .. } => {
+                    tracing::warn!(?error_msg);
                 }
             })
             .ok()?; // early exit if there was an error with the sample
@@ -108,7 +108,7 @@ impl Phc {
             // At this point, if the input does not meet our expectations on the rtt threshold,
             // there is no more processing to do. The end calculation will not be more accurate than
             // the previous value (if we have one)
-            tracing::trace!("Early exit. Event not within threshold");
+            tracing::trace!("Early exit. Event not within threshold.");
             return None;
         }
 
@@ -127,7 +127,7 @@ impl Phc {
         //
         // This value is not used in the above equation, but IS reported in the final clock parameters
         let Some(local_period) = Self::calculate_local_period_and_error(&self.local) else {
-            tracing::debug!("Early exit. Calculate local period returned none");
+            tracing::debug!("Early exit. Calculate local period returned none.");
             return None;
         };
 
@@ -179,7 +179,7 @@ impl Phc {
         match &mut self.clock_parameters {
             None => {
                 // This is the first time we have calculated clock parameters. Set it.
-                tracing::info!(?clock_parameters, "Clock Parameters initialized");
+                tracing::debug!(?clock_parameters, "Clock Parameters initialized.");
                 self.clock_parameters = Some(clock_parameters);
                 self.clock_parameters.as_ref()
             }
@@ -188,13 +188,13 @@ impl Phc {
                     .more_accurate_than(current_clock_parameters, self.max_dispersion) =>
             {
                 // We currently have clock_parameters, and the new value is more accurate. Replace it.
-                tracing::debug!(?clock_parameters, "Clock Parameters updated");
+                tracing::debug!(?clock_parameters, "Clock Parameters updated.");
                 *current_clock_parameters = clock_parameters;
                 self.clock_parameters.as_ref()
             }
             Some(current_clock_parameters) => {
                 // We currently have clock_parameters, and the new value is NOT more accurate. Ignore and return None.
-                tracing::debug!(new_clock_parameters = ?clock_parameters, ?current_clock_parameters, "Clock Parameters not updated");
+                tracing::debug!(new_clock_parameters = ?clock_parameters, ?current_clock_parameters, "Clock Parameters not updated.");
                 None
             }
         }
@@ -221,9 +221,7 @@ impl Phc {
         if let Some(uc) = self.uncorrected_clock {
             self.local.expunge_old_events(uc.p_estimate);
             self.staging.expunge_old_events(uc.p_estimate);
-            if let Some(new_estimate) = self.estimate.feed(&self.staging, uc.p_estimate) {
-                tracing::info!(?new_estimate, "New value added to estimate buffer");
-            }
+            self.estimate.feed(&self.staging, uc.p_estimate);
         }
         // unwrap okay. Above line ensures there is at least one value in the buffer
         let min_rtt_event = self.local.as_ref().min_rtt().unwrap();

@@ -20,7 +20,7 @@ use tokio::{
     task,
     time::{Interval, MissedTickBehavior, interval, timeout},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, trace, warn};
 
 const PHC_SOURCE_INTERVAL_DURATION: std::time::Duration = tokio::time::Duration::from_millis(500);
 
@@ -261,7 +261,7 @@ impl Phc {
         for network_interface in network_interfaces {
             debug!(
                 ?network_interface,
-                "Gathering information on network_interface",
+                "Gathering information on network interface.",
             );
 
             let uevent_file_path =
@@ -270,13 +270,13 @@ impl Phc {
                         debug!(
                             ?network_interface,
                             ?uevent_file_path,
-                            "Network interface association with uevent file path"
+                            "Network interface association with uevent file path."
                         );
                         uevent_file_path
                     }
                     Err(e) => {
                         debug!(error = ?e, ?network_interface,
-                            "uevent file not found for network interface"
+                            "Uevent file not found for network interface."
                         );
                         continue;
                     }
@@ -287,13 +287,13 @@ impl Phc {
                     debug!(
                         ?network_interface,
                         ?is_ena,
-                        "Network interface driver details"
+                        "Network interface driver details."
                     );
                     is_ena
                 }
                 Err(e) => {
                     debug!(error = ?e, ?network_interface,
-                        "Failed to determine if network interface driver is ena",
+                        "Failed to determine if network interface driver is ENA.",
                     );
                     continue;
                 }
@@ -302,10 +302,10 @@ impl Phc {
             if !is_ena {
                 // We only consider PTP devices attached to ENA network interfaces as in-scope
                 // for use because this is the configuration used within Amazon Web Services.
-                info!(
+                debug!(
                     ?network_interface,
                     ?is_ena,
-                    "Network interface does not use the ena driver.  Skipping.",
+                    "Network interface does not use the ENA driver. Skipping.",
                 );
                 continue;
             }
@@ -315,13 +315,13 @@ impl Phc {
                     debug!(
                         ?network_interface,
                         ?pci_slot_name,
-                        "Network interface association with PCI slot name",
+                        "Network interface association with PCI slot name.",
                     );
                     pci_slot_name
                 }
                 Err(e) => {
                     debug!(error = ?e, ?uevent_file_path,
-                        "PCI slot name not found for uevent file path",
+                        "PCI slot name not found for uevent file path.",
                     );
                     continue;
                 }
@@ -333,14 +333,14 @@ impl Phc {
                         debug!(
                             ?network_interface,
                             ?phc_clock_error_bound_sysfs_path,
-                            "Network interface association with PHC clock error bound sysfs path",
+                            "Network interface association with PHC clock error bound sysfs path.",
                         );
                         phc_clock_error_bound_sysfs_path
                     }
                     Err(e) => {
                         debug!(
                             error = ?e, ?pci_slot_name,
-                            "PHC clock error bound sysfs path not found for PCI slot name",
+                            "PHC clock error bound sysfs path not found for PCI slot name.",
                         );
                         continue;
                     }
@@ -352,14 +352,14 @@ impl Phc {
                     debug!(
                         ?network_interface,
                         ?ptp_uevent_file_paths,
-                        "Network interface association with PTP uevent file paths",
+                        "Network interface association with PTP uevent file paths.",
                     );
                     ptp_uevent_file_paths
                 }
                 Err(e) => {
                     debug!(
                         error = ?e, ?pci_slot_name,
-                        "PTP uevent file paths not found for PCI slot name",
+                        "PTP uevent file paths not found for PCI slot name.",
                     );
                     continue;
                 }
@@ -372,14 +372,14 @@ impl Phc {
                             debug!(
                                 ?network_interface,
                                 ?ptp_device_name,
-                                "Network interface association with PTP device name",
+                                "Network interface association with PTP device name.",
                             );
                             ptp_device_name
                         }
                         Err(e) => {
                             debug!(
                                 error = ?e, ?ptp_uevent_file_path,
-                                "Device name not found for PTP uevent file path",
+                                "Device name not found for PTP uevent file path.",
                             );
                             continue;
                         }
@@ -390,13 +390,13 @@ impl Phc {
                         debug!(
                             ?network_interface,
                             ?ptp_device_path,
-                            "Network interface association with PTP device path",
+                            "Network interface association with PTP device path.",
                         );
                         ptp_device_path
                     }
                     Err(e) => {
                         debug!(error = ?e, ?ptp_device_name,
-                            "Device path not found for PTP device name",
+                            "Device path not found for PTP device name.",
                         );
                         continue;
                     }
@@ -415,7 +415,10 @@ impl Phc {
         //    ("/dev/ptp1", "/sys/bus/pci/devices/0000:28:00.0/phc_error_bound"),
         // ]
         ptp_device_path_and_phc_clock_error_bound_sysfs_path_vec.sort();
-        debug!(?ptp_device_path_and_phc_clock_error_bound_sysfs_path_vec);
+        debug!(
+            ?ptp_device_path_and_phc_clock_error_bound_sysfs_path_vec,
+            "Candidate PHC devices sorted."
+        );
 
         // There is at least one PTP device available to use.
         // Use the first PTP device in the vec.
@@ -424,10 +427,10 @@ impl Phc {
                 .into_iter()
                 .next()
         {
-            info!(
+            debug!(
                 ?ptp_device_path,
                 ?phc_clock_error_bound_sysfs_path,
-                "Configuring PHC readers"
+                "Configuring PHC readers."
             );
 
             let ptp_device_file = match File::open(ptp_device_path.clone()) {
@@ -443,10 +446,10 @@ impl Phc {
             let phc_clock_error_bound_reader: PhcClockErrorBoundReader =
                 PhcClockErrorBoundReader::new(PathBuf::from(&phc_clock_error_bound_sysfs_path));
 
-            info!(
+            debug!(
                 ?ptp_device_path,
                 ?phc_clock_error_bound_sysfs_path,
-                "Done configuring PHC readers"
+                "Done configuring PHC readers."
             );
             Ok((phc_reader, phc_clock_error_bound_reader, ptp_device_path))
         } else {
@@ -463,16 +466,16 @@ impl Phc {
         let mut best_sample: Option<PhcSample> = None;
         let mut best_sample_i: u32 = 0;
 
-        debug!("Reading {:?} PHC samples ...", NUM_SAMPLES_PER_POLL);
+        debug!("Reading {} PHC samples.", NUM_SAMPLES_PER_POLL);
 
         for i in 0..NUM_SAMPLES_PER_POLL {
             let sample = match self.read_phc_sample().await {
                 Ok(sample) => {
-                    debug!(?i, ?sample, "Successfully read PHC sample");
+                    debug!(?i, ?sample, "Successfully read PHC sample.");
                     sample
                 }
                 Err(e) => {
-                    warn!(?i, error = ?e, "PHC sample read failure");
+                    debug!(?i, error = ?e, "PHC sample read failure.");
                     last_phc_error = Some(e);
                     continue;
                 }
@@ -493,7 +496,7 @@ impl Phc {
         }
 
         if let Some(best_sample) = best_sample {
-            debug!(?best_sample_i, ?best_sample);
+            trace!(?best_sample_i, ?best_sample, "Selected best PHC sample.");
 
             // Convert from PhcSample to event::Phc.
             match event::Phc::try_from(best_sample) {
@@ -554,7 +557,7 @@ impl Phc {
     ///
     pub async fn run(&mut self) {
         // Sampling loop
-        info!("Starting PHC sampling loop");
+        debug!("Starting PHC sampling loop.");
         loop {
             tokio::select! {
                 biased; // priority order is disruption, commands, and ticks
@@ -564,7 +567,7 @@ impl Phc {
                         break;
                     }
                     // Clock Disruption logic here
-                    info!("Received clock disruption signal.");
+                    debug!("Received clock disruption signal.");
                     self.handle_disruption();
                 }
                 ctrl_req = self.ctrl_receiver.recv() => {
@@ -575,7 +578,7 @@ impl Phc {
                             break;
                         },
                         Some(ControlRequest::Shutdown) => {
-                            info!("Received shutdown signal. Exiting.");
+                            debug!("Received shutdown signal. Exiting.");
                             break;
                         },
                     }
@@ -585,25 +588,25 @@ impl Phc {
                 }
             }
         }
-        info!("PHC runner exiting");
+        debug!("PHC runner exiting.");
     }
 
     async fn handle_interval_tick(&mut self) {
         let phc_event = match self.sample().await {
             Ok(phc_event) => phc_event,
             Err(e) => {
-                warn!(error = ?e, "Failed to sample PHC source");
+                debug!(error = ?e, "Failed to sample PHC source.");
                 return;
             }
         };
 
         match self.event_sender.send(phc_event.clone()) {
-            Ok(()) => debug!(?phc_event, "Successfully sent PHC IO event"),
+            Ok(()) => debug!(?phc_event, "Successfully sent PHC IO event."),
             Err(SendError::Disrupted(_)) => {
-                info!("Trying to send when there was a disruption event.");
+                debug!("Trying to send when there was a disruption event.");
             }
             Err(SendError::BufferClosed(e)) => {
-                error!(?e, "PHC channel closed not supported in alpha");
+                error!(?e, "PHC channel closed. Not supported in alpha.");
                 panic!("PHC IO source unable to communicate with daemon. {e:?}");
             }
         }
@@ -624,7 +627,7 @@ impl Phc {
         interval.reset();
         // and clean up disruption from sender side
         event_sender.handle_disruption();
-        tracing::info!("PHC IO handled disruption");
+        tracing::debug!("PHC IO handled disruption.");
     }
 }
 

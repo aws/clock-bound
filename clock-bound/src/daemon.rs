@@ -62,7 +62,7 @@ use {
     std::sync::Arc,
     tokio::sync::{mpsc, watch},
     tokio_util::{sync::CancellationToken, task::TaskTracker},
-    tracing::{error, info, warn},
+    tracing::{debug, error, warn},
 };
 
 /// The maximum dispersion growth every second
@@ -229,7 +229,7 @@ impl Daemon {
                 RunLoopControl::Continue
             }
             () = self.cancellation_token.cancelled() => {
-                info!("Received shutdown signal. Starting graceful shutdown of daemon.");
+                debug!("Received shutdown signal. Starting graceful shutdown of daemon.");
 
                 // TODO: we can asynchronously shutdown both clock state and io tasks.
 
@@ -266,9 +266,9 @@ impl Daemon {
                 Ok(()) => (),
                 Err(SendError::Disrupted(source_params)) => {
                     // don't handle_disruption. It will be handled on the next call of tokio::select
-                    info!(
+                    debug!(
                         ?source_params,
-                        "Trying to send a value when there was a disruption event. dropping."
+                        "Trying to send a value when there was a disruption event. Dropping."
                     );
                 }
                 Err(SendError::BufferClosed(e)) => {

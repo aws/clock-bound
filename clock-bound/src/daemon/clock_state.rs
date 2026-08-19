@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::daemon::MAX_DISPERSION_GROWTH_PPB;
 use crate::daemon::async_ring_buffer::Receiver;
@@ -158,7 +158,7 @@ impl ClockState {
             tokio::time::Duration::from_secs(CLOCK_ADJUST_SUMMARY_PERIOD_SECS),
         );
         clock_adjust_summary_interval.reset();
-        info!("Starting run for ClockState");
+        debug!("Starting run for ClockState.");
         // FIXME: This clears the SHM segment quite early, before we have
         // even received `ClockParameters` and started trying to adjust the clock -
         // it is overly cautious. We could hold off even longer before clearing things,
@@ -188,12 +188,12 @@ impl ClockState {
                 () = self.cancellation_token.cancelled() => {
                     // nothing fancy for now. just exit
                     // TODO: we may want to clean-up SHM here.
-                    info!("Received shutdown signal. Exiting.");
+                    debug!("Received shutdown signal. Exiting.");
                     break;
                 },
             }
         }
-        info!("ClockState runner exiting.");
+        debug!("ClockState runner exiting.");
     }
 
     fn emit_clock_offsets(&self) {
@@ -255,6 +255,7 @@ impl ClockState {
         let previous = *status;
         *status = new;
         if new != previous {
+            info!("Clock status changed from {previous:?} to {new:?}.");
             log_clock_status_change(previous, new);
         }
     }
@@ -351,7 +352,7 @@ impl ClockState {
             // Log clock status transition to Disrupted and update shared state
             Self::set_clock_status(clock_status, ClockStatus::Disrupted);
 
-            tracing::info!("Handled clock disruption event");
+            tracing::debug!("Handled clock disruption event.");
         }
     }
 }

@@ -62,6 +62,8 @@ async fn main() {
     );
 
     log_configuration(args.configuration.as_deref(), &logging, &sources);
+    let cargo_version = env!("CARGO_PKG_VERSION");
+    info!("ClockBound started. Version {cargo_version}.");
     log_daemon_started();
 
     let cancellation_token = CancellationToken::new();
@@ -78,8 +80,8 @@ async fn main() {
                 info!("SIGINT received. Starting graceful shutdown of daemon.");
                 cancellation_token.cancel();
                 match daemon_handle.await {
-                    Ok(()) => info!("daemon exited gracefully."),
-                    Err(e) => warn!(?e, "daemon exited ungracefully.")
+                    Ok(()) => info!("Daemon exited gracefully."),
+                    Err(e) => warn!(?e, "Daemon exited ungracefully.")
                 }
                 break;
             }
@@ -88,7 +90,7 @@ async fn main() {
                 log_handles.reopen_all();
             }
             res = &mut daemon_handle => {
-                error!(?res, "daemon exited unexpectedly.");
+                error!(?res, "Daemon exited unexpectedly.");
                 break;
             }
         }

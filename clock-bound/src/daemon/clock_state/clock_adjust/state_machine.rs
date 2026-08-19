@@ -77,7 +77,7 @@ impl Initializing {
             ntp_adjtime
                 .apply_phase_correction_step(offset)
                 .expect("failed to step clock on startup");
-            info!("Clock stepped by {offset:?} (|offset| > {threshold:?}); entering Running");
+            info!("Clock stepped by {} nanoseconds.", offset.as_nanos());
             ClockCorrection::Step {
                 step_ns: offset.as_nanos(),
             }
@@ -85,14 +85,12 @@ impl Initializing {
             ntp_adjtime
                 .apply_phase_correction_smooth(offset)
                 .expect("failed to smooth-apply phase correction on startup");
-            info!(
-                "Clock smooth-slewed by {offset:?} (|offset| <= {threshold:?}); entering Running"
-            );
+            info!("Clock smooth-slewed by {} nanoseconds.", offset.as_nanos());
             ClockCorrection::Smooth {
                 correction_ns: offset.as_nanos(),
             }
         };
-        info!("Initializing now transitioning to Running");
+        debug!("Initializing now transitioning to Running.");
         (Running, correction)
     }
 }
@@ -113,8 +111,9 @@ impl Running {
         let result = ntp_adjtime
             .apply_phase_correction_smooth(offset)
             .expect("failed to smooth-apply phase correction");
+        debug!("Clock smooth-slewed by {offset:?}.");
         debug!(
-            "ntp_adjtime apply_phase_correction_smooth returned kernel state: {:?}",
+            "ntp_adjtime apply_phase_correction_smooth returned kernel state: {:?}.",
             result
         );
         (

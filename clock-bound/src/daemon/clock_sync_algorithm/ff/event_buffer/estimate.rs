@@ -168,7 +168,7 @@ impl<T: TscRtt + Clone> Estimate<T> {
             let Some(min_rtt_event) = min_rtt_event else {
                 // could happen if we call this function with a single value in the local buffer,
                 tracing::warn!(
-                    "only the latest value found in Local estimate buffer. We are likely starving."
+                    "Only the latest value found in Local estimate buffer. We are likely starving."
                 );
                 self.last_counter_post = Some(now_event_counter_post);
                 // unwrap ok. local is not empty

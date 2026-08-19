@@ -116,7 +116,7 @@ impl ShmHeader {
         }
 
         if !self.is_initialized() {
-            let msg = String::from("ClockBound SHM header is not initialized");
+            let msg = String::from("ClockBound SHM header is not initialized.");
             error!(msg);
             return Err(ShmError::SegmentNotInitialized(msg));
         }

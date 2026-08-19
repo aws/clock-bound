@@ -38,7 +38,7 @@ impl MmapGuard {
         let mut file = match File::open(path) {
             Ok(f) => f,
             Err(e) => {
-                error!("VMClockShmReader::new(): {:?}", e);
+                error!(error = ?e, "Failed to open VMClock SHM segment.");
                 return Err(ShmError::SegmentNotInitialized(format!(
                     "Failed to open SHM segment at {path}"
                 )));
@@ -52,12 +52,12 @@ impl MmapGuard {
         };
 
         if bytes_read == 0_usize {
-            let msg = String::from("MmapGuard: Read zero bytes.");
+            let msg = String::from("Read zero bytes.");
             error!(msg);
             return Err(ShmError::SegmentNotInitialized(msg));
         } else if bytes_read < size_of::<VMClockShmHeader>() {
             let msg = format!(
-                "MmapGuard: Number of bytes read ({:?}) is less than the size of VMClockShmHeader ({:?}).",
+                "Number of bytes read ({:?}) is less than the size of VMClockShmHeader ({:?}).",
                 bytes_read,
                 size_of::<VMClockShmHeader>()
             );
@@ -65,7 +65,7 @@ impl MmapGuard {
             return Err(ShmError::SegmentMalformed(msg));
         }
 
-        debug!("MMapGuard: Reading the VMClockShmHeader ...");
+        debug!("Reading the VMClockShmHeader.");
 
         // Read the header so we know how much to map in memory.
         let header = VMClockShmHeader::read(&buffer)?;
@@ -74,7 +74,7 @@ impl MmapGuard {
         // the segment size. So the move is fine here.
         let segsize = header.size.into_inner() as usize;
 
-        debug!("MMapGuard: Read a segment size of: {:?}", segsize);
+        debug!("Read a segment size of: {:?}", segsize);
 
         // SAFETY: We're calling into a C function, but this particular call is always safe.
         let segment: *mut c_void = unsafe {
@@ -169,16 +169,13 @@ impl VMClockShmReader {
     /// returned.
     #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(path: &str) -> Result<VMClockShmReader, ShmError> {
-        debug!(
-            "VMClockShmReader::new(): Creating a MmapGuard at path: {:?}",
-            path
-        );
+        debug!(?path, "Creating a MmapGuard.");
         let mmap_guard = MmapGuard::new(path)?;
 
         // Create a cursor to pick the addresses of the various elements of interest in the shared
         // memory segment.
         let mut cursor: *const u8 = mmap_guard.segment.cast();
-        debug!("VMClockShmReader::new(): Created the cursor.");
+        debug!("Created the cursor.");
 
         // Pick fields from the VMClockShmHeader
         // SAFETY: `cursor` is aligned to the start of the memory segment and the MmapGuard has
@@ -211,20 +208,20 @@ impl VMClockShmReader {
         // to a part of the memory segment in this header.
         let counter_id = unsafe { &*counter_id_ptr };
         let counter_id_value = counter_id.load(atomic::Ordering::Acquire);
-        debug!("VMClockShmReader::(): counter_id: {:?}", counter_id_value);
+        debug!(?counter_id_value, "Read counter_id.");
 
         // Log the time_type in the shared memory segment.
         // SAFETY: MmapGuard has validated the memory segment of the header. `time_type_ptr` points
         // to a part of the memory segment in this header.
         let time_type = unsafe { &*time_type_ptr };
         let time_type_value = time_type.load(atomic::Ordering::Acquire);
-        debug!("VMClockShmReader::(): time_type: {:?}", time_type_value);
+        debug!(?time_type_value, "Read time_type.");
 
         // Move to the end of the header and map the VMClockShmBody data, but only if the segment
         // size allows it and matches our expectation.
         if mmap_guard.segsize < (size_of::<VMClockShmHeader>() + size_of::<VMClockShmBody>()) {
             let msg = format!(
-                "VMClockShmReader::new(): Segment size is smaller than expected [{} < {}].",
+                "Segment size is smaller than expected [{} < {}].",
                 mmap_guard.segsize,
                 size_of::<VMClockShmHeader>() + size_of::<VMClockShmBody>()
             );
@@ -327,7 +324,7 @@ impl VMClockShmReader {
 
         // Attempts to read the snapshot have failed.
         Err(ShmError::SegmentNotInitialized(String::from(
-            "Failed to read the SHM segment after all attempts",
+            "Failed to read the SHM segment after all attempts.",
         )))
     }
 }

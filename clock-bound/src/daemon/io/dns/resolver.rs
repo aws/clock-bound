@@ -107,7 +107,7 @@ impl Resolver {
 
     #[tracing::instrument(level = "info", skip_all, fields(pool = %self.pool_domain))]
     pub async fn run(&mut self) {
-        info!("Starting run loop");
+        debug!("Starting DNS resolver run loop.");
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -117,11 +117,11 @@ impl Resolver {
                     match ctrl_req {
                         None => {
                             // SourceIO dropped the ctrl_sender — expected during shutdown.
-                            info!("Control channel closed, exiting run loop");
+                            debug!("Control channel closed. Exiting run loop.");
                             break;
                         },
                         Some(ControlRequest::Shutdown) => {
-                            info!("Received shutdown signal, exiting run loop");
+                            debug!("Received shutdown signal. Exiting.");
                             break;
                         },
                     }
@@ -129,7 +129,7 @@ impl Resolver {
                 ntp_task_message = self.ntp_receiver.recv() => {
                     let Some(msg) = ntp_task_message else {
                         // All NTP task senders have been dropped — Possible during shutdown.
-                        info!("All NTP task senders dropped, exiting run loop");
+                        debug!("All NTP task senders dropped. Exiting run loop.");
                         break;
                     };
                     if self.handle_ntp_task_message(msg).await == RunLoopControl::Exit {
@@ -224,7 +224,7 @@ impl Resolver {
             needed = needed_host_count,
             healthy = self.num_expected_healthy(),
             target = self.max_sources,
-            "pool state"
+            "Pool state."
         );
         if needed_host_count == 0 {
             return RunLoopControl::Continue;
@@ -237,7 +237,7 @@ impl Resolver {
                     ?error,
                     healthy = self.num_expected_healthy(),
                     target = self.max_sources,
-                    "DNS resolution failed, will retry next tick"
+                    "DNS resolution failed. Will retry next tick."
                 );
                 return RunLoopControl::Continue;
             }
@@ -258,7 +258,7 @@ impl Resolver {
         };
 
         let new_addrs = self.new_addrs_to_launch(addrs, needed_host_count, supports_ipv6);
-        debug!(?new_addrs, "Addresses to launch");
+        debug!(?new_addrs, "Addresses to launch.");
 
         for addr in new_addrs {
             let socket_addr = SocketAddr::new(addr, 123);
@@ -270,7 +270,7 @@ impl Resolver {
                 return RunLoopControl::Exit;
             }
             self.task_state.insert(addr, State::Initializing);
-            info!(%addr, "Sent AddPoolAddr to daemon and marked as Initializing");
+            debug!(%addr, "Sent AddPoolAddr to daemon and marked as Initializing");
         }
         RunLoopControl::Continue
     }
@@ -281,7 +281,7 @@ impl Resolver {
         self.quarantined.retain(|addr, quarantine_time| {
             let should_retain = now.duration_since(*quarantine_time) < QUARANTINE_DURATION;
             if !should_retain {
-                info!(%addr, "Removing from quarantine");
+                info!(%addr, "Removing from quarantine.");
             }
             should_retain
         });
@@ -295,7 +295,7 @@ impl Resolver {
         let state = self.task_state.get_mut(&addr).unwrap();
         assert_eq!(*state, State::Initializing);
         *state = State::Running;
-        info!(%addr, "NTP task registered");
+        debug!(%addr, "NTP task registered.");
     }
 
     /// Handle a host becoming unreachable
@@ -325,7 +325,7 @@ impl Resolver {
 
         info!(
             quarantine_secs = QUARANTINE_DURATION.as_secs(),
-            "Quarantining unreachable NTP source"
+            "Quarantining unreachable NTP source."
         );
 
         let socket_addr = SocketAddr::new(addr, 123);
@@ -350,10 +350,10 @@ impl Resolver {
         // I would LIKE to verify that it is unhealthy. However the shutdown could be from a
         // quarantine or from a ctrl message. Either way, we want to remove it.
         if state.is_none() {
-            error!("Address not found");
+            error!(%addr, "Address not found in task_state.");
             panic!("{addr} unable to removed from {}", self.pool_domain);
         }
-        info!("Removed address");
+        info!(%addr, "Removed address.");
     }
 
     /// Return the number of hosts in Initializing or Running States
@@ -422,7 +422,7 @@ impl Resolver {
         } else {
             let resolved = self.resolve_host().await?;
             let last_resolved = self.last_resolved.insert(resolved);
-            debug!(resolved = ?last_resolved, "resolved DNS");
+            debug!(resolved = ?last_resolved, "Resolved DNS.");
             Ok(last_resolved.addrs().to_owned())
         }
     }
@@ -451,18 +451,18 @@ impl Resolver {
         let socket = match UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).await {
             Ok(s) => s,
             Err(error) => {
-                debug!(?error, %server_addr, "Unable to bind IPv6 socket");
+                debug!(?error, %server_addr, "Unable to bind IPv6 socket.");
                 return false;
             }
         };
 
         match socket.connect((server_addr, 123)).await {
             Ok(()) => {
-                trace!(%server_addr, "IPv6 connectivity verified");
+                trace!(%server_addr, "IPv6 connectivity verified.");
                 true
             }
             Err(error) => {
-                debug!(?error, %server_addr, "IPv6 connect failed");
+                debug!(?error, %server_addr, "IPv6 connect failed.");
                 false
             }
         }

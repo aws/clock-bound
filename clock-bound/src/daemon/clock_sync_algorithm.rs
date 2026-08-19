@@ -133,38 +133,7 @@ impl ClockSyncAlgorithm {
 
     /// Feed the clock sync algorithm with a time synchronization event
     pub fn feed(&mut self, routable_event: RoutableEvent) -> Option<&SyncParameters> {
-        #[cfg(not(test))]
-        {
-            use crate::daemon::event::TscRtt;
-            let Some(system_clock) = routable_event.system_clock() else {
-                return self.feed_repro(routable_event);
-            };
-            let system = system_clock.system_time;
-            let system_tsc = system_clock.tsc;
-            let tsc_rtt = routable_event.rtt();
-            let retval = self.feed_repro(routable_event);
-            if let Some(new_source_params) = &retval {
-                let new_params = &new_source_params.clock_parameters;
-                let system_clock_tsc_age = system_tsc - new_params.tsc_count;
-                let system_clock_age = system_clock_tsc_age * new_params.period;
-
-                let comparable_time = new_params.time + system_clock_age;
-                let offset_from_system_clock = comparable_time - system;
-                let ntp_rtt = tsc_rtt * new_params.period;
-
-                tracing::info!(
-                    ?system_clock_tsc_age,
-                    ?offset_from_system_clock,
-                    ?ntp_rtt,
-                    ?tsc_rtt
-                );
-            }
-            retval
-        }
-        #[cfg(test)]
-        {
-            self.feed_repro(routable_event)
-        }
+        self.feed_repro(routable_event)
     }
 
     /// Get the current best source params (clock parameters + source info)
@@ -303,7 +272,7 @@ impl ClockSyncAlgorithm {
         }
 
         selector.handle_disruption();
-        tracing::info!("Handled clock disruption event");
+        tracing::info!("Handled clock disruption event.");
         let current_seq = *seq;
         *seq += 1;
         logging::ffevents::log_disruption(current_seq);

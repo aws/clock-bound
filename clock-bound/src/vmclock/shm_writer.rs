@@ -145,7 +145,7 @@ impl VMClockShmWriter {
     fn segment_size() -> usize {
         // Need to hold the header and the bound on clock error data.
         let size = size_of::<VMClockShmHeader>() + size_of::<VMClockShmBody>();
-        debug!("Segment size (header + body) is {:?}", size);
+        debug!("Segment size (header + body) is {:?}.", size);
         size
     }
 

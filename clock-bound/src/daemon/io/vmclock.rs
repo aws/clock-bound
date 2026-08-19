@@ -8,7 +8,7 @@ use tokio::{
     sync::{mpsc, watch},
     time::{Duration, Interval, MissedTickBehavior, interval},
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::shm::ShmError;
 use crate::vmclock::{shm::VMClockShmBody, shm_reader::VMClockShmReader};
@@ -115,7 +115,7 @@ impl VMClock {
     /// # Panics
     /// - If the `clock_disruption_sender` is unable to send a clock disruption event.
     pub async fn run(&mut self) {
-        info!("Starting VMClock runner.");
+        debug!("Starting VMClock runner.");
 
         loop {
             tokio::select! {
@@ -127,14 +127,14 @@ impl VMClock {
                         // this select can happen if `SourceIO` drops the ctrl_sender
                         None => break,
                         Some(ControlRequest::Shutdown) => {
-                            info!("Received shutdown signal. Exiting.");
+                            debug!("Received shutdown signal. Exiting.");
                             break;
                         }
                     }
                 }
             }
         }
-        info!("VMClock runner exiting.");
+        debug!("VMClock runner exiting.");
     }
 
     /// Handle a single interval tick.
