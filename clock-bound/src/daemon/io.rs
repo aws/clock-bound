@@ -61,7 +61,7 @@ pub struct SourceIO {
     /// DNS message sender
     ///
     /// Passed into resolver structs to construct and delete NTP sources
-    _dns_message_tx: mpsc::Sender<daemon::DnsMessage>,
+    dns_message_tx: mpsc::Sender<daemon::DnsMessage>,
     /// Shared tracker of IP addresses currently in use by NTP IO tasks
     in_use_ip_addrs: InUseIpAddrs,
 }
@@ -91,7 +91,7 @@ impl SourceIO {
             selected_clock,
             daemon_info,
             task_tracker,
-            _dns_message_tx: dns_message_tx,
+            dns_message_tx,
             in_use_ip_addrs: InUseIpAddrs::new(),
         }
     }
@@ -171,7 +171,7 @@ impl SourceIO {
             return;
         }
 
-        let dns_pool = Pool::new(pool_domain.clone());
+        let dns_pool = Pool::construct(pool_domain.clone(), self.dns_message_tx.clone());
         self.dns_pools.insert(pool_domain, dns_pool);
 
         info!("DnsPool IO constructed");
@@ -180,6 +180,85 @@ impl SourceIO {
     /// Pools getter
     pub fn pools(&self) -> &HashMap<String, Pool> {
         &self.dns_pools
+    }
+
+    /// Number of tasks currently tracked by the internal task tracker.
+    ///
+    /// Used by tests to assert that spawning-side effects (e.g. `add_pool_source`
+    /// spawning an `NtpSource` task) increment the tracked task count.
+    #[cfg(test)]
+    pub(crate) fn task_count(&self) -> usize {
+        self.task_tracker.len()
+    }
+
+    /// Adds and spawns an NTP source within a DNS pool.
+    ///
+    /// Constructs the `dns::NtpSource`, inserts it into the pool's `HashMap` as Running,
+    /// and spawns the task on the internal task tracker.
+    ///
+    /// # Panics
+    /// Panics if
+    /// - the pool does not exist.
+    /// - the source already exists in the pool
+    #[tracing::instrument(level = "info", skip(self, event_sender))]
+    pub fn add_pool_source(
+        &mut self,
+        pool_domain: &str,
+        address: SocketAddr,
+        event_sender: async_ring_buffer::Sender<event::Ntp>,
+    ) {
+        let pool = self
+            .dns_pools
+            .get_mut(pool_domain)
+            .expect("Pool does not exist for add_pool_source");
+
+        let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
+        let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
+        let resolver_tx = pool.resolver_message_sender();
+
+        let ntp_source = dns::ntp_source::NtpSource::construct(
+            pool_domain.to_owned(),
+            address,
+            event_sender,
+            ctrl_receiver,
+            clock_disruption_receiver,
+            self.selected_clock.clone(),
+            self.daemon_info.clone(),
+            resolver_tx,
+        );
+
+        let source = Source {
+            state: SourceState::Running,
+            ctrl_sender,
+        };
+        pool.add_source(address, source);
+
+        // Spawn the NtpSource task — move the constructed runner into the task
+        let mut runner = ntp_source;
+        self.task_tracker.spawn(async move { runner.run().await });
+        info!("Spawned DNS pool NTP source");
+    }
+
+    /// Removes an NTP source from a DNS pool and sends it a shutdown signal.
+    ///
+    /// # Panics
+    /// Panics if
+    /// - the pool does not exist
+    /// - the source does not exist in this pool
+    #[tracing::instrument(level = "info", skip(self))]
+    pub async fn remove_pool_source(&mut self, pool_domain: &str, address: &SocketAddr) {
+        let pool = self
+            .dns_pools
+            .get_mut(pool_domain)
+            .expect("Pool does not exist for remove_pool_source");
+
+        let source = pool.remove_source(address);
+        source
+            .ctrl_sender
+            .send(ControlRequest::Shutdown)
+            .await
+            .unwrap();
+        info!("Sent shutdown to DNS pool NTP source");
     }
 
     /// Initializes the IO task for sampling the PHC source.
@@ -286,7 +365,7 @@ impl SourceIO {
             if let SourceState::Initialized(mut amazon_time_sync) = state.transition_to_running() {
                 self.task_tracker
                     .spawn(async move { amazon_time_sync.run().await });
-                debug!("Successfully spawned Amazon Time Sync source.");
+                info!("Successfully spawned Amazon Time Sync source.");
             } else {
                 warn!(
                     "Attempted to spawn a Amazon Time Sync source when one is currently running."
@@ -305,7 +384,7 @@ impl SourceIO {
             debug!("Attempting to spawn PHC source.");
             if let SourceState::Initialized(mut phc) = state.transition_to_running() {
                 self.task_tracker.spawn(async move { phc.run().await });
-                debug!("Successfully spawned PHC source.");
+                info!("Successfully spawned PHC source.");
             } else {
                 warn!("Attempted to spawn a PHC source when one is currently running.");
             }
@@ -321,6 +400,7 @@ impl SourceIO {
         {
             if let SourceState::Initialized(mut vmclock) = state.transition_to_running() {
                 self.task_tracker.spawn(async move { vmclock.run().await });
+                info!("Spawned vmclock task");
             } else {
                 warn!("Attempted to spawn a vmclock source when one is currently running.");
             }
@@ -336,16 +416,16 @@ impl SourceIO {
             {
                 self.task_tracker
                     .spawn(async move { ip_addr_source.run().await });
-                debug!("Successfully spawned ip addr source.");
+                info!(ip_addr = %key, "Successfully spawned ip addr source.");
             } else {
                 warn!("Attempted to spawn an ip addr source when one is currently running.");
             }
         }
 
-        #[expect(clippy::never_loop, reason = "DNS pool spawning not yet implemented")]
-        for key in self.dns_pools.keys() {
-            debug!("Attempting to spawn {key} dns pool.");
-            unimplemented!("requires resolver impl to spawn");
+        // Spawn dns pool resolvers
+        for (key, pool) in &mut self.dns_pools {
+            info!("Attempting to spawn {key} dns pool resolver.");
+            pool.spawn_resolver(&self.task_tracker);
         }
 
         self.task_tracker.close();
@@ -406,6 +486,11 @@ impl SourceIO {
                 Ok(()) => info!("Successfully sent shutdown signal to ip addr source."),
                 Err(e) => warn!(?e, "Failed to send shutdown signal to ip addr source."),
             }
+        }
+
+        // Shutdown DNS pools (NTP sources first, then Resolvers)
+        for pool in self.dns_pools.values_mut() {
+            pool.shutdown().await;
         }
 
         // Wait for all io tasks to exit

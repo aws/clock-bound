@@ -1,0 +1,46 @@
+name: Pool IO
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cargo build
+        run: cargo build --bin pool-test --release
+
+      - name: Upload pool-test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pool-test
+          path: target/release/pool-test
+
+  Pool_Tests:
+    name: Pool tests
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download pool-test artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: pool-test
+
+      - run: echo "Change permissions of artifact."
+      - run: chmod 755 pool-test
+      - run: echo "Run DNS pool test!"
+      - run: ./pool-test

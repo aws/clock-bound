@@ -19,6 +19,23 @@ pub enum Message {
     NtpTaskShutdown(NtpTaskShutdown),
 }
 
+impl Message {
+    /// new `Message::RegisterAddr`
+    pub fn new_register_addr(addr: IpAddr) -> Self {
+        Message::RegisterAddr(RegisterAddr { addr })
+    }
+
+    /// new `Message::UnreachableAddr`
+    pub fn new_unreachable_addr(addr: IpAddr) -> Self {
+        Message::UnreachableAddr(UnreachableAddr { addr })
+    }
+
+    /// new `Message::NtpTaskShutdown`
+    pub fn new_ntp_task_shutdown(addr: IpAddr) -> Self {
+        Message::NtpTaskShutdown(NtpTaskShutdown { addr })
+    }
+}
+
 /// Notify resolver that an NTP IO task has started
 ///
 /// This is sent by DNS Pool NTP task after spawned by the

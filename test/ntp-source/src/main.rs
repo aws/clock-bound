@@ -3,14 +3,14 @@
 //! This executable tests that the NTP Server runner is able to send and receive packets from the
 //! specified NTP Server address and that the polling rate is roughly once a second.
 
-use clock_bound::daemon::AWS_TEMP_PUBLIC_TIME_ADDRESSES;
 use clock_bound::daemon::async_ring_buffer::{self, BufferClosedError, Receiver};
 use clock_bound::daemon::event::{Ntp, Stratum, ValidStratumLevel};
 use clock_bound::daemon::io::ip_addr_source::Sender as IpAddrSourceSender;
 use clock_bound::daemon::io::{SourceIO, ntp::DaemonInfo};
 use clock_bound::daemon::message::Dns as DnsMessage;
 use clock_bound::daemon::selected_clock::{ClockSource, SelectedClockSource};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -47,10 +47,14 @@ fn setup() -> (Vec<Receiver<Ntp>>, Arc<SelectedClockSource>, SourceIO) {
     });
     let mut receiver_vec: Vec<Receiver<Ntp>> = Vec::new();
 
-    for address in AWS_TEMP_PUBLIC_TIME_ADDRESSES {
+    let socket_addrs = &[
+        SocketAddr::from_str("169.254.169.123:123").unwrap(), // test with local address
+    ];
+
+    for address in socket_addrs {
         let (tx, rx) = async_ring_buffer::create(1);
         receiver_vec.push(rx);
-        let sender_with_address: IpAddrSourceSender = (address, tx);
+        let sender_with_address: IpAddrSourceSender = (*address, tx);
         sourceio.create_ip_addr_source(sender_with_address);
     }
 
@@ -63,7 +67,11 @@ async fn test_ntp_sources() {
     println!("Testing NTP sources ...");
     let (receiver_vec, _selected_clock, _sourceio) = setup();
 
-    for i in 0..AWS_TEMP_PUBLIC_TIME_ADDRESSES.len() {
+    let socket_addrs = &[
+        SocketAddr::from_str("169.254.169.123:123").unwrap(), // test with local address
+    ];
+
+    for i in 0..socket_addrs.len() {
         #[allow(
             clippy::match_wild_err_arm,
             reason = "Only possible error from timeout is Elapsed, which has a private constructor"
@@ -74,19 +82,16 @@ async fn test_ntp_sources() {
                 println!(
                     "Packet received from host ({} / {})",
                     i + 1,
-                    AWS_TEMP_PUBLIC_TIME_ADDRESSES.len()
+                    socket_addrs.len()
                 );
             }
             Ok(Err(BufferClosedError)) => {
-                panic!(
-                    "Buffer closed for NTP source {:#?}",
-                    AWS_TEMP_PUBLIC_TIME_ADDRESSES[i]
-                );
+                panic!("Buffer closed for NTP source {:#?}", socket_addrs[i]);
             }
             Err(_) => {
                 panic!(
                     "Timeout reached before packet received from {:#?}",
-                    AWS_TEMP_PUBLIC_TIME_ADDRESSES[i]
+                    socket_addrs[i]
                 );
             }
         }
@@ -127,10 +132,6 @@ async fn test_polls_with_selected_clock_source_combos() {
         tokio::select! {
             result = receiver_vec[0].recv() => match result {
                 Ok(_) => println!(" Polling succeeded."),
-                Err(BufferClosedError) => panic!(" Polling failed: Buffer closed"),
-            },
-            result = receiver_vec[1].recv() => match result {
-                Ok(_) => println!(" Polling succeeded. Selected clock: {selected_clock}"),
                 Err(BufferClosedError) => panic!(" Polling failed: Buffer closed"),
             },
             () = tokio::time::sleep(Duration::from_secs(TIMEOUT_SECS)) => {

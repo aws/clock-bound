@@ -16,9 +16,13 @@ version.workspace = true
 name = "ntp-source-test"
 path = "src/main.rs"
 
+[[bin]]
+name = "pool-test"
+path = "src/pool.rs"
+
 [dependencies]
 clock-bound = { path = "../../clock-bound", features = ["daemon"] }
 md5 = "0.8.0"
 rand = "0.9.2"
-tokio = { version = "1.47.1", features = ["macros", "rt"] }
+tokio = { version = "1.47.1", features = ["macros", "rt", "time", "sync"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }

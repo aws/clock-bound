@@ -6,7 +6,7 @@ pub use message::Message;
 use tracing::{debug, error, info, trace, warn};
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use std::net::Ipv6Addr;
@@ -14,8 +14,10 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
+use crate::daemon::RunLoopControl;
 use crate::daemon::io::ControlRequest;
 use crate::daemon::io::InUseIpAddrs;
+use crate::daemon::message::{AddPoolAddr, Dns as DnsMessage, RemovePoolAddr};
 
 /// Time before re-selecting a bad host
 const QUARANTINE_DURATION: Duration = Duration::from_hours(1);
@@ -24,6 +26,12 @@ const QUARANTINE_DURATION: Duration = Duration::from_hours(1);
 ///
 /// Kind of an optimization to prevent calling `lookup_host` too frequently
 const RESOLVE_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Timeout for `tokio::net::lookup_host` calls.
+///
+/// If DNS resolution takes longer than this, the call is abandoned and retried
+/// on the next tick.
+const LOOKUP_HOST_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The maximum ntp sources to resolve in a pool
 const MAX_SOURCES: usize = 5;
@@ -61,7 +69,7 @@ pub struct Resolver {
     /// These are used to send commands to the daemon task to
     /// delete or initialize new NTP IO Tasks as well as install into
     /// the clock sync algorithm
-    daemon_tx: mpsc::Sender<()>, // TODO: create message
+    daemon_tx: mpsc::Sender<DnsMessage>,
     /// Receiver from the IO front end
     ctrl_receiver: mpsc::Receiver<ControlRequest>,
     /// Receiver from the DNS Pool's NTP tasks
@@ -71,8 +79,27 @@ pub struct Resolver {
 }
 
 impl Resolver {
+    /// Constructs a new `Resolver` for the given pool domain.
+    pub fn construct(
+        pool_domain: String,
+        daemon_tx: mpsc::Sender<DnsMessage>,
+        ctrl_receiver: mpsc::Receiver<ControlRequest>,
+        ntp_receiver: mpsc::Receiver<Message>,
+    ) -> Self {
+        Self {
+            pool_domain,
+            task_state: HashMap::new(),
+            quarantined: HashMap::new(),
+            last_resolved: None,
+            daemon_tx,
+            ctrl_receiver,
+            ntp_receiver,
+            in_use_ip_addrs: InUseIpAddrs::default(),
+        }
+    }
+
     #[tracing::instrument(level = "info", skip_all, fields(pool = %self.pool_domain))]
-    async fn run(&mut self) {
+    pub async fn run(&mut self) {
         info!("Starting run loop");
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -98,25 +125,72 @@ impl Resolver {
                         info!("All NTP task senders dropped, exiting run loop");
                         break;
                     };
-                    self.handle_ntp_task_message(msg).await;
+                    if self.handle_ntp_task_message(msg).await == RunLoopControl::Exit {
+                        break;
+                    }
                 }
                 _ = interval.tick() => {
-                    self.handle_interval_tick().await;
+                    if self.handle_interval_tick().await == RunLoopControl::Exit {
+                        break;
+                    }
                 }
             }
         }
     }
 
-    async fn handle_interval_tick(&mut self) {
+    async fn handle_interval_tick(&mut self) -> RunLoopControl {
         self.cleanup_quarantine();
-        self.replenish_pool().await;
+        self.replenish_pool().await
     }
 
-    async fn handle_ntp_task_message(&mut self, message: Message) {
+    /// Sends a message to the daemon, aborting if a shutdown signal arrives.
+    ///
+    /// The `daemon_tx` channel has bounded capacity. During shutdown the daemon
+    /// stops draining `dns_message_rx`, which can cause the channel to fill.
+    /// If the Resolver suspends inside a plain `daemon_tx.send().await`, it will
+    /// never return to the `select!` loop to observe the shutdown signal on
+    /// `ctrl_receiver` — creating a deadlock where `shutdown_all` waits on the
+    /// task tracker while the Resolver is parked on a full channel that will
+    /// never drain.
+    ///
+    /// This helper wraps the send in a `tokio::select!` that races the send
+    /// against the control channel, ensuring the Resolver can always exit
+    /// promptly when shutdown is requested.
+    ///
+    /// Returns [`RunLoopControl::Continue`] if the message was sent successfully,
+    /// or [`RunLoopControl::Exit`] if a shutdown signal was received (the caller
+    /// should exit the run loop).
+    async fn send_daemon_message(&mut self, message: DnsMessage) -> RunLoopControl {
+        tokio::select! {
+            result = self.daemon_tx.send(message) => {
+                result.expect("Daemon receiver dropped while Resolver is running");
+                RunLoopControl::Continue
+            }
+            ctrl_req = self.ctrl_receiver.recv() => {
+                match ctrl_req {
+                    Some(ControlRequest::Shutdown) => {
+                        info!("Received shutdown while sending daemon message, exiting");
+                    }
+                    None => {
+                        info!("Control channel closed while sending daemon message, exiting");
+                    }
+                }
+                RunLoopControl::Exit
+            }
+        }
+    }
+
+    async fn handle_ntp_task_message(&mut self, message: Message) -> RunLoopControl {
         match message {
-            Message::RegisterAddr(msg) => self.handle_registration(msg.addr),
+            Message::RegisterAddr(msg) => {
+                self.handle_registration(msg.addr);
+                RunLoopControl::Continue
+            }
             Message::UnreachableAddr(msg) => self.handle_unreachable(msg.addr).await,
-            Message::NtpTaskShutdown(msg) => self.handle_ntp_task_shutdown(msg.addr),
+            Message::NtpTaskShutdown(msg) => {
+                self.handle_ntp_task_shutdown(msg.addr);
+                RunLoopControl::Continue
+            }
         }
     }
 
@@ -131,7 +205,11 @@ impl Resolver {
     ///
     /// Decreasing the number of pools from the `MAX_SOURCES` size is handled by the
     /// NTP IO tasks when they report an unreachable event.
-    async fn replenish_pool(&mut self) {
+    ///
+    /// Returns [`RunLoopControl::Continue`] if the function completed normally, or
+    /// [`RunLoopControl::Exit`] if a shutdown signal was received during a send to
+    /// the daemon.
+    async fn replenish_pool(&mut self) -> RunLoopControl {
         // bug condition, should never happen or app is malformed
         assert!(MAX_SOURCES >= self.num_expected_healthy());
         let needed_host_count = MAX_SOURCES - self.num_expected_healthy();
@@ -142,7 +220,7 @@ impl Resolver {
             "pool state"
         );
         if needed_host_count == 0 {
-            return;
+            return RunLoopControl::Continue;
         }
 
         let addrs = match self.cached_resolve_host().await {
@@ -154,7 +232,7 @@ impl Resolver {
                     target = MAX_SOURCES,
                     "DNS resolution failed, will retry next tick"
                 );
-                return;
+                return RunLoopControl::Continue;
             }
         };
 
@@ -175,9 +253,19 @@ impl Resolver {
         let new_addrs = self.new_addrs_to_launch(addrs, needed_host_count, supports_ipv6);
         debug!(?new_addrs, "Addresses to launch");
 
-        for _addr in new_addrs {
-            todo!("send message to daemon for io handling and store in task_state as initializing")
+        for addr in new_addrs {
+            let socket_addr = SocketAddr::new(addr, 123);
+            let message = DnsMessage::AddPoolAddr(AddPoolAddr {
+                pool_domain: self.pool_domain.clone(),
+                addr: socket_addr,
+            });
+            if self.send_daemon_message(message).await == RunLoopControl::Exit {
+                return RunLoopControl::Exit;
+            }
+            self.task_state.insert(addr, State::Initializing);
+            info!(%addr, "Sent AddPoolAddr to daemon and marked as Initializing");
         }
+        RunLoopControl::Continue
     }
 
     /// Cleanup task to delete quarantine
@@ -207,8 +295,12 @@ impl Resolver {
     ///
     /// Do the work to initiate the deletion of a task. Creation of the new task
     /// will be done by [`Resolver::replenish_pool`].
+    ///
+    /// Returns [`RunLoopControl::Continue`] if the function completed normally, or
+    /// [`RunLoopControl::Exit`] if a shutdown signal was received during a send to
+    /// the daemon.
     #[tracing::instrument(level = "info", skip(self))]
-    async fn handle_unreachable(&mut self, addr: IpAddr) {
+    async fn handle_unreachable(&mut self, addr: IpAddr) -> RunLoopControl {
         // When a host becomes unreachable, we quarantine it for a period of time
         // before allowing it to be selected again. This prevents rapid cycling
         // between healthy and unhealthy states.
@@ -229,7 +321,18 @@ impl Resolver {
             "Quarantining unreachable NTP source"
         );
 
-        todo!("send message to daemon for io handling")
+        let socket_addr = SocketAddr::new(addr, 123);
+        let message = DnsMessage::RemovePoolAddr(RemovePoolAddr {
+            pool_domain: self.pool_domain.clone(),
+            addr: socket_addr,
+        });
+        if self.send_daemon_message(message).await == RunLoopControl::Exit {
+            return RunLoopControl::Exit;
+        }
+
+        self.task_state.remove(&addr);
+        info!(%addr, "Sent RemovePoolAddr to daemon and removed from task_state");
+        RunLoopControl::Continue
     }
 
     /// Handle a notification of an NTP task shutdown
@@ -318,7 +421,12 @@ impl Resolver {
     }
 
     async fn resolve_host(&self) -> std::io::Result<LastResolved> {
-        let iter = tokio::net::lookup_host((self.pool_domain.as_str(), 123)).await?;
+        let iter = tokio::time::timeout(
+            LOOKUP_HOST_TIMEOUT,
+            tokio::net::lookup_host((self.pool_domain.as_str(), 123)),
+        )
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "DNS lookup timed out"))??;
         let addrs = iter.map(|socket_addr| socket_addr.ip()).collect();
         Ok(LastResolved {
             addrs,
@@ -351,6 +459,78 @@ impl Resolver {
                 false
             }
         }
+    }
+}
+
+/// Handles retained by a test that drives a [`Resolver`] built with
+/// [`Resolver::new_running`].
+///
+/// Holding the control sender alive keeps `ctrl_receiver.recv()` pending inside
+/// `send_daemon_message`, so the send-vs-shutdown race resolves in favour of the send
+/// (returning [`RunLoopControl::Continue`]) rather than observing a closed control
+/// channel (which would return [`RunLoopControl::Exit`]).
+#[cfg(test)]
+pub(crate) struct RunningResolverHandles {
+    /// Plays the role of an NTP IO task: send [`Message`]s to the resolver.
+    pub(crate) resolver_message_tx: mpsc::Sender<Message>,
+    /// Kept alive purely so the resolver's control channel does not appear closed.
+    _ctrl_tx: mpsc::Sender<ControlRequest>,
+}
+
+#[cfg(test)]
+impl Resolver {
+    /// Construct a `Resolver` pre-seeded with a single `Running` NTP source.
+    ///
+    /// This bypasses the normal DNS-driven registration flow (`replenish_pool` ->
+    /// `new_addrs_to_launch` -> `handle_registration`) so a test can hand the resolver
+    /// an [`Message::UnreachableAddr`] for `addr` without tripping the state assertions
+    /// in `handle_unreachable`. The address is seeded as [`State::Running`] in
+    /// `task_state` and claimed in the shared [`InUseIpAddrs`] tracker, matching the
+    /// state the resolver would hold for a live source.
+    ///
+    /// Returns the resolver together with the retained sender the caller uses to play
+    /// the role of the NTP IO task.
+    pub(crate) fn new_running(
+        pool_domain: String,
+        addr: IpAddr,
+        daemon_tx: mpsc::Sender<DnsMessage>,
+    ) -> (Self, RunningResolverHandles) {
+        let (resolver_message_tx, ntp_receiver) = mpsc::channel::<Message>(16);
+        let (ctrl_tx, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
+
+        let in_use_ip_addrs = InUseIpAddrs::new();
+        in_use_ip_addrs
+            .add(addr)
+            .expect("fresh tracker cannot already contain addr");
+
+        let resolver = Self {
+            pool_domain,
+            task_state: HashMap::from([(addr, State::Running)]),
+            quarantined: HashMap::new(),
+            last_resolved: None,
+            daemon_tx,
+            ctrl_receiver,
+            ntp_receiver,
+            in_use_ip_addrs,
+        };
+
+        let handles = RunningResolverHandles {
+            resolver_message_tx,
+            _ctrl_tx: ctrl_tx,
+        };
+
+        (resolver, handles)
+    }
+
+    /// Receive exactly one message on `ntp_receiver` and handle it synchronously.
+    ///
+    /// Lets a test drive the resolver deterministically without spawning its run loop:
+    /// the awaited `recv` resolves as soon as the caller has sent a message, and the
+    /// message is dispatched through the same `handle_ntp_task_message` path the run
+    /// loop uses (e.g. emitting `RemovePoolAddr` on `daemon_tx` for an unreachable addr).
+    pub(crate) async fn recv_and_handle_one(&mut self) -> RunLoopControl {
+        let message = self.ntp_receiver.recv().await.expect("sender dropped");
+        self.handle_ntp_task_message(message).await
     }
 }
 
@@ -816,7 +996,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "not yet implemented")]
     async fn handle_unreachable_removes_addr_from_shared_tracker() {
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 
@@ -827,9 +1006,37 @@ mod tests {
         let mut resolver =
             make_resolver_with_in_use(task_state, HashMap::new(), None, in_use.clone());
 
-        // The remove happens before the todo!() panic.
-        // The two_resolvers_sharing_tracker test validates the remove behavior indirectly.
-        resolver.handle_unreachable(addr).await;
+        // Keep a live daemon receiver so the RemovePoolAddr send succeeds instead of
+        // panicking on a dropped receiver.
+        let (daemon_tx, mut daemon_rx) = mpsc::channel(1);
+        resolver.daemon_tx = daemon_tx;
+
+        // Keep a live control sender so `send_daemon_message` does not observe a closed
+        // control channel and short-circuit to `Exit`.
+        let (_ctrl_tx, ctrl_receiver) = mpsc::channel(1);
+        resolver.ctrl_receiver = ctrl_receiver;
+
+        let control = resolver.handle_unreachable(addr).await;
+        assert_eq!(control, RunLoopControl::Continue);
+
+        // The address should be released from the shared tracker.
+        assert!(!in_use.snapshot().contains(&addr));
+
+        // The address should be removed from task state.
+        assert!(!resolver.task_state.contains_key(&addr));
+
+        // The address should be quarantined.
+        assert!(resolver.quarantined.contains_key(&addr));
+
+        // A RemovePoolAddr message should have been sent to the daemon.
+        let message = daemon_rx.recv().await.expect("daemon message sent");
+        match message {
+            DnsMessage::RemovePoolAddr(remove) => {
+                assert_eq!(remove.addr, SocketAddr::new(addr, 123));
+                assert_eq!(remove.pool_domain, "pool.ntp.org");
+            }
+            other => panic!("expected RemovePoolAddr, got {other:?}"),
+        }
     }
 
     #[test]

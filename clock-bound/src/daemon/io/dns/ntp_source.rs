@@ -11,6 +11,7 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
+use super::resolver;
 use crate::daemon::io::ntp::{DaemonInfo, ExtensionField, Ntp, NtpIoError};
 use crate::daemon::io::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{async_ring_buffer, event, selected_clock::SelectedClockSource};
@@ -43,12 +44,15 @@ pub struct NtpSource {
     /// Consecutive timeout count. If this exceeds `MAX_CONSECUTIVE_TIMEOUTS`,
     /// the source is considered unreachable.
     consecutive_timeout_count: u32,
+    /// Communicate with resolver task
+    resolver_tx: mpsc::Sender<resolver::Message>,
     /// Guard to prevent sending duplicate messages unreachable messages to the resolver
     sent_unreachable_msg: bool,
 }
 
 impl NtpSource {
     /// Constructs a new `NtpSource` with the given parameters.
+    #[expect(clippy::too_many_arguments)]
     pub fn construct(
         pool_domain: String,
         address: SocketAddr,
@@ -57,6 +61,7 @@ impl NtpSource {
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         selected_clock: Arc<SelectedClockSource>,
         daemon_info: DaemonInfo,
+        resolver_tx: mpsc::Sender<resolver::Message>,
     ) -> Self {
         let extensions = vec![ExtensionField::Fec2V1(daemon_info)];
         let ntp = Ntp::builder()
@@ -72,6 +77,7 @@ impl NtpSource {
         NtpSource {
             pool_domain,
             ntp,
+            resolver_tx,
             consecutive_timeout_count: 0,
             sent_unreachable_msg: false,
         }
@@ -90,7 +96,7 @@ impl NtpSource {
     #[tracing::instrument(level = "info", skip_all, fields(pool = self.pool_domain, identifier = %self.ntp.socket_address()))]
     pub async fn run(&mut self) -> Result<(), NtpIoError> {
         info!("Starting DNS NTP Source IO sampling loop.");
-        self.register_with_resolver();
+        self.register_with_resolver().await;
         loop {
             let branches = self.ntp.select_branches();
             tokio::select! {
@@ -127,10 +133,10 @@ impl NtpSource {
 
     async fn handle_interval_tick(&mut self) {
         let sample_result = self.ntp.sample().await;
-        self.handle_ntp_sample_result(sample_result);
+        self.handle_ntp_sample_result(sample_result).await;
     }
 
-    fn handle_ntp_sample_result(&mut self, result: Result<event::Ntp, NtpIoError>) {
+    async fn handle_ntp_sample_result(&mut self, result: Result<event::Ntp, NtpIoError>) {
         match result {
             // All of the other errors are local IO/hardware failures
             // which has no bearing on the reachability of
@@ -142,7 +148,7 @@ impl NtpSource {
                     && self.consecutive_timeout_count >= MAX_CONSECUTIVE_TIMEOUTS
                 {
                     self.sent_unreachable_msg = true;
-                    self.notify_resolver_unreachable();
+                    self.notify_resolver_unreachable().await;
                 }
             }
             Err(e) => {
@@ -161,23 +167,53 @@ impl NtpSource {
     ///
     /// Called once at the beginning of the run loop to inform the resolver that
     /// this source is active and will be sampling.
-    fn register_with_resolver(&self) {
-        unimplemented!()
+    async fn register_with_resolver(&self) {
+        let addr = self.ntp.socket_address().ip();
+        if self
+            .resolver_tx
+            .send(resolver::Message::new_register_addr(addr))
+            .await
+            .is_err()
+        {
+            // Resolver has exited (e.g. during shutdown). This source will exit
+            // on the next select iteration when it observes its own shutdown signal.
+            info!("Resolver channel closed during registration, source will exit.");
+        }
     }
 
     /// Notifies the resolver that this source is unreachable.
     ///
     /// Called when the source has timed out [`MAX_CONSECUTIVE_TIMEOUTS`] times
     /// in a row, indicating the resolved address may no longer be valid.
-    fn notify_resolver_unreachable(&self) {
-        unimplemented!()
+    async fn notify_resolver_unreachable(&self) {
+        let addr = self.ntp.socket_address().ip();
+        if self
+            .resolver_tx
+            .send(resolver::Message::new_unreachable_addr(addr))
+            .await
+            .is_err()
+        {
+            // Resolver has exited (e.g. during shutdown). This is expected when
+            // a shutdown command races with timeout detection.
+            info!("Resolver channel closed during unreachable notification, source will exit.");
+        }
     }
 
     /// Notify the resolver that this source is shutting down
     ///
     /// Called when exiting the `run` loop
     async fn notify_resolver_shutdown(&mut self) {
-        unimplemented!()
+        let addr = self.ntp.socket_address().ip();
+        if self
+            .resolver_tx
+            .send(resolver::Message::new_ntp_task_shutdown(addr))
+            .await
+            .is_err()
+        {
+            // Resolver has exited (e.g. during shutdown). This is expected when
+            // a shutdown command races with timeout detection.
+            info!("Resolver channel closed during unregister notification, source will exit.");
+        }
     }
 }
 
@@ -194,14 +230,20 @@ mod tests {
     /// Helper to create an `NtpSource` for unit testing.
     ///
     /// Returns the source along with the ring buffer receiver (which must stay alive
-    /// for `send_event` to succeed).
-    fn create_test_ntp_source() -> (NtpSource, async_ring_buffer::Receiver<event::Ntp>) {
+    /// for `send_event` to succeed) and the resolver message receiver (which must stay
+    /// alive for the resolver notifications to succeed).
+    fn create_test_ntp_source() -> (
+        NtpSource,
+        async_ring_buffer::Receiver<event::Ntp>,
+        mpsc::Receiver<resolver::Message>,
+    ) {
         let (event_sender, event_receiver) = async_ring_buffer::create::<event::Ntp>(4);
         let (_, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
         let (_clock_disruption_sender, clock_disruption_receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent {
                 disruption_marker: None,
             });
+        let (resolver_tx, resolver_rx) = mpsc::channel::<resolver::Message>(8);
 
         let selected_clock = Arc::new(SelectedClockSource::default());
         let daemon_info = DaemonInfo {
@@ -219,8 +261,9 @@ mod tests {
             clock_disruption_receiver,
             selected_clock,
             daemon_info,
+            resolver_tx,
         );
-        (source, event_receiver)
+        (source, event_receiver, resolver_rx)
     }
 
     /// Helper to create a valid `event::Ntp` value.
@@ -253,13 +296,13 @@ mod tests {
 
     #[tokio::test]
     async fn ok_result_sends_event_and_resets_consecutive_timeout_count() {
-        let (mut source, rx) = create_test_ntp_source();
+        let (mut source, rx, _resolver_rx) = create_test_ntp_source();
 
         // Simulate some prior timeouts
         source.consecutive_timeout_count = 3;
 
         let ntp_event = create_ntp_event();
-        source.handle_ntp_sample_result(Ok(ntp_event.clone()));
+        source.handle_ntp_sample_result(Ok(ntp_event.clone())).await;
 
         // Consecutive timeout count should be reset to 0
         assert_eq!(source.consecutive_timeout_count, 0);
@@ -270,14 +313,14 @@ mod tests {
 
     #[tokio::test]
     async fn ok_result_does_not_change_marked_unreachable() {
-        let (mut source, _rx) = create_test_ntp_source();
+        let (mut source, _rx, _resolver_rx) = create_test_ntp_source();
 
         // Set marked_unreachable to true (simulating it was already triggered)
         source.sent_unreachable_msg = true;
         source.consecutive_timeout_count = MAX_CONSECUTIVE_TIMEOUTS;
 
         let ntp_event = create_ntp_event();
-        source.handle_ntp_sample_result(Ok(ntp_event));
+        source.handle_ntp_sample_result(Ok(ntp_event)).await;
 
         // marked_unreachable should remain true even after a successful sample
         assert!(source.sent_unreachable_msg);
@@ -285,41 +328,47 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_error_increments_consecutive_timeout_count() {
-        let (mut source, _rx) = create_test_ntp_source();
+        let (mut source, _rx, _resolver_rx) = create_test_ntp_source();
         assert_eq!(source.consecutive_timeout_count, 0);
 
         for expected_count in 1..MAX_CONSECUTIVE_TIMEOUTS {
             let err = create_timeout_error().await;
-            source.handle_ntp_sample_result(Err(err));
+            source.handle_ntp_sample_result(Err(err)).await;
             assert_eq!(source.consecutive_timeout_count, expected_count);
         }
     }
 
     #[tokio::test]
     async fn non_timeout_error_does_not_increment_consecutive_timeout_count() {
-        let (mut source, _rx) = create_test_ntp_source();
+        let (mut source, _rx, _resolver_rx) = create_test_ntp_source();
         assert_eq!(source.consecutive_timeout_count, 0);
 
         let io_err = NtpIoError::SampleIo(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
             "connection refused",
         ));
-        source.handle_ntp_sample_result(Err(io_err));
+        source.handle_ntp_sample_result(Err(io_err)).await;
 
         assert_eq!(source.consecutive_timeout_count, 0);
         assert!(!source.sent_unreachable_msg);
     }
 
     #[tokio::test]
-    #[should_panic(expected = "not implemented")]
-    async fn panics_when_consecutive_timeouts_reach_max() {
-        let (mut source, _rx) = create_test_ntp_source();
+    async fn notifies_resolver_unreachable_when_consecutive_timeouts_reach_max() {
+        let (mut source, _rx, mut resolver_rx) = create_test_ntp_source();
 
         // Feed timeout errors up to the maximum. The final one triggers
-        // `notify_resolver_unreachable`, which panics with "not implemented".
+        // `notify_resolver_unreachable`, which sends an `UnreachableAddr` message.
         for _ in 0..MAX_CONSECUTIVE_TIMEOUTS {
             let err = create_timeout_error().await;
-            source.handle_ntp_sample_result(Err(err));
+            source.handle_ntp_sample_result(Err(err)).await;
         }
+
+        assert_eq!(source.consecutive_timeout_count, MAX_CONSECUTIVE_TIMEOUTS);
+        assert!(source.sent_unreachable_msg);
+
+        let msg = resolver_rx.recv().await.expect("resolver message sent");
+        let expected_addr = source.ntp.socket_address().ip();
+        assert_eq!(msg, resolver::Message::new_unreachable_addr(expected_addr));
     }
 }

@@ -159,6 +159,12 @@ impl ReceiverStream {
         self.len() == 0
     }
 
+    /// Returns `true` if an NTP source receiver is configured for `addr`.
+    #[cfg(test)]
+    pub(crate) fn contains_ntp_source(&self, addr: &SocketAddr) -> bool {
+        self.ntp_sources.contains_key(addr)
+    }
+
     /// Creates an aggregate stream containing all results from `SourceIO` component `Receiver`s tracked by the struct
     ///
     /// This will immediately return if there are no configured streams

@@ -131,23 +131,27 @@ impl<'a> SourceMutator<'a> {
     /// Add a source to a pool
     pub fn add_pool_source(
         &mut self,
-        pool_domain: String,
+        pool_domain: &str,
         socket_addr: SocketAddr,
         max_dispersion: Skew,
     ) {
-        let source = source::NtpSource::new_with_pool(socket_addr, pool_domain, max_dispersion);
+        let source =
+            source::NtpSource::new_with_pool(socket_addr, pool_domain.to_owned(), max_dispersion);
         self.clock_sync_algorithm.add_ntp_source(source);
 
-        let (_tx, rx) = async_ring_buffer::create(2);
+        let (tx, rx) = async_ring_buffer::create(2);
         self.receiver_stream.add_ntp_source((socket_addr, rx));
-        unimplemented!("install NTP IO task to io front end. make sure to spawn it")
+        self.io_front_end
+            .add_pool_source(pool_domain, socket_addr, tx);
     }
 
     /// Remove a source from a pool
-    pub fn remove_pool_source(&mut self, _pool_domain: String, socket_addr: SocketAddr) {
+    pub async fn remove_pool_source(&mut self, pool_domain: &str, socket_addr: SocketAddr) {
         self.clock_sync_algorithm.remove_ntp_source(&socket_addr);
         self.receiver_stream.remove_ntp_source(&socket_addr);
-        unimplemented!("bring down ntp io task. Probably async just to send message");
+        self.io_front_end
+            .remove_pool_source(pool_domain, &socket_addr)
+            .await;
     }
 }
 
