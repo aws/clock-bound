@@ -215,6 +215,23 @@ impl Phc {
     /// will be returned in the Result.
     ///
     /// Returns the Phc Reader, the Phc Clock Error Bound Reader, and the selected ptp device path
+    pub async fn autoconfigure_phc_readers()
+    -> Result<(PhcReader, PhcClockErrorBoundReader, String), PhcError> {
+        tokio::task::spawn_blocking(Self::blocking_autoconfigure_phc_readers)
+            .await
+            .map_err(|e| {
+                PhcError::Io(io::Error::other(format!(
+                    "PHC reader autoconfiguration task panicked: {e:?}"
+                )))
+            })?
+    }
+
+    /// Blocking implementation of [`Self::autoconfigure_phc_readers`].
+    ///
+    /// This performs synchronous filesystem I/O and is intended to be run on a
+    /// blocking thread via `tokio::task::spawn_blocking`.
+    ///
+    /// Rationale: This function would add 100 KB of code size when async..
     #[expect(
         clippy::too_many_lines,
         reason = "This function is already refactored to call
@@ -222,10 +239,10 @@ impl Phc {
         because we have many `continue` statements in the loop body, and other alternate
         approaches would make the code harder to follow than the current implementation."
     )]
-    pub async fn autoconfigure_phc_readers()
+    fn blocking_autoconfigure_phc_readers()
     -> Result<(PhcReader, PhcClockErrorBoundReader, String), PhcError> {
         // Get the list of network interfaces.
-        let network_interfaces = match get_network_interfaces().await {
+        let network_interfaces = match get_network_interfaces() {
             Ok(network_interfaces) => network_interfaces,
             Err(e) => {
                 warn!(
@@ -248,7 +265,7 @@ impl Phc {
             );
 
             let uevent_file_path =
-                match get_uevent_file_path_for_network_interface(&network_interface).await {
+                match get_uevent_file_path_for_network_interface(&network_interface) {
                     Ok(uevent_file_path) => {
                         debug!(
                             ?network_interface,
@@ -265,7 +282,7 @@ impl Phc {
                     }
                 };
 
-            let is_ena = match is_ena_network_interface(&uevent_file_path).await {
+            let is_ena = match is_ena_network_interface(&uevent_file_path) {
                 Ok(is_ena) => {
                     debug!(
                         ?network_interface,
@@ -293,7 +310,7 @@ impl Phc {
                 continue;
             }
 
-            let pci_slot_name = match get_pci_slot_name(&uevent_file_path).await {
+            let pci_slot_name = match get_pci_slot_name(&uevent_file_path) {
                 Ok(pci_slot_name) => {
                     debug!(
                         ?network_interface,
@@ -311,7 +328,7 @@ impl Phc {
             };
 
             let phc_clock_error_bound_sysfs_path =
-                match get_phc_clock_error_bound_sysfs_path(&pci_slot_name).await {
+                match get_phc_clock_error_bound_sysfs_path(&pci_slot_name) {
                     Ok(phc_clock_error_bound_sysfs_path) => {
                         debug!(
                             ?network_interface,
@@ -329,28 +346,28 @@ impl Phc {
                     }
                 };
 
-            let ptp_uevent_file_paths =
-                match get_ptp_uevent_file_paths_for_pci_slot(&pci_slot_name).await {
-                    Ok(ptp_uevent_file_paths) => {
-                        debug!(
-                            ?network_interface,
-                            ?ptp_uevent_file_paths,
-                            "Network interface association with PTP uevent file paths",
-                        );
-                        ptp_uevent_file_paths
-                    }
-                    Err(e) => {
-                        debug!(
-                            error = ?e, ?pci_slot_name,
-                            "PTP uevent file paths not found for PCI slot name",
-                        );
-                        continue;
-                    }
-                };
+            let ptp_uevent_file_paths = match get_ptp_uevent_file_paths_for_pci_slot(&pci_slot_name)
+            {
+                Ok(ptp_uevent_file_paths) => {
+                    debug!(
+                        ?network_interface,
+                        ?ptp_uevent_file_paths,
+                        "Network interface association with PTP uevent file paths",
+                    );
+                    ptp_uevent_file_paths
+                }
+                Err(e) => {
+                    debug!(
+                        error = ?e, ?pci_slot_name,
+                        "PTP uevent file paths not found for PCI slot name",
+                    );
+                    continue;
+                }
+            };
 
             for ptp_uevent_file_path in ptp_uevent_file_paths {
                 let ptp_device_name =
-                    match get_ptp_device_name_from_uevent_file(&ptp_uevent_file_path).await {
+                    match get_ptp_device_name_from_uevent_file(&ptp_uevent_file_path) {
                         Ok(ptp_device_name) => {
                             debug!(
                                 ?network_interface,
@@ -368,7 +385,7 @@ impl Phc {
                         }
                     };
 
-                let ptp_device_path = match get_ptp_device_path(&ptp_device_name).await {
+                let ptp_device_path = match get_ptp_device_path(&ptp_device_name) {
                     Ok(ptp_device_path) => {
                         debug!(
                             ?network_interface,
@@ -613,16 +630,17 @@ impl Phc {
 
 #[cfg_attr(test, mockall::automock)]
 mod filesystem {
+    #![allow(dead_code, reason = "cfg_attr too complicated to me to use expect")]
     /// Tests to see if the file exists.
-    pub(crate) async fn fs_try_exists(path: &String) -> tokio::io::Result<bool> {
-        tokio::fs::try_exists(path).await
+    pub fn fs_try_exists(path: &String) -> std::io::Result<bool> {
+        std::fs::exists(path)
     }
 }
 
 #[cfg(not(test))]
-pub(crate) use filesystem::fs_try_exists;
+use filesystem::fs_try_exists;
 #[cfg(test)]
-pub(crate) use mock_filesystem::fs_try_exists;
+use mock_filesystem::fs_try_exists;
 
 #[cfg_attr(test, mockall::automock)]
 mod phc_path_locator {
@@ -631,24 +649,25 @@ mod phc_path_locator {
 
     /// Gets a list of network interface names on the host by inspecting
     /// the files under the path "/sys/class/net/".
-    pub(crate) async fn get_network_interfaces() -> Result<Vec<String>, PhcError> {
+    pub fn get_network_interfaces() -> Result<Vec<String>, PhcError> {
         let mut network_interfaces = Vec::new();
         let network_interfaces_path = "/sys/class/net/";
 
         // Validate the file path containing entries of the network interfaces exists.
-        if !fs_try_exists(&network_interfaces_path.to_string()).await? {
+        if !fs_try_exists(&network_interfaces_path.to_string())? {
             return Err(PhcError::FileNotFound(network_interfaces_path.into()));
         }
 
-        let mut entries = match tokio::fs::read_dir(network_interfaces_path).await {
+        let entries = match std::fs::read_dir(network_interfaces_path) {
             Ok(entries) => entries,
             Err(e) => return Err(PhcError::Io(e)),
         };
 
-        while let Some(entry) = match entries.next_entry().await {
-            Ok(entry) => entry,
-            Err(e) => return Err(PhcError::Io(e)),
-        } {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => return Err(PhcError::Io(e)),
+            };
             let file_name = entry.file_name().to_string_lossy().to_string();
             network_interfaces.push(file_name);
         }
@@ -658,11 +677,11 @@ mod phc_path_locator {
     }
 
     /// Gets the uevent file path for a particular network interface.
-    pub(crate) async fn get_uevent_file_path_for_network_interface(
+    pub fn get_uevent_file_path_for_network_interface(
         network_interface: &str,
     ) -> Result<String, PhcError> {
         let uevent_file_path = format!("/sys/class/net/{network_interface}/device/uevent");
-        if !fs_try_exists(&uevent_file_path).await? {
+        if !fs_try_exists(&uevent_file_path)? {
             return Err(PhcError::FileNotFound(uevent_file_path));
         }
 
@@ -671,8 +690,8 @@ mod phc_path_locator {
 
     /// Inspects the given uevent file for a network interface and determines if
     /// the corresponding driver is "ena", which is the Amazon elastic network adapter.
-    pub(crate) async fn is_ena_network_interface(uevent_file_path: &str) -> Result<bool, PhcError> {
-        let contents = match tokio::fs::read_to_string(uevent_file_path).await {
+    pub fn is_ena_network_interface(uevent_file_path: &str) -> Result<bool, PhcError> {
+        let contents = match std::fs::read_to_string(uevent_file_path) {
             Ok(contents) => contents,
             Err(e) => return Err(PhcError::Io(e)),
         };
@@ -700,8 +719,8 @@ mod phc_path_locator {
     /// # Arguments
     ///
     /// * `uevent_file_path` - The path of the uevent file where we lookup the `PCI_SLOT_NAME`.
-    pub(crate) async fn get_pci_slot_name(uevent_file_path: &str) -> Result<String, PhcError> {
-        let contents = match tokio::fs::read_to_string(uevent_file_path).await {
+    pub fn get_pci_slot_name(uevent_file_path: &str) -> Result<String, PhcError> {
+        let contents = match std::fs::read_to_string(uevent_file_path) {
             Ok(contents) => contents,
             Err(e) => return Err(PhcError::Io(e)),
         };
@@ -732,29 +751,30 @@ mod phc_path_locator {
     ///   `/sys/bus/pci/devices/{pci_slot_name}/ptp/ptp1/uevent`,
     ///   `/sys/bus/pci/devices/{pci_slot_name}/ptp/ptp2/uevent`,
     ///   etc.
-    pub(crate) async fn get_ptp_uevent_file_paths_for_pci_slot(
+    pub fn get_ptp_uevent_file_paths_for_pci_slot(
         pci_slot_name: &str,
     ) -> Result<Vec<String>, PhcError> {
         let mut uevent_file_paths = Vec::new();
         let uevent_file_search_path = format!("/sys/bus/pci/devices/{pci_slot_name}/ptp/");
 
-        if !fs_try_exists(&uevent_file_search_path).await? {
+        if !fs_try_exists(&uevent_file_search_path)? {
             return Err(PhcError::FileNotFound(uevent_file_search_path));
         }
 
-        let mut entries = match tokio::fs::read_dir(&uevent_file_search_path).await {
+        let entries = match std::fs::read_dir(&uevent_file_search_path) {
             Ok(entries) => entries,
             Err(e) => return Err(PhcError::Io(e)),
         };
 
-        while let Some(entry) = match entries.next_entry().await {
-            Ok(entry) => entry,
-            Err(e) => return Err(PhcError::Io(e)),
-        } {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => return Err(PhcError::Io(e)),
+            };
             let entry_name = entry.file_name().to_string_lossy().to_string();
             if entry_name.starts_with("ptp") {
                 let uevent_path = format!("{uevent_file_search_path}{entry_name}/uevent");
-                if fs_try_exists(&uevent_path).await? {
+                if fs_try_exists(&uevent_path)? {
                     uevent_file_paths.push(uevent_path);
                 }
             }
@@ -769,10 +789,10 @@ mod phc_path_locator {
     /// # Arguments
     ///
     /// * `uevent_file_path` - The path of the uevent file where we lookup DEVNAME.
-    pub(crate) async fn get_ptp_device_name_from_uevent_file(
+    pub fn get_ptp_device_name_from_uevent_file(
         uevent_file_path: &str,
     ) -> Result<String, PhcError> {
-        let contents = match tokio::fs::read_to_string(uevent_file_path).await {
+        let contents = match std::fs::read_to_string(uevent_file_path) {
             Ok(contents) => contents,
             Err(e) => return Err(PhcError::Io(e)),
         };
@@ -800,9 +820,9 @@ mod phc_path_locator {
     /// # Arguments
     ///
     /// * `ptp_device_name` - The network interface to lookup the PHC error bound path for.
-    pub(crate) async fn get_ptp_device_path(ptp_device_name: &str) -> Result<String, PhcError> {
+    pub fn get_ptp_device_path(ptp_device_name: &str) -> Result<String, PhcError> {
         let ptp_device_path = format!("/dev/{ptp_device_name}");
-        if !fs_try_exists(&ptp_device_path).await? {
+        if !fs_try_exists(&ptp_device_path)? {
             return Err(PhcError::PtpDeviceNotFound(format!(
                 "Failed to find PTP device at path {ptp_device_path}"
             )));
@@ -820,12 +840,10 @@ mod phc_path_locator {
     /// # Arguments
     ///
     /// * `pci_slot_name` - The PCI slot name to use for constructing and locating the PHC clock error bound sysfs file.
-    pub(crate) async fn get_phc_clock_error_bound_sysfs_path(
-        pci_slot_name: &str,
-    ) -> Result<String, PhcError> {
+    pub fn get_phc_clock_error_bound_sysfs_path(pci_slot_name: &str) -> Result<String, PhcError> {
         let phc_clock_error_bound_sysfs_path =
             format!("/sys/bus/pci/devices/{pci_slot_name}/phc_error_bound");
-        if !fs_try_exists(&phc_clock_error_bound_sysfs_path).await? {
+        if !fs_try_exists(&phc_clock_error_bound_sysfs_path)? {
             return Err(PhcError::PhcClockErrorBoundFileNotFound {
                 pci_slot_name: pci_slot_name.into(),
             });
@@ -839,7 +857,7 @@ mod phc_path_locator {
     }
 }
 
-pub(crate) use phc_path_locator::{
+use phc_path_locator::{
     get_network_interfaces, get_pci_slot_name, get_phc_clock_error_bound_sysfs_path,
     get_ptp_device_name_from_uevent_file, get_ptp_device_path,
     get_ptp_uevent_file_paths_for_pci_slot, get_uevent_file_path_for_network_interface,
@@ -854,11 +872,11 @@ pub struct PhcReader {
 
 #[cfg_attr(test, mockall::automock)]
 impl PhcReader {
-    pub(crate) fn new(phc_device_file: File) -> Self {
+    fn new(phc_device_file: File) -> Self {
         Self { phc_device_file }
     }
 
-    pub(crate) async fn ptp_sys_offset_extended2_with_counter_pre_and_counter_post(
+    async fn ptp_sys_offset_extended2_with_counter_pre_and_counter_post(
         &self,
         timeout_duration: tokio::time::Duration,
     ) -> Result<(PtpClockTime, u64, u64), PhcError> {
@@ -932,7 +950,6 @@ mod test {
 
     use std::io::Write;
 
-    #[tokio::test]
     #[rstest]
     #[case::happy_path("PCI_SLOT_NAME=12345", "12345")]
     #[case::happy_path_multi_line(
@@ -942,32 +959,26 @@ PCI_SLOT_NAME=23456
 twoline",
         "23456"
     )]
-    async fn get_pci_slot_name_success(
-        #[case] file_contents_to_write: &str,
-        #[case] return_value: &str,
-    ) {
+    fn get_pci_slot_name_success(#[case] file_contents_to_write: &str, #[case] return_value: &str) {
         let mut test_uevent_file = NamedTempFile::new().expect("create mock uevent file failed");
         test_uevent_file
             .write_all(file_contents_to_write.as_bytes())
             .expect("write to mock uevent file failed");
 
-        let rt =
-            phc_path_locator::get_pci_slot_name(test_uevent_file.path().to_str().unwrap()).await;
+        let rt = phc_path_locator::get_pci_slot_name(test_uevent_file.path().to_str().unwrap());
         assert!(rt.is_ok());
         assert_eq!(rt.unwrap(), return_value.to_string());
     }
 
-    #[tokio::test]
     #[rstest]
     #[case::missing_pci_slot_name("no pci slot name")]
-    async fn get_pci_slot_name_failure(#[case] file_contents_to_write: &str) {
+    fn get_pci_slot_name_failure(#[case] file_contents_to_write: &str) {
         let mut test_uevent_file = NamedTempFile::new().expect("create mock uevent file failed");
         test_uevent_file
             .write_all(file_contents_to_write.as_bytes())
             .expect("write to mock uevent file failed");
 
-        let rt =
-            phc_path_locator::get_pci_slot_name(test_uevent_file.path().to_str().unwrap()).await;
+        let rt = phc_path_locator::get_pci_slot_name(test_uevent_file.path().to_str().unwrap());
         assert!(rt.is_err());
         match rt.unwrap_err() {
             PhcError::PciSlotNameNotFound(_) => assert!(true),
@@ -975,9 +986,9 @@ twoline",
         };
     }
 
-    #[tokio::test]
-    async fn get_pci_slot_name_file_does_not_exist() {
-        let rt = phc_path_locator::get_pci_slot_name("/does/not/exist").await;
+    #[test]
+    fn get_pci_slot_name_file_does_not_exist() {
+        let rt = phc_path_locator::get_pci_slot_name("/does/not/exist");
         assert!(rt.is_err());
     }
 
@@ -1098,12 +1109,12 @@ twoline",
         ));
     }
 
-    #[tokio::test]
-    async fn get_network_interfaces_directory_not_found() {
+    #[test]
+    fn get_network_interfaces_directory_not_found() {
         let ctx = mock_filesystem::fs_try_exists_context();
         ctx.expect().returning(|_| Ok(false));
 
-        let result = phc_path_locator::get_network_interfaces().await;
+        let result = phc_path_locator::get_network_interfaces();
         assert!(result.is_err());
         match result.unwrap_err() {
             PhcError::FileNotFound(path) => {
@@ -1113,42 +1124,39 @@ twoline",
         }
     }
 
-    #[tokio::test]
-    async fn get_uevent_file_path_for_network_interface_success() {
+    #[test]
+    fn get_uevent_file_path_for_network_interface_success() {
         let ctx = mock_filesystem::fs_try_exists_context();
         ctx.expect().returning(|_| Ok(true));
 
-        let result = phc_path_locator::get_uevent_file_path_for_network_interface("eth0").await;
+        let result = phc_path_locator::get_uevent_file_path_for_network_interface("eth0");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "/sys/class/net/eth0/device/uevent");
     }
 
-    #[tokio::test]
     #[rstest]
     #[case::ena_driver("DRIVER=ena", true)]
     #[case::other_driver("DRIVER=e1000e", false)]
     #[case::multiline_ena("SUBSYSTEM=net\nDRIVER=ena\nOTHER=value", true)]
-    async fn is_ena_network_interface_success(#[case] file_contents: &str, #[case] expected: bool) {
+    fn is_ena_network_interface_success(#[case] file_contents: &str, #[case] expected: bool) {
         let mut test_file = NamedTempFile::new().expect("create temp file failed");
         test_file
             .write_all(file_contents.as_bytes())
             .expect("write to temp file failed");
 
-        let result =
-            phc_path_locator::is_ena_network_interface(test_file.path().to_str().unwrap()).await;
+        let result = phc_path_locator::is_ena_network_interface(test_file.path().to_str().unwrap());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), expected);
     }
 
-    #[tokio::test]
-    async fn is_ena_network_interface_no_driver() {
+    #[test]
+    fn is_ena_network_interface_no_driver() {
         let mut test_file = NamedTempFile::new().expect("create temp file failed");
         test_file
             .write_all(b"SUBSYSTEM=net\nOTHER=value")
             .expect("write to temp file failed");
 
-        let result =
-            phc_path_locator::is_ena_network_interface(test_file.path().to_str().unwrap()).await;
+        let result = phc_path_locator::is_ena_network_interface(test_file.path().to_str().unwrap());
         assert!(result.is_err());
         match result.unwrap_err() {
             PhcError::DeviceDriverNameNotFound(_) => {}
@@ -1156,13 +1164,13 @@ twoline",
         }
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "static mocks require synchronization"]
-    async fn get_ptp_uevent_file_paths_for_pci_slot_directory_not_found() {
+    fn get_ptp_uevent_file_paths_for_pci_slot_directory_not_found() {
         let ctx = mock_filesystem::fs_try_exists_context();
         ctx.expect().returning(|_| Ok(false));
 
-        let result = phc_path_locator::get_ptp_uevent_file_paths_for_pci_slot("test_slot").await;
+        let result = phc_path_locator::get_ptp_uevent_file_paths_for_pci_slot("test_slot");
         assert!(result.is_err());
         match result.unwrap_err() {
             PhcError::FileNotFound(path) => {
@@ -1172,11 +1180,10 @@ twoline",
         }
     }
 
-    #[tokio::test]
     #[rstest]
     #[case::simple_devname("DEVNAME=ptp0", "ptp0")]
     #[case::multiline_devname("SUBSYSTEM=ptp\nDEVNAME=ptp1\nOTHER=value", "ptp1")]
-    async fn get_ptp_device_name_from_uevent_file_success(
+    fn get_ptp_device_name_from_uevent_file_success(
         #[case] file_contents: &str,
         #[case] expected: &str,
     ) {
@@ -1187,14 +1194,13 @@ twoline",
 
         let result = phc_path_locator::get_ptp_device_name_from_uevent_file(
             test_file.path().to_str().unwrap(),
-        )
-        .await;
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), expected);
     }
 
-    #[tokio::test]
-    async fn get_ptp_device_name_from_uevent_file_no_devname() {
+    #[test]
+    fn get_ptp_device_name_from_uevent_file_no_devname() {
         let mut test_file = NamedTempFile::new().expect("create temp file failed");
         test_file
             .write_all(b"SUBSYSTEM=ptp\nOTHER=value")
@@ -1202,8 +1208,7 @@ twoline",
 
         let result = phc_path_locator::get_ptp_device_name_from_uevent_file(
             test_file.path().to_str().unwrap(),
-        )
-        .await;
+        );
         assert!(result.is_err());
         match result.unwrap_err() {
             PhcError::PtpDeviceNameNotFound(_) => {}
@@ -1211,12 +1216,12 @@ twoline",
         }
     }
 
-    #[tokio::test]
-    async fn get_phc_clock_error_bound_sysfs_path_not_found() {
+    #[test]
+    fn get_phc_clock_error_bound_sysfs_path_not_found() {
         let ctx = mock_filesystem::fs_try_exists_context();
         ctx.expect().returning(|_| Ok(false));
 
-        let result = phc_path_locator::get_phc_clock_error_bound_sysfs_path("0000:27:00.0").await;
+        let result = phc_path_locator::get_phc_clock_error_bound_sysfs_path("0000:27:00.0");
         assert!(result.is_err());
         match result.unwrap_err() {
             PhcError::PhcClockErrorBoundFileNotFound { pci_slot_name } => {
