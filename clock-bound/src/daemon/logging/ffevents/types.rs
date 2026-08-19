@@ -286,6 +286,7 @@ mod tests {
     use super::*;
     use crate::daemon::event::{Ntp, NtpData, Phc, PhcData, Stratum};
     use crate::daemon::time::{Duration, Instant, TscCount};
+    use indoc::indoc;
 
     // --- RoutableEvent log serialization tests (moved from receiver_stream.rs) ---
 
@@ -307,8 +308,7 @@ mod tests {
         let routable = RoutableEvent::AmazonTimeSync(event);
         let actual: serde_json::Value =
             serde_json::to_value(RoutableEventLog::from(&routable)).unwrap();
-        let expected: serde_json::Value = serde_json::from_str(
-            r#"
+        let expected: serde_json::Value = serde_json::from_str(indoc! {r#"
             {
                 "type": "ntp",
                 "identifier": "169.254.169.123:123",
@@ -322,8 +322,7 @@ mod tests {
                     "stratum": 1
                 }
             }
-        "#,
-        )
+            "#})
         .unwrap();
 
         assert_eq!(actual, expected);
@@ -348,8 +347,7 @@ mod tests {
         let routable = RoutableEvent::NtpSource(addr, event);
         let actual: serde_json::Value =
             serde_json::to_value(RoutableEventLog::from(&routable)).unwrap();
-        let expected: serde_json::Value = serde_json::from_str(
-            r#"
+        let expected: serde_json::Value = serde_json::from_str(indoc! {r#"
             {
                 "type": "ntp",
                 "identifier": "10.0.0.1:123",
@@ -363,8 +361,7 @@ mod tests {
                     "stratum": 2
                 }
             }
-        "#,
-        )
+            "#})
         .unwrap();
 
         assert_eq!(actual, expected);
@@ -385,8 +382,7 @@ mod tests {
         let routable = RoutableEvent::Phc(DevicePath::from("/dev/ptp0"), event);
         let actual: serde_json::Value =
             serde_json::to_value(RoutableEventLog::from(&routable)).unwrap();
-        let expected: serde_json::Value = serde_json::from_str(
-            r#"
+        let expected: serde_json::Value = serde_json::from_str(indoc! {r#"
             {
                 "type": "phc",
                 "identifier": "/dev/ptp0",
@@ -397,8 +393,7 @@ mod tests {
                     "clock_error_bound_ns": 100
                 }
             }
-        "#,
-        )
+            "#})
         .unwrap();
 
         assert_eq!(actual, expected);

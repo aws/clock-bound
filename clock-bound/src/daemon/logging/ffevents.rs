@@ -105,6 +105,7 @@ mod tests {
         receiver_stream::RoutableEvent,
         time::{Duration, Instant, TscCount, tsc::Period},
     };
+    use indoc::indoc;
 
     const TEST_VERSION: &str = "3.0.0-test";
 
@@ -165,7 +166,8 @@ mod tests {
 
         assert_matches_expected(
             output.lines().next().unwrap(),
-            r#"{
+            indoc! {r#"
+            {
                 "timestamp": "",
                 "event": "init",
                 "seq": 0,
@@ -173,7 +175,8 @@ mod tests {
                     "message": "Clock Sync Algorithm initialized"
                 },
                 "version": "3.0.0-test"
-            }"#,
+            }
+            "#},
         );
     }
 
@@ -185,7 +188,8 @@ mod tests {
 
         assert_matches_expected(
             output.lines().next().unwrap(),
-            r#"{
+            indoc! {r#"
+            {
                 "timestamp": "",
                 "event": "disruption",
                 "seq": 7,
@@ -193,7 +197,8 @@ mod tests {
                     "message": "Disruption occurred"
                 },
                 "version": "3.0.0-test"
-            }"#,
+            }
+            "#},
         );
     }
 
@@ -206,7 +211,8 @@ mod tests {
 
         assert_matches_expected(
             output.lines().next().unwrap(),
-            r#"{
+            indoc! {r#"
+            {
                 "timestamp": "",
                 "event": "feed",
                 "seq": 1,
@@ -227,7 +233,8 @@ mod tests {
                     "output": null
                 },
                 "version": "3.0.0-test"
-            }"#,
+            }
+            "#},
         );
     }
 
@@ -244,7 +251,8 @@ mod tests {
 
         assert_matches_expected(
             output.lines().next().unwrap(),
-            r#"{
+            indoc! {r#"
+            {
                 "timestamp": "",
                 "event": "feed",
                 "seq": 2,
@@ -268,7 +276,8 @@ mod tests {
                     }
                 },
                 "version": "3.0.0-test"
-            }"#,
+            }
+            "#},
         );
     }
 }

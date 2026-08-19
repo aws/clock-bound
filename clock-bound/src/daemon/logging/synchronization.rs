@@ -215,14 +215,16 @@ mod tests {
 
             assert_matches_expected(
                 output.lines().next().unwrap(),
-                r#"{
+                indoc! {r#"
+                {
                     "timestamp": "",
                     "event": "daemon_started",
                     "daemon_started": {
                         "message": "ClockBound daemon started"
                     },
                     "version": "0.1.0-test"
-                }"#,
+                }
+                "#},
             );
         }
 
@@ -234,7 +236,8 @@ mod tests {
 
             assert_matches_expected(
                 output.lines().next().unwrap(),
-                r#"{
+                indoc! {r#"
+                {
                     "timestamp": "",
                     "event": "clock_status_change",
                     "clock_status_change": {
@@ -242,7 +245,8 @@ mod tests {
                         "to": "SYNCHRONIZED"
                     },
                     "version": "0.1.0-test"
-                }"#,
+                }
+                "#},
             );
         }
 
@@ -306,7 +310,8 @@ mod tests {
 
             assert_matches_expected(
                 output.lines().next().unwrap(),
-                r#"{
+                indoc! {r#"
+                {
                     "timestamp": "",
                     "event": "synchronization",
                     "synchronization": {
@@ -323,7 +328,8 @@ mod tests {
                         }
                     },
                     "version": "0.1.0-test"
-                }"#,
+                }
+                "#},
             );
         }
 
@@ -342,7 +348,8 @@ mod tests {
 
             assert_matches_expected(
                 output.lines().next().unwrap(),
-                r#"{
+                indoc! {r#"
+                {
                     "timestamp": "",
                     "event": "synchronization",
                     "synchronization": {
@@ -359,7 +366,8 @@ mod tests {
                         }
                     },
                     "version": "0.1.0-test"
-                }"#,
+                }
+                "#},
             );
         }
 
@@ -371,7 +379,8 @@ mod tests {
 
             assert_matches_expected(
                 output.lines().next().unwrap(),
-                r#"{
+                indoc! {r#"
+                {
                     "timestamp": "",
                     "event": "synchronization",
                     "synchronization": {
@@ -379,7 +388,8 @@ mod tests {
                         "ffclock": null
                     },
                     "version": "0.1.0-test"
-                }"#,
+                }
+                "#},
             );
         }
 

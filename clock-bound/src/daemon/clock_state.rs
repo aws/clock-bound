@@ -152,7 +152,7 @@ impl ClockState {
     pub async fn run(&mut self) {
         let mut clock_offset_metric_interval =
             tokio::time::interval(tokio::time::Duration::from_secs(1));
-        let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
+        let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_mins(1));
         snapshot_interval.reset(); // delay the first tick by one period
         let mut clock_adjust_summary_interval = tokio::time::interval(
             tokio::time::Duration::from_secs(CLOCK_ADJUST_SUMMARY_PERIOD_SECS),
