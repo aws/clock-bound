@@ -24,17 +24,12 @@ const MAX_POOLS: usize = 1;
 ///
 /// Every field defaults, so an empty file is a valid config. Unknown fields are
 /// rejected at every level.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     /// Log directory and per-stream toggles.
     logging: LoggingConfig,
     /// Additional sources, used alongside the built-in ones.
-    ///
-    /// Omitted when empty so that serializing a configuration only ever produces
-    /// the `[[sources.ntp]]` form the schema documents: an empty vector would
-    /// otherwise render as `ntp = []`, which nothing tells a reader to write.
-    #[serde(skip_serializing_if = "SourcesConfig::is_empty")]
     sources: SourcesConfig,
 }
 
@@ -47,7 +42,7 @@ impl Config {
 }
 
 /// Logging configuration.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LoggingConfig {
     /// Directory the file streams are written to. Required when any stream is
@@ -77,7 +72,7 @@ impl LoggingConfig {
 }
 
 /// A single log stream's configuration.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct StreamConfig {
     /// Whether this stream is written to disk.
@@ -92,7 +87,7 @@ impl StreamConfig {
 }
 
 /// Additional time sources, used alongside the built-in ones.
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SourcesConfig {
     /// NTP sources, each exactly one of `server` or `pool`.
@@ -104,17 +99,11 @@ impl SourcesConfig {
     pub fn ntp(&self) -> &[NtpSource] {
         &self.ntp
     }
-
-    /// Whether no source of any kind is configured.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.ntp.is_empty()
-    }
 }
 
 /// A single additional NTP source. The TOML key (`server` or `pool`) selects the
 /// variant.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum NtpSource {
     /// A single server, addressed directly or by a name to resolve.
@@ -162,8 +151,8 @@ impl NtpSource {
 /// policy it supports, not a rule it imposes. Its grammar also excludes underscores
 /// and non-ASCII labels, but both are common in practice, so they are accepted here
 /// and left to the resolver.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(try_from = "String")]
 pub struct DomainName(String);
 
 impl TryFrom<String> for DomainName {
@@ -224,15 +213,9 @@ impl std::fmt::Display for DomainName {
     }
 }
 
-impl From<DomainName> for String {
-    fn from(value: DomainName) -> Self {
-        value.0
-    }
-}
-
 /// How a source is reached: an address used as given, or a name to resolve.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(try_from = "String")]
 pub enum Host {
     /// An address, used as given.
     Ip(IpAddr),
@@ -278,15 +261,6 @@ impl std::fmt::Display for Host {
             Self::Ip(ip) => write!(f, "{ip}"),
             Self::Domain(name) => write!(f, "{name}"),
         }
-    }
-}
-
-/// The bare string a configuration holds, not a variant, so a serialized config
-/// parses back. Rendering rather than returning a stored string normalizes an
-/// address to its canonical spelling: `2001:0db8::1` comes back as `2001:db8::1`.
-impl From<Host> for String {
-    fn from(value: Host) -> Self {
-        value.to_string()
     }
 }
 
@@ -423,9 +397,6 @@ impl Config {
 mod tests {
     use super::*;
     use indoc::indoc;
-
-    /// The example config carried in the repository, which has to stay parseable.
-    const EXAMPLE_CONFIG: &str = include_str!("../../assets/example-config.toml");
 
     /// Parse then validate from a string.
     fn parse(s: &str) -> Result<Config, ConfigError> {
@@ -655,59 +626,7 @@ mod tests {
 
     #[test]
     fn example_config_parses_and_validates() {
-        parse(EXAMPLE_CONFIG).unwrap();
-    }
-
-    #[test]
-    fn serializing_renders_a_configuration_file() {
-        // What serializing a configuration produces: the documented schema, with
-        // defaults spelled out rather than omitted, and text that parses back. An
-        // address is rendered rather than echoed, so `2001:0db8::1` comes back in
-        // its canonical spelling.
-        let config = parse(indoc! {r#"
-            [logging]
-            log_directory = "/var/log/clockbound"
-
-            [logging.ffevents]
-            enabled = true
-
-            [[sources.ntp]]
-            server = "2001:0db8::1"
-
-            [[sources.ntp]]
-            pool = "pool.ntp.example"
-        "#})
-        .unwrap();
-
-        let rendered = toml::to_string(&config).unwrap();
-        assert_eq!(
-            rendered,
-            indoc! {r#"
-                [logging]
-                log_directory = "/var/log/clockbound"
-
-                [logging.synchronization]
-                enabled = false
-
-                [logging.ffevents]
-                enabled = true
-
-                [[sources.ntp]]
-                server = "2001:db8::1"
-
-                [[sources.ntp]]
-                pool = "pool.ntp.example"
-            "#},
-        );
-        assert_eq!(parse(&rendered).unwrap(), config);
-    }
-
-    #[test]
-    fn round_trip() {
-        let config = parse(EXAMPLE_CONFIG).unwrap();
-        let serialized = toml::to_string(&config).unwrap();
-        let reparsed: Config = toml::from_str(&serialized).unwrap();
-        assert_eq!(config, reparsed);
+        parse(include_str!("../../assets/example-config.toml")).unwrap();
     }
 
     #[test]

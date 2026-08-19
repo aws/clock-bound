@@ -25,6 +25,11 @@ struct Args {
     /// Raise the stdout level from `info` to `debug`.
     #[clap(short, long)]
     verbose: bool,
+
+    /// Load, parse, and validate the configuration, report the outcome, and exit without
+    /// starting the daemon.
+    #[clap(long, requires = "configuration")]
+    check_configuration: bool,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -40,6 +45,16 @@ async fn main() {
             process::exit(CONFIG_ERROR_EXIT.into());
         }
     };
+
+    // `--check-configuration`: Load, parse, and validate the provided configuration
+    // file. Report the outcome and exit.
+    if args.check_configuration {
+        let path = args
+            .configuration
+            .expect("--check-configuration requires -c");
+        println!("{} is valid", path.display());
+        return;
+    }
 
     let (logging, sources) = config.into_parts();
 

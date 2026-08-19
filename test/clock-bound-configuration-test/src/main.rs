@@ -78,6 +78,14 @@ const CASES: &[(&str, Case)] = &[
         "debug_records_are_hidden_without_verbose",
         debug_records_are_hidden_without_verbose,
     ),
+    (
+        "checking_a_valid_configuration_reports_it_valid",
+        checking_a_valid_configuration_reports_it_valid,
+    ),
+    (
+        "checking_a_bad_configuration_reports_the_violation",
+        checking_a_bad_configuration_reports_the_violation,
+    ),
 ];
 
 fn main() {
@@ -118,16 +126,17 @@ fn contains(path: &Path, needle: &str) -> bool {
     std::fs::read_to_string(path).is_ok_and(|contents| contents.contains(needle))
 }
 
-/// Run the daemon to completion, returning its exit code and stderr. Only for
-/// inputs that make it exit on its own, such as a bad configuration.
+/// Run the daemon to completion, returning its exit code, stdout, and stderr. Only
+/// for inputs that make it exit on its own, such as a bad configuration or a flag
+/// that reports and exits.
 ///
 /// Fails rather than waits if the daemon keeps running.
-/// Stderr is read once the process is gone.
-fn run_expecting_exit(clockbound: &Path, args: &[&str]) -> (Option<i32>, String) {
+/// Both streams are read once the process is gone.
+fn run_expecting_exit(clockbound: &Path, args: &[&str]) -> (Option<i32>, String, String) {
     let mut child = Command::new(clockbound)
         .args(args)
         .env_remove("RUST_LOG")
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn clockbound");
@@ -139,12 +148,19 @@ fn run_expecting_exit(clockbound: &Path, args: &[&str]) -> (Option<i32>, String)
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("clockbound kept running, expected it to reject {args:?} and exit");
+                panic!("clockbound kept running, expected it exit");
             }
             None => std::thread::sleep(Duration::from_millis(50)),
         }
     };
 
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("stdout was piped")
+        .read_to_end(&mut stdout)
+        .expect("failed to read stdout");
     let mut stderr = Vec::new();
     child
         .stderr
@@ -152,7 +168,11 @@ fn run_expecting_exit(clockbound: &Path, args: &[&str]) -> (Option<i32>, String)
         .expect("stderr was piped")
         .read_to_end(&mut stderr)
         .expect("failed to read stderr");
-    (status.code(), String::from_utf8_lossy(&stderr).into_owned())
+    (
+        status.code(),
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+    )
 }
 
 /// Start the daemon, wait until `predicate` holds (or time out), then stop it.
@@ -246,7 +266,7 @@ fn appeared_while_running(
 // and with startup stopped.
 
 fn missing_file_is_reported_on_stderr(clockbound: &Path) {
-    let (code, stderr) = run_expecting_exit(clockbound, &["-c", "/nonexistent/clockbound.toml"]);
+    let (code, _, stderr) = run_expecting_exit(clockbound, &["-c", "/nonexistent/clockbound.toml"]);
     assert_eq!(code, Some(2));
     assert_eq!(
         stderr.trim_end(),
@@ -264,7 +284,7 @@ fn invalid_syntax_points_at_the_offending_line(clockbound: &Path) {
         "},
     );
 
-    let (code, stderr) = run_expecting_exit(clockbound, &["-c", path.to_str().unwrap()]);
+    let (code, _, stderr) = run_expecting_exit(clockbound, &["-c", path.to_str().unwrap()]);
     assert_eq!(code, Some(2));
     // The operator is pointed at the line rather than told only that it failed.
     assert!(
@@ -291,7 +311,7 @@ fn every_semantic_violation_is_listed(clockbound: &Path) {
         "#},
     );
 
-    let (code, stderr) = run_expecting_exit(clockbound, &["-c", path.to_str().unwrap()]);
+    let (code, _, stderr) = run_expecting_exit(clockbound, &["-c", path.to_str().unwrap()]);
     assert_eq!(code, Some(2));
     // Two violations reported at once.
     assert!(
@@ -418,6 +438,52 @@ fn every_stream_enabled_writes_them_all(clockbound: &Path) {
         "not every stream file appeared in {}",
         logs.display()
     );
+}
+
+fn checking_a_valid_configuration_reports_it_valid(clockbound: &Path) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_config(
+        dir.path(),
+        indoc! {r#"
+            [logging]
+            log_directory = "/var/log/clockbound"
+
+            [logging.synchronization]
+            enabled = true
+
+            [[sources.ntp]]
+            server = "192.0.2.1"
+
+            [[sources.ntp]]
+            pool = "pool.ntp.example"
+        "#},
+    );
+
+    let (code, stdout, stderr) = run_expecting_exit(
+        clockbound,
+        &["--check-configuration", "-c", path.to_str().unwrap()],
+    );
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("is valid"), "stdout: {stdout}");
+}
+
+fn checking_a_bad_configuration_reports_the_violation(clockbound: &Path) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_config(
+        dir.path(),
+        "[[sources.ntp]]\npool = \"a.example\"\n\n[[sources.ntp]]\npool = \"b.example\"\n",
+    );
+
+    let (code, stdout, stderr) = run_expecting_exit(
+        clockbound,
+        &["--check-configuration", "-c", path.to_str().unwrap()],
+    );
+    assert_eq!(code, Some(2));
+    assert!(
+        stderr.contains("at most 1 `pool` entry is supported, found 2"),
+        "stderr: {stderr}"
+    );
+    assert!(!stdout.contains("is valid"), "stdout: {stdout}");
 }
 
 // `-v` is only observable from outside.
