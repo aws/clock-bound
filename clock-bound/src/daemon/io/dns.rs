@@ -33,15 +33,27 @@ pub struct Pool {
 
 impl Pool {
     /// Constructs a new `Pool` with all internal channels and a ready-to-spawn Resolver.
-    pub fn construct(pool_domain: String, daemon_tx: mpsc::Sender<DnsMessage>) -> Self {
+    ///
+    /// `max_sources` is the maximum number of healthy NTP tasks the pool's
+    /// resolver maintains.
+    pub fn construct(
+        pool_domain: String,
+        daemon_tx: mpsc::Sender<DnsMessage>,
+        max_sources: usize,
+    ) -> Self {
         // Channel for NTP sources to communicate with the Resolver
         let (resolver_message_tx, ntp_receiver) = mpsc::channel::<ResolverMessage>(16);
 
         // Control channel for the Resolver
         let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
 
-        let resolver =
-            Resolver::construct(pool_domain.clone(), daemon_tx, ctrl_receiver, ntp_receiver);
+        let resolver = Resolver::construct(
+            pool_domain.clone(),
+            daemon_tx,
+            ctrl_receiver,
+            ntp_receiver,
+            max_sources,
+        );
 
         Self {
             domain: pool_domain,

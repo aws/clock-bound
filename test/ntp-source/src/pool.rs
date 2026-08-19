@@ -62,8 +62,12 @@ const POOL_DOMAIN: &str = "time.aws.com";
 const TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Expected number of sources the resolver will fill the pool to.
-/// Matches `MAX_SOURCES` in `clock_bound::daemon::io::dns::resolver`.
+/// Matches the count `SourceMutator::add_pool` forwards to the resolver.
 const EXPECTED_SOURCES: usize = 5;
+
+/// Expected number of sources for a single-host domain.
+/// Matches the count `SourceMutator::add_domain_host` forwards to the resolver.
+const EXPECTED_SINGLE_HOST_SOURCES: usize = 1;
 
 /// Minimum number of NTP responses we require from each created source
 /// before declaring the test successful.
@@ -79,6 +83,7 @@ async fn main() {
         .init();
 
     test_pool_source_creation_lifecycle().await;
+    test_single_host_lifecycle().await;
 }
 
 /// Components needed by the test run loop.
@@ -89,8 +94,17 @@ struct TestHarness {
     dns_message_rx: mpsc::Receiver<DnsMessage>,
 }
 
+/// How the pool domain is installed into the harness.
+#[derive(Clone, Copy)]
+enum PoolKind {
+    /// Multi-source pool via `SourceMutator::add_pool`.
+    Pool,
+    /// Single-host domain via `SourceMutator::add_domain_host`.
+    SingleHost,
+}
+
 /// Construct all components and wire up the pool.
-fn setup() -> TestHarness {
+fn setup(kind: PoolKind) -> TestHarness {
     let selected_clock = Arc::new(SelectedClockSource::default());
     let daemon_info = DaemonInfo {
         major_version: 2,
@@ -107,8 +121,12 @@ fn setup() -> TestHarness {
         .build();
     let mut receiver_stream = ReceiverStream::default();
 
-    // Add the pool
-    SourceMutator::new(&mut io, &mut csa, &mut receiver_stream).add_pool(POOL_DOMAIN.to_string());
+    // Install the pool domain via the requested mutator entry point.
+    let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut receiver_stream);
+    match kind {
+        PoolKind::Pool => mutator.add_pool(POOL_DOMAIN.to_string()),
+        PoolKind::SingleHost => mutator.add_domain_host(POOL_DOMAIN.to_string()),
+    }
 
     TestHarness {
         io,
@@ -127,7 +145,7 @@ async fn test_pool_source_creation_lifecycle() {
          expected_sources={EXPECTED_SOURCES}, min_responses_per_source={MIN_RESPONSES_PER_SOURCE}"
     );
 
-    let mut harness = setup();
+    let mut harness = setup(PoolKind::Pool);
     harness.io.spawn_all();
 
     println!("Pool created and resolver spawned. Waiting for DNS resolution and NTP events...");
@@ -153,7 +171,7 @@ async fn test_pool_source_creation_lifecycle() {
         let have_sources = !responses_per_source.is_empty();
         tokio::select! {
             msg = harness.dns_message_rx.recv() => {
-                handle_dns_message(msg, &mut harness, &mut responses_per_source).await;
+                handle_dns_message(msg, &mut harness, &mut responses_per_source, EXPECTED_SOURCES).await;
             }
             event = harness.receiver_stream.recv(), if have_sources => {
                 handle_event(event, &mut responses_per_source);
@@ -207,6 +225,91 @@ async fn test_pool_source_creation_lifecycle() {
     harness.io.shutdown_all().await;
 }
 
+/// Test the single-host path: `add_domain_host` caps the pool at one live source.
+///
+/// Unlike the multi-source pool test, this asserts the resolver never drives the
+/// pool above a single concurrent source, and that the one source produces at
+/// least [`MIN_RESPONSES_PER_SOURCE`] NTP responses. This validates the
+/// `max_sources = 1` plumbing end-to-end rather than just that a source works.
+async fn test_single_host_lifecycle() {
+    println!("Testing single-host domain lifecycle with domain: {POOL_DOMAIN}");
+
+    let mut harness = setup(PoolKind::SingleHost);
+    harness.io.spawn_all();
+
+    println!("Single-host domain created and resolver spawned. Waiting for NTP events...");
+
+    // Currently live sources (added and not yet removed) and their response counts.
+    let mut responses_per_source: HashMap<SocketAddr, usize> = HashMap::new();
+    // Highest number of concurrently-live sources observed. Must never exceed 1.
+    let mut max_concurrent_sources: usize = 0;
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
+    heartbeat.tick().await; // consume the immediate first tick
+
+    loop {
+        // Ready once the single live source has enough responses.
+        if responses_per_source
+            .values()
+            .any(|count| *count >= MIN_RESPONSES_PER_SOURCE)
+        {
+            break;
+        }
+
+        let have_sources = !responses_per_source.is_empty();
+        tokio::select! {
+            msg = harness.dns_message_rx.recv() => {
+                handle_dns_message(
+                    msg,
+                    &mut harness,
+                    &mut responses_per_source,
+                    EXPECTED_SINGLE_HOST_SOURCES,
+                )
+                .await;
+                let live = responses_per_source.len();
+                max_concurrent_sources = max_concurrent_sources.max(live);
+                assert!(
+                    max_concurrent_sources <= 1,
+                    "single-host domain exceeded one concurrent source: live={live}, \
+                     sources={responses_per_source:?}"
+                );
+            }
+            event = harness.receiver_stream.recv(), if have_sources => {
+                handle_event(event, &mut responses_per_source);
+            }
+            _ = heartbeat.tick() => {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                println!(
+                    "  progress: live_sources={}, max_concurrent={max_concurrent_sources}, \
+                     time_left={remaining:?}, counts={responses_per_source:?}",
+                    responses_per_source.len(),
+                );
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                panic!(
+                    "TIMEOUT after {TIMEOUT:?}. max_concurrent={max_concurrent_sources}, \
+                     responses_per_source={responses_per_source:?}, \
+                     require >= {MIN_RESPONSES_PER_SOURCE} responses from the single source",
+                );
+            }
+        }
+    }
+
+    assert!(
+        max_concurrent_sources <= 1,
+        "single-host domain exceeded one concurrent source (max observed: {max_concurrent_sources})"
+    );
+
+    println!("Single-host domain test PASSED");
+    println!("  Max concurrent sources: {max_concurrent_sources}");
+    for (addr, count) in &responses_per_source {
+        println!("    {addr}: {count} responses");
+    }
+
+    harness.io.shutdown_all().await;
+}
+
 /// The pool is ready once every expected source has been created and each
 /// created source has produced at least [`MIN_RESPONSES_PER_SOURCE`] responses.
 fn pool_ready(responses_per_source: &HashMap<SocketAddr, usize>) -> bool {
@@ -217,10 +320,14 @@ fn pool_ready(responses_per_source: &HashMap<SocketAddr, usize>) -> bool {
 }
 
 /// Process a `DnsMessage` from the resolver, forwarding it through the `SourceMutator`.
+///
+/// `expected_sources` is only used to annotate the `AddPoolAddr` log line with a
+/// `current/target` count; it does not affect behavior.
 async fn handle_dns_message(
     msg: Option<DnsMessage>,
     harness: &mut TestHarness,
     responses_per_source: &mut HashMap<SocketAddr, usize>,
+    expected_sources: usize,
 ) {
     let Some(msg) = msg else {
         panic!(
@@ -234,7 +341,7 @@ async fn handle_dns_message(
                 "  AddPoolAddr: {} (source {}/{})",
                 add.addr,
                 responses_per_source.len() + 1,
-                EXPECTED_SOURCES,
+                expected_sources,
             );
             let mut mutator = SourceMutator::new(
                 &mut harness.io,

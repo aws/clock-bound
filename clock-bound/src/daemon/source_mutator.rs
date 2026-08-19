@@ -120,12 +120,33 @@ impl<'a> SourceMutator<'a> {
         self.io_front_end.create_ip_addr_source((socket_addr, tx));
     }
 
-    /// Add an NTP pool to the daemon
+    /// Add a multi-source NTP pool to the daemon.
     ///
+    /// The pool resolves `pool_domain` and maintains up to 5 healthy NTP sources
+    /// concurrently, quarantining and rotating individual addresses as they fail.
     /// Registers the pool in IO so that resolved sources can later be added
     /// via [`add_pool_source`](Self::add_pool_source).
+    ///
+    /// For a domain that should back only a single NTP source, use
+    /// [`add_domain_host`](Self::add_domain_host).
     pub fn add_pool(&mut self, pool_domain: String) {
-        self.io_front_end.create_pool(pool_domain);
+        /// Maximum healthy sources maintained for a multi-source pool.
+        const MAX_SOURCES: usize = 5;
+        self.io_front_end.create_pool(pool_domain, MAX_SOURCES);
+    }
+
+    /// Add a single-host NTP source addressed by domain name.
+    ///
+    /// This is a DNS-backed pool capped at a single healthy source: it resolves
+    /// `pool_domain` and maintains one live NTP source at a time, inheriting the
+    /// pool's quarantine-and-rotate behavior so a failing address is replaced by
+    /// another resolved address. It differs from [`add_ntp_source`](Self::add_ntp_source),
+    /// which pins to a fixed IP, and from [`add_pool`](Self::add_pool), which
+    /// maintains multiple concurrent sources.
+    pub fn add_domain_host(&mut self, pool_domain: String) {
+        /// Maximum healthy sources maintained for a single-host domain.
+        const MAX_SOURCES: usize = 1;
+        self.io_front_end.create_pool(pool_domain, MAX_SOURCES);
     }
 
     /// Add a source to a pool

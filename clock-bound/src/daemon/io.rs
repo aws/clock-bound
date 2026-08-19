@@ -169,8 +169,11 @@ impl SourceIO {
     }
 
     /// Initializes an NTP pool
+    ///
+    /// `max_sources` is the maximum number of healthy NTP tasks the pool's
+    /// resolver maintains.
     #[tracing::instrument(level = "info", skip(self))]
-    pub fn create_pool(&mut self, pool_domain: String) {
+    pub fn create_pool(&mut self, pool_domain: String, max_sources: usize) {
         info!("Creating DnsPool IO");
 
         if self.dns_pools.contains_key(&pool_domain) {
@@ -178,7 +181,11 @@ impl SourceIO {
             return;
         }
 
-        let dns_pool = Pool::construct(pool_domain.clone(), self.dns_message_tx.clone());
+        let dns_pool = Pool::construct(
+            pool_domain.clone(),
+            self.dns_message_tx.clone(),
+            max_sources,
+        );
         self.dns_pools.insert(pool_domain, dns_pool);
 
         info!("DnsPool IO constructed");
@@ -663,11 +670,11 @@ mod tests {
         let mut source_io = make_source_io();
 
         assert!(source_io.pools().is_empty());
-        source_io.create_pool("pool.ntp.org".to_string());
+        source_io.create_pool("pool.ntp.org".to_string(), 5);
         assert_eq!(source_io.pools().len(), 1);
 
         // Calling again with the same domain is idempotent (no panic)
-        source_io.create_pool("pool.ntp.org".to_string());
+        source_io.create_pool("pool.ntp.org".to_string(), 5);
         assert_eq!(source_io.pools().len(), 1);
     }
 
@@ -675,8 +682,8 @@ mod tests {
     fn create_multiple_pools() {
         let mut source_io = make_source_io();
 
-        source_io.create_pool("pool1.ntp.org".to_string());
-        source_io.create_pool("pool2.ntp.org".to_string());
+        source_io.create_pool("pool1.ntp.org".to_string(), 5);
+        source_io.create_pool("pool2.ntp.org".to_string(), 5);
         assert_eq!(source_io.pools().len(), 2);
     }
 }

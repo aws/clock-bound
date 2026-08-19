@@ -33,13 +33,10 @@ const RESOLVE_CACHE_TTL: Duration = Duration::from_secs(30);
 /// on the next tick.
 const LOOKUP_HOST_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The maximum ntp sources to resolve in a pool
-const MAX_SOURCES: usize = 5;
-
 /// Manages the lifecycle of NTP IO tasks for a single DNS pool.
 ///
 /// The resolver periodically resolves the pool's domain name to IP addresses
-/// and maintains up to [`MAX_SOURCES`] active NTP tasks. When a task reports
+/// and maintains up to `max_sources` active NTP tasks. When a task reports
 /// an address as unreachable, the resolver quarantines it and allows the
 /// periodic tick to backfill with a fresh address from the pool.
 ///
@@ -76,15 +73,24 @@ pub struct Resolver {
     ntp_receiver: mpsc::Receiver<Message>,
     /// Shared tracker of globally in-use IP addresses across all resolvers
     in_use_ip_addrs: InUseIpAddrs,
+    /// Maximum number of healthy NTP tasks this resolver maintains for the pool.
+    ///
+    /// The periodic tick backfills up to this many sources. A multi-source pool
+    /// uses a value greater than one; a single-host domain uses one.
+    max_sources: usize,
 }
 
 impl Resolver {
     /// Constructs a new `Resolver` for the given pool domain.
+    ///
+    /// `max_sources` is the maximum number of healthy NTP tasks the resolver
+    /// maintains for the pool.
     pub fn construct(
         pool_domain: String,
         daemon_tx: mpsc::Sender<DnsMessage>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         ntp_receiver: mpsc::Receiver<Message>,
+        max_sources: usize,
     ) -> Self {
         Self {
             pool_domain,
@@ -95,6 +101,7 @@ impl Resolver {
             ctrl_receiver,
             ntp_receiver,
             in_use_ip_addrs: InUseIpAddrs::default(),
+            max_sources,
         }
     }
 
@@ -194,7 +201,7 @@ impl Resolver {
         }
     }
 
-    /// Resolve DNS and launch NTP tasks until the pool reaches [`MAX_SOURCES`] healthy members.
+    /// Resolve DNS and launch NTP tasks until the pool reaches `max_sources` healthy members.
     ///
     /// This is periodically called by the run loop. DNS resolution is the sole IO
     /// operation — all other logic is pure state filtering.
@@ -203,7 +210,7 @@ impl Resolver {
     /// This only tries to increase the NTP task count to the expected healthy count.
     /// If unable to resolve enough to meet this need, it will just try again on the next tick.
     ///
-    /// Decreasing the number of pools from the `MAX_SOURCES` size is handled by the
+    /// Decreasing the number of pools from the `max_sources` size is handled by the
     /// NTP IO tasks when they report an unreachable event.
     ///
     /// Returns [`RunLoopControl::Continue`] if the function completed normally, or
@@ -211,12 +218,12 @@ impl Resolver {
     /// the daemon.
     async fn replenish_pool(&mut self) -> RunLoopControl {
         // bug condition, should never happen or app is malformed
-        assert!(MAX_SOURCES >= self.num_expected_healthy());
-        let needed_host_count = MAX_SOURCES - self.num_expected_healthy();
+        assert!(self.max_sources >= self.num_expected_healthy());
+        let needed_host_count = self.max_sources - self.num_expected_healthy();
         trace!(
             needed = needed_host_count,
             healthy = self.num_expected_healthy(),
-            target = MAX_SOURCES,
+            target = self.max_sources,
             "pool state"
         );
         if needed_host_count == 0 {
@@ -229,7 +236,7 @@ impl Resolver {
                 info!(
                     ?error,
                     healthy = self.num_expected_healthy(),
-                    target = MAX_SOURCES,
+                    target = self.max_sources,
                     "DNS resolution failed, will retry next tick"
                 );
                 return RunLoopControl::Continue;
@@ -512,6 +519,7 @@ impl Resolver {
             ctrl_receiver,
             ntp_receiver,
             in_use_ip_addrs,
+            max_sources: 5,
         };
 
         let handles = RunningResolverHandles {
@@ -602,6 +610,7 @@ mod tests {
             ctrl_receiver,
             ntp_receiver,
             in_use_ip_addrs,
+            max_sources: 5,
         }
     }
 
