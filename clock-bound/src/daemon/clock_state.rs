@@ -360,12 +360,16 @@ mod tests {
         clock_state.handle_sync_update(SyncParameters {
             clock_parameters: clock_parameters.clone(),
             source_info: SourceInfo::Phc("/dev/ptp0".into()),
+            selected_at: Instant::new(0),
+            selected_at_clock_error_bound: Duration::new(0),
         });
         assert_eq!(
             clock_state.sync_parameters,
             Some(SyncParameters {
                 clock_parameters,
                 source_info: SourceInfo::Phc("/dev/ptp0".into()),
+                selected_at: Instant::new(0),
+                selected_at_clock_error_bound: Duration::new(0),
             })
         );
     }
@@ -411,6 +415,8 @@ mod tests {
         clock_state.sync_parameters = Some(SyncParameters {
             clock_parameters,
             source_info: SourceInfo::Phc("/dev/ptp0".into()),
+            selected_at: Instant::new(0),
+            selected_at_clock_error_bound: Duration::new(0),
         });
 
         clock_disruption_sender
@@ -523,6 +529,8 @@ mod tests {
         clock_state.sync_parameters = Some(SyncParameters {
             clock_parameters: expected_clock_params,
             source_info: SourceInfo::Phc("/dev/ptp0".into()),
+            selected_at: Instant::new(0),
+            selected_at_clock_error_bound: Duration::new(0),
         });
         clock_state.handle_tick(expected_instant);
     }

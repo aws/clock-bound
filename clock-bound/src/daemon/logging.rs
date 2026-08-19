@@ -11,7 +11,7 @@
 use serde::Serialize;
 
 use crate::daemon::clock_parameters::ClockParameters;
-use crate::daemon::clock_sync_algorithm::SourceInfo;
+use crate::daemon::clock_sync_algorithm::{SourceInfo, SyncParameters};
 use crate::shm::ClockStatus;
 
 pub mod ffevents;
@@ -165,6 +165,16 @@ fn emit_entry(stream: StructuredLog, entry: &str) {
     }
 }
 
+/// Canonical timestamp format used across all structured log fields
+/// (`timestamp`, `time_sync`, `selected_at`, etc.): RFC 3339 with microsecond
+/// precision and a literal `Z` UTC suffix.
+const LOG_TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
+
+/// Format a UTC instant for structured log output.
+pub(crate) fn format_log_timestamp(ts: chrono::DateTime<chrono::Utc>) -> String {
+    ts.format(LOG_TIMESTAMP_FORMAT).to_string()
+}
+
 /// Log-specific representation of clock status for serialization.
 ///
 /// Avoids deriving `Serialize` on the actual [`ClockStatus`] enum.
@@ -192,20 +202,34 @@ impl From<ClockStatus> for ClockStatusName {
 #[derive(Serialize)]
 struct Source {
     #[serde(rename = "type")]
+    #[expect(clippy::struct_field_names, reason = "intentional")]
     source_type: &'static str,
     identifier: String,
+    /// When the selected source began its current selection tenure.
+    selected_at: String,
+    /// The source's clock error bound (in nanoseconds) at the start of its
+    /// current selection tenure.
+    clock_error_bound_ns: i64,
 }
 
-impl From<SourceInfo> for Source {
-    fn from(info: SourceInfo) -> Self {
-        match info {
+impl From<&SyncParameters> for Source {
+    fn from(params: &SyncParameters) -> Self {
+        let selected_at = format_log_timestamp(chrono::DateTime::from_timestamp_nanos(
+            params.selected_at.as_nanos(),
+        ));
+        let clock_error_bound_ns = params.selected_at_clock_error_bound.as_nanos();
+        match &params.source_info {
             SourceInfo::AmazonTimeSync(addr, _) | SourceInfo::NtpSource(addr, _) => Self {
                 source_type: "ntp",
                 identifier: addr.to_string(),
+                selected_at,
+                clock_error_bound_ns,
             },
             SourceInfo::Phc(device_path) => Self {
                 source_type: "phc",
                 identifier: device_path.to_string(),
+                selected_at,
+                clock_error_bound_ns,
             },
         }
     }
@@ -222,9 +246,9 @@ struct FFClock {
 impl FFClock {
     /// Build from clock parameters and current status.
     fn from_params(params: &ClockParameters, clock_status: ClockStatus) -> Self {
-        let time_sync = chrono::DateTime::from_timestamp_nanos(params.time.as_nanos())
-            .format("%Y-%m-%dT%H:%M:%S%.6fZ")
-            .to_string();
+        let time_sync = format_log_timestamp(chrono::DateTime::from_timestamp_nanos(
+            params.time.as_nanos(),
+        ));
         Self {
             time_sync,
             clock_error_bound_ns: params.clock_error_bound.as_nanos(),

@@ -70,7 +70,7 @@ pub fn log_clock_status_change(from: ClockStatus, to: ClockStatus) {
 
 /// Log a synchronization snapshot to the synchronization log.
 pub fn log_sync_snapshot(sync_parameters: Option<&SyncParameters>, clock_status: ClockStatus) {
-    let source = sync_parameters.map(|sp| Source::from(sp.source_info.clone()));
+    let source = sync_parameters.map(Source::from);
     let ffclock =
         sync_parameters.map(|sp| FFClock::from_params(&sp.clock_parameters, clock_status));
 
@@ -215,6 +215,8 @@ mod tests {
             let sync_parameters = SyncParameters {
                 clock_parameters: sample_clock_parameters(),
                 source_info: SourceInfo::AmazonTimeSync(addr, Stratum::ONE),
+                selected_at: Instant::from_secs(1_721_139_180),
+                selected_at_clock_error_bound: Duration::from_nanos(95_000),
             };
 
             let (output, _tmp) = with_synchronization_layer(|| {
@@ -229,7 +231,9 @@ mod tests {
                     "synchronization": {
                         "source": {
                             "type": "ntp",
-                            "identifier": "169.254.169.123:123"
+                            "identifier": "169.254.169.123:123",
+                            "selected_at": "2024-07-16T14:13:00.000000Z",
+                            "clock_error_bound_ns": 95000
                         },
                         "ffclock": {
                             "time_sync": "2024-07-16T14:14:05.000000Z",
@@ -247,6 +251,8 @@ mod tests {
             let sync_parameters = SyncParameters {
                 clock_parameters: sample_clock_parameters(),
                 source_info: SourceInfo::Phc("/dev/ptp0".into()),
+                selected_at: Instant::from_secs(1_721_139_180),
+                selected_at_clock_error_bound: Duration::from_nanos(95_000),
             };
 
             let (output, _tmp) = with_synchronization_layer(|| {
@@ -261,7 +267,9 @@ mod tests {
                     "synchronization": {
                         "source": {
                             "type": "phc",
-                            "identifier": "/dev/ptp0"
+                            "identifier": "/dev/ptp0",
+                            "selected_at": "2024-07-16T14:13:00.000000Z",
+                            "clock_error_bound_ns": 95000
                         },
                         "ffclock": {
                             "time_sync": "2024-07-16T14:14:05.000000Z",

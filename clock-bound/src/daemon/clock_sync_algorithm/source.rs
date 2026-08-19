@@ -29,6 +29,25 @@ pub enum SourceInfo {
     Phc(DevicePath),
 }
 
+impl SourceInfo {
+    /// Returns `true` when `self` and `other` refer to the same clock source.
+    ///
+    /// Identity is the variant plus the socket address for the NTP-based
+    /// sources (`AmazonTimeSync`/`NtpSource`), or the device path for `Phc`.
+    /// `AmazonTimeSync` and `NtpSource` are different variants and are never
+    /// considered the same source, even if they happened to share an address.
+    ///
+    /// Stratum is deliberately excluded from this comparison.
+    pub fn same_source(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::AmazonTimeSync(a, _), Self::AmazonTimeSync(b, _))
+            | (Self::NtpSource(a, _), Self::NtpSource(b, _)) => a == b,
+            (Self::Phc(a), Self::Phc(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 /// Filesystem path identifying a device-backed clock source, e.g. `/dev/ptp0`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DevicePath(Arc<str>);
@@ -54,5 +73,65 @@ impl From<String> for DevicePath {
 impl From<&str> for DevicePath {
     fn from(value: &str) -> Self {
         Self(Arc::from(value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::event::Stratum;
+
+    #[test]
+    fn phc_with_same_device_path_is_same_source() {
+        let a = SourceInfo::Phc(DevicePath::from("/dev/ptp0"));
+        let b = SourceInfo::Phc(DevicePath::from("/dev/ptp0"));
+        assert!(a.same_source(&b));
+    }
+
+    #[test]
+    fn phc_with_different_device_path_is_not_same_source() {
+        let a = SourceInfo::Phc(DevicePath::from("/dev/ptp0"));
+        let b = SourceInfo::Phc(DevicePath::from("/dev/ptp1"));
+        assert!(!a.same_source(&b));
+    }
+
+    #[test]
+    fn amazon_time_sync_with_same_address_is_same_source() {
+        let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
+        let a = SourceInfo::AmazonTimeSync(addr, Stratum::ONE);
+        let b = SourceInfo::AmazonTimeSync(addr, Stratum::ONE);
+        assert!(a.same_source(&b));
+    }
+
+    #[test]
+    fn amazon_time_sync_stratum_change_is_still_same_source() {
+        // Stratum is deliberately excluded from source identity.
+        let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
+        let a = SourceInfo::AmazonTimeSync(addr, Stratum::ONE);
+        let b = SourceInfo::AmazonTimeSync(addr, Stratum::TWO);
+        assert!(a.same_source(&b));
+    }
+
+    #[test]
+    fn amazon_time_sync_with_different_address_is_not_same_source() {
+        let a = SourceInfo::AmazonTimeSync("169.254.169.123:123".parse().unwrap(), Stratum::ONE);
+        let b = SourceInfo::AmazonTimeSync("169.254.169.101:123".parse().unwrap(), Stratum::ONE);
+        assert!(!a.same_source(&b));
+    }
+
+    #[test]
+    fn amazon_time_sync_and_ntp_source_with_same_address_are_not_same_source() {
+        // Different variants are never the same source, even with a shared address.
+        let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
+        let a = SourceInfo::AmazonTimeSync(addr, Stratum::ONE);
+        let b = SourceInfo::NtpSource(addr, Stratum::ONE);
+        assert!(!a.same_source(&b));
+    }
+
+    #[test]
+    fn phc_and_ntp_source_are_never_same_source() {
+        let a = SourceInfo::Phc(DevicePath::from("/dev/ptp0"));
+        let b = SourceInfo::NtpSource("169.254.169.123:123".parse().unwrap(), Stratum::ONE);
+        assert!(!a.same_source(&b));
     }
 }

@@ -1,6 +1,9 @@
 //! Select from multiple clock sources
 
-use crate::daemon::{clock_parameters::ClockParameters, time::tsc::Skew};
+use crate::daemon::{
+    clock_parameters::ClockParameters,
+    time::{Duration, Instant, tsc::Skew},
+};
 
 use super::source::SourceInfo;
 
@@ -41,6 +44,8 @@ impl Selector {
             self.current = Some(SyncParameters {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
+                selected_at: clock_parameters.time,
+                selected_at_clock_error_bound: clock_parameters.clock_error_bound,
             });
             return self.current.as_ref();
         };
@@ -51,9 +56,20 @@ impl Selector {
         {
             None
         } else {
+            let (selected_at, selected_clock_error_bound) =
+                // If the current source is the same as the newly selected one,
+                // then we'll maintain the same `selected_at` and `selected_at_clock_error_bound`
+                // values.
+                if current.source_info.same_source(&source_info) {
+                    (current.selected_at, current.selected_at_clock_error_bound)
+                } else {
+                    (clock_parameters.time, clock_parameters.clock_error_bound)
+                };
             self.current = Some(SyncParameters {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
+                selected_at,
+                selected_at_clock_error_bound: selected_clock_error_bound,
             });
             self.current.as_ref()
         }
@@ -74,6 +90,12 @@ impl Selector {
 pub struct SyncParameters {
     pub clock_parameters: ClockParameters,
     pub source_info: SourceInfo,
+    /// Timestamp at which the selected source began its current
+    /// selection tenure.
+    pub selected_at: Instant,
+    /// The source's clock error bound at the start of its current selection
+    /// tenure (i.e. the clock error bound reported alongside [`selected_at`](Self::selected_at)).
+    pub selected_at_clock_error_bound: Duration,
 }
 
 #[cfg(test)]
@@ -247,6 +269,8 @@ mod tests {
             current: Some(SyncParameters {
                 clock_parameters: first,
                 source_info: SourceInfo::Phc("/dev/ptp0".into()),
+                selected_at: Instant::from_days(1),
+                selected_at_clock_error_bound: Duration::from_nanos(10_500),
             }),
             max_dispersion_growth: max_dispersion,
         };
@@ -273,6 +297,12 @@ mod tests {
             .unwrap();
         assert_eq!(&result.clock_parameters, &clock_parameters);
         assert_eq!(result.source_info, SourceInfo::Phc("/dev/ptp0".into()));
+        // A fresh selection sets both tenure fields from the winning update.
+        assert_eq!(result.selected_at, clock_parameters.time);
+        assert_eq!(
+            result.selected_at_clock_error_bound,
+            clock_parameters.clock_error_bound
+        );
         assert_eq!(
             selector.current().unwrap().source_info,
             SourceInfo::Phc("/dev/ptp0".into())
@@ -297,5 +327,152 @@ mod tests {
         selector.handle_disruption();
         assert!(selector.current().is_none());
         assert_eq!(selector.max_dispersion_growth, skew);
+    }
+
+    // -------------------------------------------------------------------------
+    // Selection tenure tracking (`selected_at` / `selected_clock_error_bound`)
+    // -------------------------------------------------------------------------
+
+    fn params_at(time_ns: i64, clock_error_bound_ns: i64) -> ClockParameters {
+        ClockParameters {
+            tsc_count: TscCount::new(1_000_000),
+            time: Instant::from_nanos(time_ns),
+            clock_error_bound: Duration::from_nanos(clock_error_bound_ns),
+            period: Period::from_seconds(1e-9),
+            period_max_error: Period::from_seconds(1e-11),
+            as_of_monotonic: Instant::new(0),
+        }
+    }
+
+    fn amazon_time_sync(addr: &str, stratum: Stratum) -> SourceInfo {
+        SourceInfo::AmazonTimeSync(addr.parse().unwrap(), stratum)
+    }
+
+    #[test]
+    fn fresh_selection_sets_tenure_fields() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let params = params_at(1_000, 10_000);
+        let result = selector
+            .update(
+                &params,
+                amazon_time_sync("169.254.169.123:123", Stratum::ONE),
+            )
+            .unwrap();
+        assert_eq!(result.selected_at, params.time);
+        assert_eq!(
+            result.selected_at_clock_error_bound,
+            params.clock_error_bound
+        );
+    }
+
+    #[test]
+    fn same_source_rewinning_carries_tenure_fields_forward() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let first = params_at(1_000, 10_000);
+        selector
+            .update(
+                &first,
+                amazon_time_sync("169.254.169.123:123", Stratum::ONE),
+            )
+            .unwrap();
+
+        // The same source wins again, later in time and with a different (better)
+        // clock error bound; the tenure start values are preserved.
+        let second = params_at(5_000, 5_000);
+        let result = selector
+            .update(
+                &second,
+                amazon_time_sync("169.254.169.123:123", Stratum::ONE),
+            )
+            .unwrap();
+        assert_eq!(result.selected_at, first.time);
+        assert_eq!(
+            result.selected_at_clock_error_bound,
+            first.clock_error_bound
+        );
+    }
+
+    #[test]
+    fn different_source_resets_tenure_fields() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let first = params_at(1_000, 10_000);
+        selector
+            .update(
+                &first,
+                amazon_time_sync("169.254.169.123:123", Stratum::ONE),
+            )
+            .unwrap();
+
+        // A different source (different variant + address) takes over; the
+        // tenure restarts at the new winning update's values.
+        let second = params_at(5_000, 5_000);
+        let result = selector
+            .update(
+                &second,
+                SourceInfo::NtpSource("169.254.169.101:123".parse().unwrap(), Stratum::ONE),
+            )
+            .unwrap();
+        assert_eq!(result.selected_at, second.time);
+        assert_eq!(
+            result.selected_at_clock_error_bound,
+            second.clock_error_bound
+        );
+    }
+
+    #[test]
+    fn same_address_stratum_change_does_not_reset_tenure_fields() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let first = params_at(1_000, 10_000);
+        selector
+            .update(
+                &first,
+                amazon_time_sync("169.254.169.123:123", Stratum::ONE),
+            )
+            .unwrap();
+
+        // Same address, different stratum: still the same source, so the tenure
+        // must NOT reset even though the clock error bound also changed.
+        let second = params_at(5_000, 5_000);
+        let result = selector
+            .update(
+                &second,
+                amazon_time_sync("169.254.169.123:123", Stratum::TWO),
+            )
+            .unwrap();
+        assert_eq!(result.selected_at, first.time);
+        assert_eq!(
+            result.selected_at_clock_error_bound,
+            first.clock_error_bound
+        );
+    }
+
+    #[test]
+    fn post_disruption_selection_gets_fresh_tenure_fields() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let first = params_at(1_000, 10_000);
+        selector
+            .update(
+                &first,
+                amazon_time_sync("169.254.169.123:123", Stratum::ONE),
+            )
+            .unwrap();
+
+        selector.handle_disruption();
+        assert!(selector.current().is_none());
+
+        // Even though it is the same source, selection state was cleared, so the
+        // first post-disruption selection starts a fresh tenure.
+        let second = params_at(9_000, 20_000);
+        let result = selector
+            .update(
+                &second,
+                amazon_time_sync("169.254.169.123:123", Stratum::ONE),
+            )
+            .unwrap();
+        assert_eq!(result.selected_at, second.time);
+        assert_eq!(
+            result.selected_at_clock_error_bound,
+            second.clock_error_bound
+        );
     }
 }

@@ -19,7 +19,7 @@ use tracing::{
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
-use super::StructuredLog;
+use super::{StructuredLog, format_log_timestamp};
 
 /// A handle to a structured log file that supports reopening.
 ///
@@ -157,7 +157,7 @@ where
         let mut output = Map::new();
         output.insert(
             "timestamp".into(),
-            Value::String(Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()),
+            Value::String(format_log_timestamp(Utc::now())),
         );
         output.extend(entry_map);
         output.insert("version".into(), Value::String(self.version.into()));
