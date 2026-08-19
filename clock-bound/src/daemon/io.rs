@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tokio_util::task::TaskTracker;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub mod ntp;
 use crate::daemon::io::dns::Pool;
@@ -37,7 +37,7 @@ use vmclock::{VMClock, VMClockParams};
 
 /// Number of times to attempt to initialize the VMClock before giving up and running in the
 /// `Failed` state.
-const VMCLOCK_INIT_ATTEMPTS: u32 = 3;
+const VMCLOCK_INIT_ATTEMPTS: u8 = 3;
 
 /// Delay between VMClock initialization attempts.
 const VMCLOCK_INIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
@@ -355,7 +355,7 @@ impl SourceIO {
                             if attempt < VMCLOCK_INIT_ATTEMPTS {
                                 tokio::time::sleep(VMCLOCK_INIT_RETRY_DELAY).await;
                             } else {
-                                warn!(
+                                error!(
                                     "VMClock could not be initialized after {VMCLOCK_INIT_ATTEMPTS} attempts. \
                                      Running in Failed state."
                                 );

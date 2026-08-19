@@ -22,13 +22,7 @@ pub(crate) enum ClockCorrection {
 
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait ClockAdjust: Send + Sync {
-    /// Apply the clock parameters, returning how the clock was corrected (see
-    /// [`ClockCorrection`]).
-    fn handle_clock_parameters(
-        &mut self,
-        now: tokio::time::Instant,
-        clock_parameters: &ClockParameters,
-    ) -> ClockCorrection;
+    fn handle_clock_parameters(&mut self, clock_parameters: &ClockParameters) -> ClockCorrection;
     fn handle_disruption(&mut self, new_disruption_marker: u64);
     /// Returns `Unknown` until the first successful adjustment, `Synchronized` thereafter.
     fn get_clock_realtime_status(&self) -> ClockStatus;
@@ -49,11 +43,7 @@ impl<T: NtpAdjTimeExt> ClockAdjuster<T> {
 }
 
 impl<T: NtpAdjTimeExt + Send + Sync> ClockAdjust for ClockAdjuster<T> {
-    fn handle_clock_parameters(
-        &mut self,
-        _now: tokio::time::Instant,
-        clock_parameters: &ClockParameters,
-    ) -> ClockCorrection {
+    fn handle_clock_parameters(&mut self, clock_parameters: &ClockParameters) -> ClockCorrection {
         let (new_state, correction) = match &self.state {
             State::Initializing(inner) => {
                 let (running, correction) = inner.to_running(&self.ntp_adjtime, clock_parameters);
@@ -120,10 +110,7 @@ mod test {
 
         let mut adjuster = ClockAdjuster::new(mock);
         assert!(matches!(adjuster.state, State::Initializing(_)));
-        adjuster.handle_clock_parameters(
-            tokio::time::Instant::now(),
-            &clock_params_with_offset(Duration::from_millis(100)),
-        );
+        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
         assert!(matches!(adjuster.state, State::Running(_)));
     }
 
@@ -135,13 +122,9 @@ mod test {
             .returning(|_| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
         let mut adjuster = ClockAdjuster::new(mock);
-        let now = tokio::time::Instant::now();
-        adjuster
-            .handle_clock_parameters(now, &clock_params_with_offset(Duration::from_millis(100)));
-        adjuster
-            .handle_clock_parameters(now, &clock_params_with_offset(Duration::from_millis(100)));
-        adjuster
-            .handle_clock_parameters(now, &clock_params_with_offset(Duration::from_millis(100)));
+        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
+        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
+        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
         assert!(matches!(adjuster.state, State::Running(_)));
     }
 

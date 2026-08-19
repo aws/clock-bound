@@ -49,7 +49,6 @@ pub(crate) struct ClockState {
     clock_adjuster: Box<dyn ClockAdjust>,
     sync_parameters: Option<SyncParameters>,
     clock_status: ClockStatus,
-    interval: tokio::time::Interval,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     clock_params_receiver: Receiver<SyncParameters>,
     cancellation_token: CancellationToken,
@@ -67,11 +66,9 @@ impl ClockState {
         clock_status: ClockStatus,
         vmclock_state: Option<Arc<Mutex<VMClockState>>>,
     ) -> Self {
-        let interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
         Self {
             state_writer: clock_state_writer,
             clock_adjuster,
-            interval,
             clock_params_receiver,
             clock_disruption_receiver,
             sync_parameters: None,
@@ -176,7 +173,8 @@ impl ClockState {
                     self.handle_disruption();
                 }
                 source_params = self.clock_params_receiver.recv() => {
-                    self.handle_sync_update(source_params.unwrap()); // todo fixme
+                    // unwrap ok. If None, it means `Daemon` stopped running..
+                    self.handle_sync_parameters(source_params.unwrap());
                 },
                 _ = snapshot_interval.tick() => {
                     log_sync_snapshot(self.sync_parameters.as_ref(), self.clock_status);
@@ -186,9 +184,6 @@ impl ClockState {
                 },
                 _ = clock_offset_metric_interval.tick() => {
                     self.emit_clock_offsets();
-                },
-                now = self.interval.tick() => {
-                    self.handle_tick(now);
                 },
                 () = self.cancellation_token.cancelled() => {
                     // nothing fancy for now. just exit
@@ -264,14 +259,23 @@ impl ClockState {
         }
     }
 
-    fn handle_tick(&mut self, now: tokio::time::Instant) {
+    /// Handles `SyncParameters` passed out from the `ClockSyncAlgorithm` selector.
+    ///
+    /// Stores the parameters and immediately adjusts the clock and writes both SHM segments.
+    ///
+    /// # Panics
+    /// If the `ClockAdjuster` fails, e.g. an invalid value was supplied to `ntp_adjtime`, or
+    /// insufficient permissions to adjust the clock.
+    pub fn handle_sync_parameters(&mut self, sync_parameters: SyncParameters) {
+        self.sync_parameters = Some(sync_parameters);
+
         // If a VMClock was expected but has failed, the clock status is untrustworthy and both SHM
         // segments must report `ClockStatus::Unknown`.
         let vmclock_failed = self.is_vmclock_in_failed_state();
 
         if let Some(sp) = &self.sync_parameters {
             let parameters = &sp.clock_parameters;
-            match self.clock_adjuster.handle_clock_parameters(now, parameters) {
+            match self.clock_adjuster.handle_clock_parameters(parameters) {
                 ClockCorrection::Step { step_ns } => log_system_clock_step(step_ns),
                 ClockCorrection::Smooth { correction_ns } => {
                     self.adjust_data.record(correction_ns);
@@ -312,15 +316,6 @@ impl ClockState {
         self.adjust_data = ClockAdjustData::default();
     }
 
-    /// Handles `SyncParameters` passed out from the `ClockSyncAlgorithm` selector.
-    ///
-    /// # Panics
-    /// If the `ClockAdjuster` fails, e.g. an invalid value was supplied to `ntp_adjtime`, or
-    /// insufficient permissions to adjust the clock.
-    pub(crate) fn handle_sync_update(&mut self, sync_parameters: SyncParameters) {
-        self.sync_parameters = Some(sync_parameters);
-    }
-
     /// Handle a clock disruption event
     ///
     /// Call this function after the system detects a VMClock disruption event.
@@ -335,7 +330,6 @@ impl ClockState {
             state_writer: clock_state_writer,
             clock_params_receiver,
             clock_disruption_receiver,
-            interval: _,
             sync_parameters,
             clock_status,
             cancellation_token: _,
@@ -388,49 +382,6 @@ mod tests {
             period_max_error: Period::from_seconds(0.0),
             as_of_monotonic: Instant::new(0),
         }
-    }
-
-    #[tokio::test]
-    async fn handle_clock_parameters() {
-        let clock_parameters = get_sample_clock_parameters();
-        let cancellation_token = CancellationToken::new();
-        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
-        mock_clock_adjuster.expect_handle_clock_parameters().never();
-
-        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
-        mock_clock_state_writer
-            .expect_handle_clock_parameters_shm0()
-            .never();
-
-        let (_tx, rx) = async_ring_buffer::create(1);
-        let (_, clock_disruption_receiver) =
-            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
-
-        let mut clock_state = ClockState::new(
-            Box::new(mock_clock_state_writer),
-            Box::new(mock_clock_adjuster),
-            rx,
-            clock_disruption_receiver,
-            cancellation_token,
-            ClockStatus::Unknown,
-            None,
-        );
-        assert_eq!(clock_state.sync_parameters, None);
-        clock_state.handle_sync_update(SyncParameters {
-            clock_parameters: clock_parameters.clone(),
-            source_info: SourceInfo::Phc("/dev/ptp0".into()),
-            selected_at: Instant::new(0),
-            selected_at_clock_error_bound: Duration::new(0),
-        });
-        assert_eq!(
-            clock_state.sync_parameters,
-            Some(SyncParameters {
-                clock_parameters,
-                source_info: SourceInfo::Phc("/dev/ptp0".into()),
-                selected_at: Instant::new(0),
-                selected_at_clock_error_bound: Duration::new(0),
-            })
-        );
     }
 
     #[tokio::test]
@@ -487,39 +438,8 @@ mod tests {
         clock_state.handle_disruption();
     }
 
-    #[tokio::test]
-    async fn handle_tick_no_parameters() {
-        let cancellation_token = CancellationToken::new();
-        let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
-        mock_clock_adjuster.expect_handle_clock_parameters().never();
-
-        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
-        mock_clock_state_writer
-            .expect_handle_clock_parameters_shm0()
-            .never();
-
-        mock_clock_state_writer
-            .expect_handle_clock_parameters_shm1()
-            .never();
-
-        let (_tx, rx) = async_ring_buffer::create(1);
-        let (_, clock_disruption_receiver) =
-            watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
-        let mut clock_state = ClockState::new(
-            Box::new(mock_clock_state_writer),
-            Box::new(mock_clock_adjuster),
-            rx,
-            clock_disruption_receiver,
-            cancellation_token,
-            ClockStatus::Unknown,
-            None,
-        );
-        clock_state.sync_parameters = None;
-        clock_state.handle_tick(tokio::time::Instant::now());
-    }
-
     #[tokio::test(start_paused = true)]
-    async fn handle_tick_with_parameters() {
+    async fn handle_sync_parameters_with_parameters() {
         let mut sequence = mockall::Sequence::new();
         let expected_clock_error_bound_v2_status = ClockStatus::Synchronized;
         let expected_clock_error_bound_v3_status = ClockStatus::Synchronized;
@@ -529,7 +449,6 @@ mod tests {
         // since it's likely far in the past.
         expected_clock_params.as_of_monotonic = MonotonicCoarse.get_time();
 
-        let expected_instant = tokio::time::Instant::now();
         let cancellation_token = CancellationToken::new();
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
 
@@ -537,10 +456,7 @@ mod tests {
         mock_clock_adjuster
             .expect_handle_clock_parameters()
             .once()
-            .withf(move |actual_instant, actual_clock_params| {
-                *actual_instant == expected_instant
-                    && *actual_clock_params == expected_clock_params_clone
-            })
+            .withf(move |actual_clock_params| *actual_clock_params == expected_clock_params_clone)
             .in_sequence(&mut sequence)
             .return_const(ClockCorrection::Smooth { correction_ns: 0 });
 
@@ -585,22 +501,24 @@ mod tests {
             ClockStatus::Unknown,
             None,
         );
-        clock_state.sync_parameters = Some(SyncParameters {
+        let sync_parameters = SyncParameters {
             clock_parameters: expected_clock_params,
             source_info: SourceInfo::Phc("/dev/ptp0".into()),
             selected_at: Instant::new(0),
             selected_at_clock_error_bound: Duration::new(0),
-        });
-        clock_state.handle_tick(expected_instant);
+        };
+        // `handle_sync_parameters` both stores the parameters and acts on them.
+        assert_eq!(clock_state.sync_parameters, None);
+        clock_state.handle_sync_parameters(sync_parameters.clone());
+        assert_eq!(clock_state.sync_parameters, Some(sync_parameters));
     }
 
     /// When a VMClock is present but in the `Failed` state, both SHM segments must be written with
     /// `ClockStatus::Unknown`, regardless of what the clock parameters would otherwise imply.
     #[tokio::test(start_paused = true)]
-    async fn handle_tick_vmclock_failed_forces_unknown() {
+    async fn handle_sync_parameters_vmclock_failed_forces_unknown() {
         let mut expected_clock_params = get_sample_clock_parameters();
         expected_clock_params.as_of_monotonic = MonotonicCoarse.get_time();
-        let expected_instant = tokio::time::Instant::now();
         let cancellation_token = CancellationToken::new();
 
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
@@ -640,25 +558,25 @@ mod tests {
             ClockStatus::Unknown,
             vmclock_state,
         );
-        clock_state.sync_parameters = Some(SyncParameters {
+        clock_state.handle_sync_parameters(SyncParameters {
             clock_parameters: expected_clock_params,
             source_info: SourceInfo::Phc("/dev/ptp0".into()),
             selected_at: Instant::new(0),
             selected_at_clock_error_bound: Duration::new(0),
         });
-        clock_state.handle_tick(expected_instant);
     }
 
-    /// When no VMClock is present (`None`) or one is present and `Running`, `handle_tick` behaves
-    /// nominally (no forced Unknown): a fresh set of clock parameters yields `Synchronized`.
+    /// When no VMClock is present (`None`) or one is present and `Running`, `handle_sync_parameters`
+    /// behaves nominally (no forced Unknown): a fresh set of clock parameters yields `Synchronized`.
     #[rstest]
     #[case::vmclock_none(None)]
     #[case::vmclock_running(Some(Arc::new(Mutex::new(VMClockState::Running))))]
     #[tokio::test(start_paused = true)]
-    async fn handle_tick_nominal(#[case] vmclock_state: Option<Arc<Mutex<VMClockState>>>) {
+    async fn handle_sync_parameters_nominal(
+        #[case] vmclock_state: Option<Arc<Mutex<VMClockState>>>,
+    ) {
         let mut expected_clock_params = get_sample_clock_parameters();
         expected_clock_params.as_of_monotonic = MonotonicCoarse.get_time();
-        let expected_instant = tokio::time::Instant::now();
         let cancellation_token = CancellationToken::new();
 
         let mut mock_clock_adjuster: MockClockAdjust = MockClockAdjust::new();
@@ -695,13 +613,12 @@ mod tests {
             ClockStatus::Unknown,
             vmclock_state,
         );
-        clock_state.sync_parameters = Some(SyncParameters {
+        clock_state.handle_sync_parameters(SyncParameters {
             clock_parameters: expected_clock_params,
             source_info: SourceInfo::Phc("/dev/ptp0".into()),
             selected_at: Instant::new(0),
             selected_at_clock_error_bound: Duration::new(0),
         });
-        clock_state.handle_tick(expected_instant);
     }
 
     /// `vmclock_failed` reflects the shared state: `None` and `Some(Running)` are not failed,

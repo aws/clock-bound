@@ -55,7 +55,7 @@ impl VMClock {
             path: vmclock_shm_path.into(),
             shared_state: Arc::new(Mutex::new(State::Failed)),
             internal_state: InternalState::Failed,
-            interval: interval(VMCLOCK_TIMEOUT),
+            interval: interval(VMCLOCK_FAILED_LOG_INTERVAL),
             ctrl_receiver,
             clock_disruption_sender,
         }

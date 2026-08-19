@@ -353,10 +353,7 @@ pub enum RunLoopControl {
 
 #[cfg(all(test, feature = "daemon"))]
 mod tests {
-    use std::{
-        net::{IpAddr, Ipv4Addr, SocketAddr},
-        str::FromStr,
-    };
+    use std::{net::SocketAddr, str::FromStr};
 
     use rstest::{fixture, rstest};
     use tokio::sync::mpsc;
@@ -365,7 +362,6 @@ mod tests {
     use super::{DAEMON_MESSAGE_CAPACITY, Daemon, MAX_DISPERSION_GROWTH, RunLoopControl};
     use crate::daemon::{
         async_ring_buffer,
-        clock_state::ClockState,
         clock_sync_algorithm::{ClockSyncAlgorithm, Selector},
         config::SourcesConfig,
         io::SourceIO,
