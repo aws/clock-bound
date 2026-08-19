@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 use tracing::{
     Event, Subscriber,
     field::{Field, Visit},
+    warn,
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
@@ -45,8 +46,8 @@ impl LogHandle {
         {
             Ok(file) => Some(file),
             Err(e) => {
-                eprintln!(
-                    "ERROR: failed to reopen log file {}: {e}. Structured log output suspended.",
+                warn!(
+                    "Failed to reopen log file {}: {e}. Suspending output to this log.",
                     self.path.display()
                 );
                 None
@@ -54,7 +55,19 @@ impl LogHandle {
         };
 
         let mut guard = self.writer.lock().unwrap();
+        let old_log_file = guard.take();
+
         *guard = new_writer;
+        drop(guard);
+
+        if let Some(old_log_file) = old_log_file
+            && let Err(e) = old_log_file.sync_all()
+        {
+            warn!(
+                "Failed to flush log file {} before reopen: {e}",
+                self.path.display()
+            );
+        }
     }
 }
 
