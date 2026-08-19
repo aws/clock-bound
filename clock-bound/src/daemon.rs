@@ -48,7 +48,7 @@ use {
             autodetect::Autodetect,
             clock_state::ClockState,
             clock_sync_algorithm::{ClockSyncAlgorithm, Selector, SyncParameters},
-            config::SourcesConfig,
+            config::{Host, SourcesConfig},
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
             message::Dns as DnsMessage,
             receiver_stream::{ReceiverStream, RoutableEvent},
@@ -59,7 +59,7 @@ use {
         shm::ClockStatus,
     },
     rand::{RngCore, rng},
-    std::sync::Arc,
+    std::{net::SocketAddr, sync::Arc},
     tokio::sync::{mpsc, watch},
     tokio_util::{sync::CancellationToken, task::TaskTracker},
     tracing::{debug, error, warn},
@@ -160,6 +160,9 @@ impl Daemon {
         // Install default pool
         source_mutator.add_pool(String::from("time.aws.com"));
 
+        // Install sources from the configuration file.
+        Self::install_configured_sources(&mut source_mutator, &configured_sources);
+
         // Read VMClock params (the source may have been created by init_amazon_sources above).
         let vmclock_params = io_front_end.vmclock_params();
 
@@ -192,6 +195,31 @@ impl Daemon {
             clock_state_handle,
             dns_message_rx,
             configured_sources,
+        }
+    }
+
+    /// Install the NTP sources from the configuration file into the daemon.
+    ///
+    /// Each configured source maps onto a `SourceMutator` action:
+    /// - a `server` given as an IP is pinned as a fixed-address NTP source,
+    /// - a `server` given as a name is added as a single-host DNS-backed source,
+    /// - a `pool` is added as a multi-source DNS-backed pool.
+    fn install_configured_sources(
+        source_mutator: &mut SourceMutator<'_>,
+        configured_sources: &SourcesConfig,
+    ) {
+        for configured_source in configured_sources.ntp() {
+            match configured_source {
+                config::NtpSource::Server(Host::Ip(ip)) => {
+                    source_mutator.add_ntp_source(SocketAddr::new(*ip, 123), MAX_DISPERSION_GROWTH);
+                }
+                config::NtpSource::Server(Host::Domain(d)) => {
+                    source_mutator.add_domain_host(d.to_string());
+                }
+                config::NtpSource::Pool(d) => {
+                    source_mutator.add_pool(d.to_string());
+                }
+            }
         }
     }
 
@@ -635,5 +663,160 @@ mod tests {
                 .ntp_source_count(),
             0
         );
+    }
+
+    /// Build a [`SourcesConfig`] from a TOML `[[sources.ntp]]` snippet.
+    ///
+    /// Goes through the real parse/validate path so the tests exercise the same
+    /// `SourcesConfig` shape the daemon receives at startup.
+    fn sources_from_toml(toml: &str) -> SourcesConfig {
+        let config: crate::daemon::config::Config = ::toml::from_str(toml).expect("valid config");
+        let (_logging, sources) = config.into_parts();
+        sources
+    }
+
+    /// `install_configured_sources` with an empty config installs nothing.
+    #[rstest]
+    #[tokio::test]
+    async fn install_configured_sources_empty_installs_nothing(test_daemon: TestDaemon) {
+        let TestDaemon { mut daemon, .. } = test_daemon;
+        let sources = SourcesConfig::default();
+
+        {
+            let mut mutator = SourceMutator::new(
+                &mut daemon.io_front_end,
+                &mut daemon.clock_sync_algorithm,
+                &mut daemon.receiver_stream,
+            );
+            Daemon::install_configured_sources(&mut mutator, &sources);
+        }
+
+        assert!(daemon.io_front_end.pools().is_empty());
+        assert!(daemon.clock_sync_algorithm.ntp_sources().is_empty());
+        assert!(daemon.receiver_stream.is_empty());
+    }
+
+    /// A `server` given as an IP is installed as a fixed-address NTP source
+    /// across the clock sync algorithm and receiver stream, on port 123.
+    #[rstest]
+    #[tokio::test]
+    async fn install_configured_sources_ip_server(test_daemon: TestDaemon) {
+        let TestDaemon { mut daemon, .. } = test_daemon;
+        let sources = sources_from_toml(indoc::indoc! {r#"
+            [[sources.ntp]]
+            server = "192.0.2.1"
+        "#});
+
+        {
+            let mut mutator = SourceMutator::new(
+                &mut daemon.io_front_end,
+                &mut daemon.clock_sync_algorithm,
+                &mut daemon.receiver_stream,
+            );
+            Daemon::install_configured_sources(&mut mutator, &sources);
+        }
+
+        let expected = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 123);
+        assert_eq!(daemon.clock_sync_algorithm.ntp_sources().len(), 1);
+        assert_eq!(
+            daemon.clock_sync_algorithm.ntp_sources()[0].socket_address(),
+            expected
+        );
+        assert!(daemon.receiver_stream.contains_ntp_source(&expected));
+
+        // A fixed-IP server is not a DNS-backed pool.
+        assert!(daemon.io_front_end.pools().is_empty());
+    }
+
+    /// A `server` given as a name is installed as a single-host DNS-backed pool
+    /// (capped at one source), touching only the IO layer until it resolves.
+    #[rstest]
+    #[tokio::test]
+    async fn install_configured_sources_domain_server(test_daemon: TestDaemon) {
+        let TestDaemon { mut daemon, .. } = test_daemon;
+        let sources = sources_from_toml(indoc::indoc! {r#"
+            [[sources.ntp]]
+            server = "ntp.corp.example"
+        "#});
+
+        {
+            let mut mutator = SourceMutator::new(
+                &mut daemon.io_front_end,
+                &mut daemon.clock_sync_algorithm,
+                &mut daemon.receiver_stream,
+            );
+            Daemon::install_configured_sources(&mut mutator, &sources);
+        }
+
+        // Registered as a DNS-backed pool, no time source until resolution.
+        assert!(daemon.io_front_end.pools().contains_key("ntp.corp.example"));
+        assert!(daemon.clock_sync_algorithm.ntp_sources().is_empty());
+        assert!(daemon.receiver_stream.is_empty());
+    }
+
+    /// A `pool` is installed as a DNS-backed pool, touching only the IO layer
+    /// until it resolves.
+    #[rstest]
+    #[tokio::test]
+    async fn install_configured_sources_pool(test_daemon: TestDaemon) {
+        let TestDaemon { mut daemon, .. } = test_daemon;
+        let sources = sources_from_toml(indoc::indoc! {r#"
+            [[sources.ntp]]
+            pool = "pool.ntp.example"
+        "#});
+
+        {
+            let mut mutator = SourceMutator::new(
+                &mut daemon.io_front_end,
+                &mut daemon.clock_sync_algorithm,
+                &mut daemon.receiver_stream,
+            );
+            Daemon::install_configured_sources(&mut mutator, &sources);
+        }
+
+        assert!(daemon.io_front_end.pools().contains_key("pool.ntp.example"));
+        assert!(daemon.clock_sync_algorithm.ntp_sources().is_empty());
+        assert!(daemon.receiver_stream.is_empty());
+    }
+
+    /// A mix of every source kind is installed together: the IP server lands as a
+    /// fixed NTP source while the domain server and pool land as DNS-backed pools.
+    #[rstest]
+    #[tokio::test]
+    async fn install_configured_sources_mixed(test_daemon: TestDaemon) {
+        let TestDaemon { mut daemon, .. } = test_daemon;
+        let sources = sources_from_toml(indoc::indoc! {r#"
+            [[sources.ntp]]
+            server = "192.0.2.1"
+
+            [[sources.ntp]]
+            server = "ntp.corp.example"
+
+            [[sources.ntp]]
+            pool = "pool.ntp.example"
+        "#});
+
+        {
+            let mut mutator = SourceMutator::new(
+                &mut daemon.io_front_end,
+                &mut daemon.clock_sync_algorithm,
+                &mut daemon.receiver_stream,
+            );
+            Daemon::install_configured_sources(&mut mutator, &sources);
+        }
+
+        // The IP server is a fixed-address NTP source.
+        let expected = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 123);
+        assert_eq!(daemon.clock_sync_algorithm.ntp_sources().len(), 1);
+        assert_eq!(
+            daemon.clock_sync_algorithm.ntp_sources()[0].socket_address(),
+            expected
+        );
+        assert!(daemon.receiver_stream.contains_ntp_source(&expected));
+
+        // The domain server and the pool are both DNS-backed pools.
+        assert!(daemon.io_front_end.pools().contains_key("ntp.corp.example"));
+        assert!(daemon.io_front_end.pools().contains_key("pool.ntp.example"));
+        assert_eq!(daemon.io_front_end.pools().len(), 2);
     }
 }

@@ -149,15 +149,15 @@ impl<'a> SourceMutator<'a> {
     /// Add a single-host NTP source addressed by domain name.
     ///
     /// This is a DNS-backed pool capped at a single healthy source: it resolves
-    /// `pool_domain` and maintains one live NTP source at a time, inheriting the
+    /// `domain` and maintains one live NTP source at a time, inheriting the
     /// pool's quarantine-and-rotate behavior so a failing address is replaced by
     /// another resolved address. It differs from [`add_ntp_source`](Self::add_ntp_source),
     /// which pins to a fixed IP, and from [`add_pool`](Self::add_pool), which
     /// maintains multiple concurrent sources.
-    pub fn add_domain_host(&mut self, pool_domain: String) {
+    pub fn add_domain_host(&mut self, domain: String) {
         /// Maximum healthy sources maintained for a single-host domain.
         const MAX_SOURCES: usize = 1;
-        self.io_front_end.create_pool(pool_domain, MAX_SOURCES);
+        self.io_front_end.create_pool(domain, MAX_SOURCES);
     }
 
     /// Add a source to a pool
