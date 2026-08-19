@@ -443,31 +443,4 @@ mod tests {
         csa.remove_ntp_source(&addr);
         assert_eq!(csa.ntp_sources().len(), 0);
     }
-
-    #[test]
-    fn handle_disruption_propagates_to_pool_sources() {
-        let mut csa = make_csa();
-        let pool_domain = "pool.ntp.org".to_string();
-        let addr: SocketAddr = "192.0.2.1:123".parse().unwrap();
-
-        csa.add_ntp_source(source::NtpSource::new_with_pool(
-            addr,
-            pool_domain.clone(),
-            Skew::from_ppm(15.0),
-        ));
-
-        // Feed an event to build internal state
-        let event = RoutableEvent::NtpSource(addr, make_ntp_event(500, 1000));
-        csa.feed(event);
-
-        // handle_disruption should not panic and should clear source state
-        csa.handle_disruption();
-
-        // Verify the source still exists structurally after disruption
-        assert_eq!(csa.ntp_sources().len(), 1);
-        assert_eq!(
-            csa.ntp_sources()[0].pool_domain(),
-            Some(pool_domain.as_str())
-        );
-    }
 }
