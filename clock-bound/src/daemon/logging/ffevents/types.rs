@@ -6,17 +6,10 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::clock_parameters::ClockParameters;
+use crate::daemon::clock_sync_algorithm::source::DevicePath;
 use crate::daemon::event::{self, NtpData, PhcData, Stratum};
 use crate::daemon::receiver_stream::RoutableEvent;
 use crate::daemon::time::{Duration, Instant, TscCount, tsc::Period};
-
-/// TODO: FIXME!
-/// Temporarily hardcoded default PHC device path used as the serialized `identifier` for PHC events.
-///
-/// The actual PHC device path is autoconfigured at runtime and may differ from this
-/// value on instances with multiple ENA interfaces or non-standard PTP device enumeration.
-/// A future change should thread the real device path through to this serialization point.
-const PHC_IDENTIFIER: &str = "/dev/ptp0";
 
 // TODO: FIXME!
 // Temporarily hardcoded link-local address used as the serialized `identifier` for `AmazonTimeSync` events.
@@ -186,8 +179,8 @@ impl From<&RoutableEvent> for RoutableEventLog {
                 counter_post: ntp.counter_post(),
                 data: ntp.data().into(),
             },
-            RoutableEvent::Phc(phc) => Self::Phc {
-                identifier: PHC_IDENTIFIER.to_string(),
+            RoutableEvent::Phc(device_path, phc) => Self::Phc {
+                identifier: device_path.to_string(),
                 counter_pre: phc.counter_pre(),
                 counter_post: phc.counter_post(),
                 data: phc.data().into(),
@@ -223,8 +216,10 @@ impl TryFrom<RoutableEventLog> for RoutableEvent {
                     Ok(RoutableEvent::NtpSource(addr, ntp))
                 }
             }
+            // The PHC `identifier` carries the device path; reconstruct it so
+            // replay preserves the source's device identity.
             RoutableEventLog::Phc {
-                identifier: _,
+                identifier,
                 counter_pre,
                 counter_post,
                 data,
@@ -236,7 +231,7 @@ impl TryFrom<RoutableEventLog> for RoutableEvent {
                     .build()
                     .ok_or(RoutableEventLogError::InvalidPhcCounters)?;
 
-                Ok(RoutableEvent::Phc(phc))
+                Ok(RoutableEvent::Phc(DevicePath::from(identifier), phc))
             }
         }
     }
@@ -386,7 +381,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let routable = RoutableEvent::Phc(event);
+        let routable = RoutableEvent::Phc(DevicePath::from("/dev/ptp0"), event);
         let actual: serde_json::Value =
             serde_json::to_value(RoutableEventLog::from(&routable)).unwrap();
         let expected: serde_json::Value = serde_json::from_str(
@@ -468,7 +463,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let original = RoutableEvent::Phc(event);
+        let original = RoutableEvent::Phc(DevicePath::from("/dev/ptp0"), event);
         assert_eq!(original, round_trip(&original));
     }
 

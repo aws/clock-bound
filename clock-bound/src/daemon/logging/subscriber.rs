@@ -54,6 +54,8 @@ pub fn init(log_directory: impl AsRef<Path>) -> LogHandles {
         )
         .with_filter(filter_fn(|md| !is_structured_target(md.target())));
 
+    // `tracing_subscriber` implements `Layer` for `Vec<L>`, so the structured
+    // layers compose as a single `.with(..)` entry.
     tracing_subscriber::registry()
         .with(log_layer)
         .with(structured_layers)

@@ -21,6 +21,7 @@ use {
 
 use std::net::SocketAddr;
 
+use crate::daemon::clock_sync_algorithm::source::DevicePath;
 use crate::daemon::event::{self, TscRtt};
 use crate::daemon::time::TscCount;
 
@@ -42,7 +43,7 @@ pub struct ReceiverStream {
     #[builder(default)]
     ntp_sources: HashMap<SocketAddr, Receiver<event::Ntp>>,
     amazon_time_sync: Option<Receiver<event::Ntp>>,
-    phc: Option<Receiver<event::Phc>>,
+    phc: Option<(DevicePath, Receiver<event::Phc>)>,
 }
 
 /// `ReceiverStream` provides methods for aggregating the events delivered
@@ -80,14 +81,14 @@ impl ReceiverStream {
     /// # Panics
     ///
     /// Panics if a PHC receiver has already been set.
-    pub fn set_phc(&mut self, source: Receiver<event::Phc>) {
+    pub fn set_phc(&mut self, device_path: DevicePath, source: Receiver<event::Phc>) {
         assert!(self.phc.is_none());
-        self.phc = Some(source);
+        self.phc = Some((device_path, source));
     }
 
     /// Phc getter
     pub fn phc(&self) -> Option<&Receiver<event::Phc>> {
-        self.phc.as_ref()
+        self.phc.as_ref().map(|(_, receiver)| receiver)
     }
 
     /// Creates an aggregated stream of results from all `SourceIO` component `Receivers`.
@@ -111,10 +112,10 @@ impl ReceiverStream {
         }
 
         // Add PHC if it's available
-        if let Some(phc_receiver) = &mut self.phc {
-            streams.push(Box::pin(
-                once(phc_receiver.recv()).map(|result| result.map(RoutableEvent::Phc)),
-            ));
+        if let Some((device_path, phc_receiver)) = &mut self.phc {
+            streams.push(Box::pin(once(phc_receiver.recv()).map(move |result| {
+                result.map(|event| RoutableEvent::Phc(device_path.clone(), event))
+            })));
         }
 
         // Shuffles vector to avoid unfair treatment of any preloaded events.
@@ -195,7 +196,7 @@ impl ReceiverStream {
             source.handle_disruption();
         }
 
-        if let Some(phc) = phc {
+        if let Some((_, phc)) = phc {
             phc.handle_disruption();
         }
     }
@@ -205,7 +206,7 @@ impl ReceiverStream {
 pub enum RoutableEvent {
     AmazonTimeSync(event::Ntp),
     NtpSource(SocketAddr, event::Ntp),
-    Phc(event::Phc),
+    Phc(DevicePath, event::Phc),
 }
 
 impl RoutableEvent {
@@ -216,7 +217,7 @@ impl RoutableEvent {
             RoutableEvent::AmazonTimeSync(data) | RoutableEvent::NtpSource(_, data) => {
                 data.system_clock()
             }
-            RoutableEvent::Phc(data) => data.system_clock(),
+            RoutableEvent::Phc(_, data) => data.system_clock(),
         }
     }
 }
@@ -227,7 +228,7 @@ impl TscRtt for RoutableEvent {
             RoutableEvent::AmazonTimeSync(data) | RoutableEvent::NtpSource(_, data) => {
                 data.counter_pre()
             }
-            RoutableEvent::Phc(data) => data.counter_pre(),
+            RoutableEvent::Phc(_, data) => data.counter_pre(),
         }
     }
 
@@ -236,7 +237,7 @@ impl TscRtt for RoutableEvent {
             RoutableEvent::AmazonTimeSync(data) | RoutableEvent::NtpSource(_, data) => {
                 data.counter_post()
             }
-            RoutableEvent::Phc(data) => data.counter_post(),
+            RoutableEvent::Phc(_, data) => data.counter_post(),
         }
     }
 }
@@ -296,7 +297,7 @@ mod tests {
                         RoutableEvent::NtpSource(ip, data)
                     );
                 }
-                RoutableEvent::Phc(_data) => {
+                RoutableEvent::Phc(..) => {
                     panic!("Phc event delivery has yet to be implemented")
                 }
             };
@@ -315,7 +316,7 @@ mod tests {
 
         let mut rx_stream = ReceiverStream::builder()
             .amazon_time_sync(amazon_time_sync_rx)
-            .phc(phc_rx)
+            .phc((DevicePath::from("/dev/ptp0"), phc_rx))
             .build();
 
         let phc_data = event::Phc::builder()
@@ -331,7 +332,7 @@ mod tests {
         phc_tx.send(phc_data.clone()).unwrap();
 
         let result = rx_stream.recv().await.unwrap();
-        let RoutableEvent::Phc(data) = &result else {
+        let RoutableEvent::Phc(_, data) = &result else {
             panic!("Expected to receive a Phc event, got {result:?}")
         };
 
@@ -410,7 +411,9 @@ mod tests {
     fn len_phc_only() {
         let (_, phc_rx) = create(1);
 
-        let rx_stream = ReceiverStream::builder().phc(phc_rx).build();
+        let rx_stream = ReceiverStream::builder()
+            .phc((DevicePath::from("/dev/ptp0"), phc_rx))
+            .build();
 
         assert_eq!(rx_stream.len(), 1);
     }
@@ -443,7 +446,7 @@ mod tests {
 
         let rx_stream = ReceiverStream::builder()
             .amazon_time_sync(amazon_time_sync_rx)
-            .phc(phc_rx)
+            .phc((DevicePath::from("/dev/ptp0"), phc_rx))
             .ntp_sources(HashMap::from([(addr, ntp_source_rx)]))
             .build();
 

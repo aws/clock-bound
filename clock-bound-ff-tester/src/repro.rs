@@ -10,6 +10,7 @@ use crate::events::v1;
 use crate::time::CbBridge;
 use clock_bound::daemon::{
     clock_parameters::ClockParameters,
+    clock_sync_algorithm::source::DevicePath,
     event,
     logging::ffevents::types::{ClockParametersLog, RoutableEventLog, RoutableEventLogError},
     receiver_stream::RoutableEvent,
@@ -131,7 +132,9 @@ pub fn tester_event_from_routable(event: &RoutableEvent) -> v1::Event {
             tester_event_from_cb_ntp(event, String::from("amazon_time_sync"))
         }
         RoutableEvent::NtpSource(addr, event) => tester_event_from_cb_ntp(event, addr.to_string()),
-        RoutableEvent::Phc(event) => tester_event_from_cb_phc(event, String::from("ptp_ena")),
+        RoutableEvent::Phc(device_path, event) => {
+            tester_event_from_cb_phc(event, device_path.to_string())
+        }
     }
 }
 
@@ -163,7 +166,7 @@ pub fn routable_from_tester_event(event: v1::Event) -> RoutableEvent {
                 .counter_post(event.client_tsc_post_time)
                 .build()
                 .unwrap();
-            RoutableEvent::Phc(event)
+            RoutableEvent::Phc(DevicePath::from(phc.source_id.as_str()), event)
         }
         v1::EventKind::VMClock(_) => panic!("unsupported"),
     }

@@ -92,7 +92,6 @@ impl<'a> SourceMutator<'a> {
     // the logic of moving io initialization to the PHC IO task
     pub async fn set_phc(&mut self, max_dispersion_growth: Skew) {
         let (tx, rx) = async_ring_buffer::create(2);
-        self.receiver_stream.set_phc(rx);
         self.io_front_end.create_phc(tx).await;
 
         let Some(phc) = self.io_front_end.phc() else {
@@ -101,8 +100,9 @@ impl<'a> SourceMutator<'a> {
             );
             return;
         };
-        let phc_path = phc.device_path().to_owned();
+        let phc_path = source::DevicePath::from(phc.device_path());
 
+        self.receiver_stream.set_phc(phc_path.clone(), rx);
         self.clock_sync_algorithm
             .set_phc(source::Phc::new(phc_path, max_dispersion_growth));
     }

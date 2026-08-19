@@ -1,8 +1,8 @@
 //! Select from multiple clock sources
 
-use std::net::SocketAddr;
+use crate::daemon::{clock_parameters::ClockParameters, time::tsc::Skew};
 
-use crate::daemon::{clock_parameters::ClockParameters, event::Stratum, time::tsc::Skew};
+use super::source::SourceInfo;
 
 /// Select from multiple clock sources
 ///
@@ -76,20 +76,10 @@ pub struct SyncParameters {
     pub source_info: SourceInfo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceInfo {
-    /// Amazon Time Sync
-    AmazonTimeSync(SocketAddr, Stratum),
-    /// NTP Source,
-    NtpSource(SocketAddr, Stratum),
-    /// PHC
-    Phc,
-}
-
 #[cfg(test)]
 mod tests {
     use crate::daemon::{
-        event::{self, TscRtt},
+        event::{self, Stratum, TscRtt},
         time::{Duration, Instant, TscCount, tsc::Period},
     };
 
@@ -256,11 +246,13 @@ mod tests {
         let mut selector = Selector {
             current: Some(SyncParameters {
                 clock_parameters: first,
-                source_info: SourceInfo::Phc,
+                source_info: SourceInfo::Phc("/dev/ptp0".into()),
             }),
             max_dispersion_growth: max_dispersion,
         };
-        let result = selector.update(&val, SourceInfo::Phc).is_some();
+        let result = selector
+            .update(&val, SourceInfo::Phc("/dev/ptp0".into()))
+            .is_some();
         assert_eq!(result, expected);
     }
 
@@ -276,10 +268,15 @@ mod tests {
         };
         let mut selector = test_selector(Skew::from_ppm(0.0));
         assert!(selector.current().is_none());
-        let result = selector.update(&clock_parameters, SourceInfo::Phc).unwrap();
+        let result = selector
+            .update(&clock_parameters, SourceInfo::Phc("/dev/ptp0".into()))
+            .unwrap();
         assert_eq!(&result.clock_parameters, &clock_parameters);
-        assert_eq!(result.source_info, SourceInfo::Phc);
-        assert_eq!(selector.current().unwrap().source_info, SourceInfo::Phc);
+        assert_eq!(result.source_info, SourceInfo::Phc("/dev/ptp0".into()));
+        assert_eq!(
+            selector.current().unwrap().source_info,
+            SourceInfo::Phc("/dev/ptp0".into())
+        );
     }
 
     #[test]
@@ -294,7 +291,9 @@ mod tests {
         };
         let skew = Skew::from_ppm(1.0);
         let mut selector = test_selector(skew);
-        selector.update(&clock_parameters, SourceInfo::Phc).unwrap();
+        selector
+            .update(&clock_parameters, SourceInfo::Phc("/dev/ptp0".into()))
+            .unwrap();
         selector.handle_disruption();
         assert!(selector.current().is_none());
         assert_eq!(selector.max_dispersion_growth, skew);

@@ -1,7 +1,8 @@
 //! Feed forward clock sync algorithm
 
 mod selector;
-pub use selector::{Selector, SourceInfo, SyncParameters};
+pub use selector::{Selector, SyncParameters};
+pub use source::SourceInfo;
 
 pub mod ff;
 
@@ -192,17 +193,17 @@ impl ClockSyncAlgorithm {
             RoutableEvent::NtpSource(sender_address, event) => {
                 Self::feed_ntp_source(&mut self.ntp_sources, sender_address, event)
             }
-            RoutableEvent::Phc(event) => {
+            RoutableEvent::Phc(device_path, event) => {
                 // unwrap: feeding a phc event without PHC built is a bug
                 let phc = self.phc.as_mut().unwrap();
-                Self::feed_phc(phc, event)
+                Self::feed_phc(phc, device_path, event)
             }
         };
         let (clock_parameters, source_info) = alg_output?;
 
-        let output = self.selector.update(clock_parameters, source_info);
+        let output = self.selector.update(clock_parameters, source_info.clone());
         if output.is_some() {
-            Self::update_selected_clock(&self.selected_clock, source_info);
+            Self::update_selected_clock(&self.selected_clock, &source_info);
         }
 
         output
@@ -254,19 +255,21 @@ impl ClockSyncAlgorithm {
     /// Feed event into the phc
     fn feed_phc(
         phc: &mut source::Phc,
+        device_path: source::DevicePath,
         event: event::Phc,
     ) -> Option<(&ClockParameters, SourceInfo)> {
-        phc.feed(event).map(|params| (params, SourceInfo::Phc))
+        phc.feed(event)
+            .map(|params| (params, SourceInfo::Phc(device_path)))
     }
 
-    fn update_selected_clock(selected_clock: &Arc<SelectedClockSource>, source_info: SourceInfo) {
+    fn update_selected_clock(selected_clock: &Arc<SelectedClockSource>, source_info: &SourceInfo) {
         // associated method to help borrow checker
         match source_info {
             SourceInfo::AmazonTimeSync(address, stratum)
             | SourceInfo::NtpSource(address, stratum) => {
-                selected_clock.set_to_server(address.ip(), stratum);
+                selected_clock.set_to_server(address.ip(), *stratum);
             }
-            SourceInfo::Phc => selected_clock.set_to_phc(),
+            SourceInfo::Phc(_) => selected_clock.set_to_phc(),
         }
     }
 
@@ -371,14 +374,14 @@ mod tests {
     #[case(SourceInfo::AmazonTimeSync("169.254.169.123:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("169.254.169.123").unwrap().into()), Stratum::TWO)]
     #[case(SourceInfo::NtpSource("169.254.169.101:123".parse().unwrap(), Stratum::ONE), ClockSource::Server(Ipv4Addr::from_str("169.254.169.101").unwrap().into()), Stratum::ONE)]
     #[case(SourceInfo::NtpSource("[2001:db8::1:1234]:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("199.132.19.175").unwrap().into()), Stratum::TWO)]
-    #[case(SourceInfo::Phc, ClockSource::Phc, Stratum::Unspecified)]
+    #[case(SourceInfo::Phc("/dev/ptp0".into()), ClockSource::Phc, Stratum::Unspecified)]
     fn update_selected_clock(
         #[case] source_info: SourceInfo,
         #[case] expected_clock_source: ClockSource,
         #[case] expected_stratum: Stratum,
     ) {
         let selected_clock_source = Arc::new(SelectedClockSource::default());
-        ClockSyncAlgorithm::update_selected_clock(&selected_clock_source, source_info);
+        ClockSyncAlgorithm::update_selected_clock(&selected_clock_source, &source_info);
         let (clock_source, stratum) = selected_clock_source.get();
         assert_eq!(clock_source, expected_clock_source);
         assert_eq!(stratum, expected_stratum);

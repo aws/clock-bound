@@ -8,15 +8,15 @@
 //! Re-evaluate the necessity of this backward compatibility module. Once all existing
 //! primer.log captures have been replayed or archived, this module can be removed.
 
-use std::net::SocketAddr;
-
 use anyhow::Context;
 use clock_bound::daemon::{
     clock_parameters,
+    clock_sync_algorithm::source::DevicePath,
     event::{self},
     receiver_stream,
     time::{Duration, Instant, TscCount, tsc::Period},
 };
+use std::net::SocketAddr;
 
 use super::ReproEvent;
 
@@ -184,7 +184,10 @@ impl RoutableEvent {
             }
             Self::Phc(phc) => {
                 let event = phc.into_event();
-                receiver_stream::RoutableEvent::Phc(event)
+                // The legacy primer format did not record a PHC device path;
+                // default to the conventional device so replayed events carry a
+                // stable identifier.
+                receiver_stream::RoutableEvent::Phc(DevicePath::from("/dev/ptp0"), event)
             }
         }
     }
@@ -345,7 +348,7 @@ mod tests {
     fn parse_phc_event() {
         let raw = r#"{"Phc":{"counter_pre":302084682318463,"counter_post":302084682325383,"data":{"time":1766995198825456232,"clock_error_bound":23239}}}"#;
         let event = parse_primer_event(raw, false).unwrap();
-        let receiver_stream::RoutableEvent::Phc(phc) = &event else {
+        let receiver_stream::RoutableEvent::Phc(_, phc) = &event else {
             panic!("expected Phc");
         };
         assert_eq!(phc.counter_pre().get(), 302_084_682_318_463);

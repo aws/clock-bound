@@ -235,7 +235,10 @@ mod tests {
     fn feed_phc_with_output() {
         let output_params = sample_output();
         let (output, _tmp) = with_ffevents_layer(|| {
-            let routable = RoutableEvent::Phc(sample_phc_event());
+            let routable = RoutableEvent::Phc(
+                crate::daemon::clock_sync_algorithm::source::DevicePath::from("/dev/ptp0"),
+                sample_phc_event(),
+            );
             super::log_feed(&routable, Some(&output_params), 2);
         });
 

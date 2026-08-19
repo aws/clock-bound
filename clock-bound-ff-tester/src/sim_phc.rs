@@ -4,7 +4,7 @@
 
 use clock_bound::daemon::{
     clock_parameters::ClockParameters,
-    clock_sync_algorithm::ClockSyncAlgorithm,
+    clock_sync_algorithm::{ClockSyncAlgorithm, source::DevicePath},
     event,
     receiver_stream::RoutableEvent,
     time::{Duration, Instant, tsc::Frequency},
@@ -108,7 +108,7 @@ fn tester_phc_event_to_cb(e: &Event) -> RoutableEvent {
         .build()
         .unwrap();
 
-    RoutableEvent::Phc(event)
+    RoutableEvent::Phc(DevicePath::from(p.source_id.as_str()), event)
 }
 
 #[cfg(test)]

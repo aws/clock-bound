@@ -203,10 +203,9 @@ impl From<SourceInfo> for Source {
                 source_type: "ntp",
                 identifier: addr.to_string(),
             },
-            // TODO: fixme! thread actual device path through `SourceInfo`
-            SourceInfo::Phc => Self {
+            SourceInfo::Phc(device_path) => Self {
                 source_type: "phc",
-                identifier: "/dev/ptp0".to_string(),
+                identifier: device_path.to_string(),
             },
         }
     }

@@ -70,7 +70,7 @@ pub fn log_clock_status_change(from: ClockStatus, to: ClockStatus) {
 
 /// Log a synchronization snapshot to the synchronization log.
 pub fn log_sync_snapshot(sync_parameters: Option<&SyncParameters>, clock_status: ClockStatus) {
-    let source = sync_parameters.map(|sp| Source::from(sp.source_info));
+    let source = sync_parameters.map(|sp| Source::from(sp.source_info.clone()));
     let ffclock =
         sync_parameters.map(|sp| FFClock::from_params(&sp.clock_parameters, clock_status));
 
@@ -246,7 +246,7 @@ mod tests {
         fn log_sync_snapshot_with_phc_source_schema() {
             let sync_parameters = SyncParameters {
                 clock_parameters: sample_clock_parameters(),
-                source_info: SourceInfo::Phc,
+                source_info: SourceInfo::Phc("/dev/ptp0".into()),
             };
 
             let (output, _tmp) = with_synchronization_layer(|| {

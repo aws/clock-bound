@@ -7,12 +7,14 @@ use crate::daemon::{
     time::{Duration, tsc::Skew},
 };
 
+use super::DevicePath;
+
 /// A PHC from the Amazon Time Sync Service
 ///
 /// Wraps around a PHC feed-forward clock sync algorithm
 #[derive(Debug, Clone, PartialEq)]
 pub struct Phc {
-    device_path: String,
+    device_path: DevicePath,
     inner: ff::Phc,
 }
 
@@ -20,7 +22,7 @@ impl Phc {
     const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
     /// Create a new PHC reference clock source
-    pub fn new(device_path: String, max_dispersion: Skew) -> Self {
+    pub fn new(device_path: DevicePath, max_dispersion: Skew) -> Self {
         Self {
             device_path,
             inner: ff::Phc::new(Self::POLL_INTERVAL, max_dispersion),
