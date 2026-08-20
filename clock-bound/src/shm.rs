@@ -737,9 +737,9 @@ impl ClockErrorBoundV3 {
 
         // Convert the TSC timestamp into seconds with a linear projection.
         let now = TimeSpec::nanoseconds(
-            ((self.as_of.tv_nsec() as f64)
-                + (NANOS_PER_SECOND * self.as_of.tv_sec() as f64)
-                + duration_nsec) as i64,
+            self.as_of.tv_nsec()
+                + NANOS_PER_SECOND as i64 * self.as_of.tv_sec()
+                + duration_nsec as i64,
         );
 
         // Similarly, need to grow the bound on the clock error since the last update.
