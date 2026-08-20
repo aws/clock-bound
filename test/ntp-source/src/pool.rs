@@ -108,7 +108,7 @@ fn setup(kind: PoolKind) -> TestHarness {
     let selected_clock = Arc::new(SelectedClockSource::default());
     let daemon_info = DaemonInfo {
         major_version: 2,
-        minor_version: 100,
+        minor_version: 200,
         startup_id: rng().next_u64(),
     };
 

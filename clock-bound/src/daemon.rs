@@ -114,7 +114,7 @@ impl Daemon {
     ) -> Self {
         let daemon_info = DaemonInfo {
             major_version: 2,
-            minor_version: 100,
+            minor_version: 200,
             startup_id: rng().next_u64(),
         };
 
