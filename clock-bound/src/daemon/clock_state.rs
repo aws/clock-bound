@@ -150,10 +150,12 @@ impl ClockState {
 
     pub async fn run(&mut self) {
         let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_mins(1));
-        snapshot_interval.reset(); // delay the first tick by one period
+        // delay first snapshot log by a few seconds to let startup/source-selection converge.
+        snapshot_interval.reset_after(tokio::time::Duration::from_secs(8));
         let mut clock_adjust_summary_interval = tokio::time::interval(
             tokio::time::Duration::from_secs(CLOCK_ADJUST_SUMMARY_PERIOD_SECS),
         );
+        // delay first summary log by full period.
         clock_adjust_summary_interval.reset();
         debug!("Starting run for ClockState.");
         // FIXME: This clears the SHM segment quite early, before we have

@@ -381,7 +381,10 @@ pub enum RunLoopControl {
 
 #[cfg(all(test, feature = "daemon"))]
 mod tests {
-    use std::{net::SocketAddr, str::FromStr};
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        str::FromStr,
+    };
 
     use rstest::{fixture, rstest};
     use tokio::sync::mpsc;
