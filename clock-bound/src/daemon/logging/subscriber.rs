@@ -5,6 +5,7 @@
 //! all clock synchronization events in a format that allows for deterministic and
 //! reproducible testing of the FF Clock Sync Algorithm
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use tracing::Level;
@@ -77,6 +78,7 @@ pub fn init(settings: &LogSettings) -> LogHandles {
     // Logging layer for regular log events (progress, warnings) being pushed to stdout.
     let log_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout) // this is the default, just making it explicit
+        .with_ansi(std::io::stdout().is_terminal())
         .with_filter(clockbound_filter(settings.level))
         .with_filter(filter_fn(|md| !is_structured_target(md.target())));
 
