@@ -180,6 +180,7 @@ impl SourceIO {
         let dns_pool = Pool::construct(
             pool_domain.clone(),
             self.dns_message_tx.clone(),
+            self.in_use_ip_addrs.clone(),
             max_sources,
         );
         self.dns_pools.insert(pool_domain, dns_pool);
@@ -681,5 +682,28 @@ mod tests {
         source_io.create_pool("pool1.ntp.org".to_string(), 5);
         source_io.create_pool("pool2.ntp.org".to_string(), 5);
         assert_eq!(source_io.pools().len(), 2);
+    }
+
+    #[test]
+    fn create_pool_shares_source_io_in_use_ip_addrs() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut source_io = make_source_io();
+        source_io.create_pool("pool1.ntp.org".to_string(), 5);
+        source_io.create_pool("pool2.ntp.org".to_string(), 5);
+
+        // Claim an address through SourceIO's own tracker.
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        source_io.in_use_ip_addrs.add(addr).unwrap();
+
+        // Every pool's resolver must see the claim, proving they all share SourceIO's
+        // single tracker rather than holding isolated copies.
+        for domain in ["pool1.ntp.org", "pool2.ntp.org"] {
+            let pool = source_io.pools().get(domain).expect("pool exists");
+            assert!(
+                pool.resolver_in_use_ip_addrs_snapshot().contains(&addr),
+                "pool '{domain}' resolver does not share SourceIO's in-use IP tracker"
+            );
+        }
     }
 }

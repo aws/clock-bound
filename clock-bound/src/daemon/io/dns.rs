@@ -14,7 +14,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
 use super::{ControlRequest, Source, SourceState};
-use crate::daemon::message::Dns as DnsMessage;
+use crate::daemon::{io::in_use_ip_addrs::InUseIpAddrs, message::Dns as DnsMessage};
 use ntp_source::NtpSource;
 use resolver::{Message as ResolverMessage, Resolver};
 
@@ -39,6 +39,7 @@ impl Pool {
     pub fn construct(
         pool_domain: String,
         daemon_tx: mpsc::Sender<DnsMessage>,
+        in_use_ip_addrs: InUseIpAddrs,
         max_sources: usize,
     ) -> Self {
         // Channel for NTP sources to communicate with the Resolver
@@ -52,6 +53,7 @@ impl Pool {
             daemon_tx,
             ctrl_receiver,
             ntp_receiver,
+            in_use_ip_addrs,
             max_sources,
         );
 
@@ -69,6 +71,19 @@ impl Pool {
     /// Returns a clone of the resolver message sender for use by NTP sources.
     pub fn resolver_message_sender(&self) -> mpsc::Sender<ResolverMessage> {
         self.resolver_message_tx.clone()
+    }
+
+    /// Test-only snapshot of the IP addresses tracked by this pool's resolver.
+    ///
+    /// # Panics
+    /// Panics if the resolver has already been spawned (its state is no longer
+    /// `Initialized`), which never happens for a freshly constructed pool.
+    #[cfg(test)]
+    pub(crate) fn resolver_in_use_ip_addrs_snapshot(&self) -> Vec<std::net::IpAddr> {
+        match &self.resolver.state {
+            SourceState::Initialized(resolver) => resolver.in_use_ip_addrs_snapshot(),
+            SourceState::Running => panic!("resolver already spawned"),
+        }
     }
 
     /// Inserts a running NTP source into the pool.

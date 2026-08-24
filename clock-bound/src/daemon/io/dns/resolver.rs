@@ -90,6 +90,7 @@ impl Resolver {
         daemon_tx: mpsc::Sender<DnsMessage>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         ntp_receiver: mpsc::Receiver<Message>,
+        in_use_ip_addrs: InUseIpAddrs,
         max_sources: usize,
     ) -> Self {
         Self {
@@ -100,7 +101,7 @@ impl Resolver {
             daemon_tx,
             ctrl_receiver,
             ntp_receiver,
-            in_use_ip_addrs: InUseIpAddrs::default(),
+            in_use_ip_addrs,
             max_sources,
         }
     }
@@ -417,6 +418,10 @@ impl Resolver {
             available.truncate(needed_host_count);
             available
         });
+        debug!(
+            "Updated global in-use IP addresses: {:?}",
+            self.in_use_ip_addrs
+        );
         for addr in &new_addrs {
             self.task_state.insert(*addr, State::Initializing);
             debug!(%addr, "Claimed address");
@@ -552,6 +557,11 @@ impl Resolver {
     pub(crate) async fn recv_and_handle_one(&mut self) -> RunLoopControl {
         let message = self.ntp_receiver.recv().await.expect("sender dropped");
         self.handle_ntp_task_message(message).await
+    }
+
+    /// Test-only snapshot of the shared in-use IP tracker held by this resolver.
+    pub(crate) fn in_use_ip_addrs_snapshot(&self) -> Vec<IpAddr> {
+        self.in_use_ip_addrs.snapshot()
     }
 }
 
@@ -1125,5 +1135,66 @@ mod tests {
         // Second resolver should NOT get the same address
         let result2 = resolver2.new_addrs_to_launch(vec![addr], 5, true);
         assert!(result2.is_empty());
+    }
+
+    #[test]
+    fn pool_resolvers_share_global_in_use_tracker() {
+        use crate::daemon::io::SourceState;
+        use crate::daemon::io::dns::Pool;
+
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        let shared_tracker = InUseIpAddrs::new();
+        let (daemon_tx, _daemon_rx) = mpsc::channel(1);
+
+        let mut pool1 = Pool::construct(
+            "pool.ntp.org".to_string(),
+            daemon_tx.clone(),
+            shared_tracker.clone(),
+            5,
+        );
+        let pool2 = Pool::construct(
+            "pool.ntp.org".to_string(),
+            daemon_tx,
+            shared_tracker.clone(),
+            5,
+        );
+
+        // Helper: snapshot the in-use addresses observed through a pool's resolver.
+        let snapshot = |pool: &Pool| -> Vec<IpAddr> {
+            let SourceState::Initialized(resolver) = &pool.resolver.state else {
+                panic!("resolver should be Initialized immediately after construct");
+            };
+            resolver.in_use_ip_addrs.snapshot()
+        };
+
+        // Both pools start out observing an empty tracker.
+        assert!(snapshot(&pool1).is_empty());
+        assert!(snapshot(&pool2).is_empty());
+
+        // Claim an address through pool1's resolver (the path a real source launch takes).
+        // Because both pools were constructed with the same shared tracker, the claim must
+        // be visible through pool2's resolver as well.
+        let SourceState::Initialized(resolver1) = &mut pool1.resolver.state else {
+            panic!("resolver should be Initialized immediately after construct");
+        };
+        let launched = resolver1.new_addrs_to_launch(vec![addr], 5, true);
+        assert_eq!(launched, vec![addr]);
+
+        assert!(snapshot(&pool1).contains(&addr));
+        assert!(
+            snapshot(&pool2).contains(&addr),
+            "a source added via pool1 must be reflected in pool2's in-use snapshot"
+        );
+
+        // Removing the address through the shared tracker must likewise be reflected in
+        // both pools' resolvers.
+        shared_tracker.remove(&addr).unwrap();
+
+        assert!(!snapshot(&pool1).contains(&addr));
+        assert!(
+            !snapshot(&pool2).contains(&addr),
+            "a source removed from the shared tracker must be reflected in pool2's snapshot"
+        );
     }
 }

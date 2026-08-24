@@ -76,12 +76,14 @@ impl InUseIpAddrs {
     {
         #[expect(clippy::missing_panics_doc, reason = "not handling mutex poison")]
         let mut guard = self.addrs.lock().unwrap();
+        tracing::debug!("global guard contents (before): {:?}", guard);
         let new_addrs = f(&guard);
         for addr in &new_addrs {
             if !guard.contains(addr) {
                 guard.push(*addr);
             }
         }
+        tracing::debug!("global guard contents (after): {:?}", guard);
         new_addrs
     }
 
