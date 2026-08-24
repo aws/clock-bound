@@ -300,33 +300,25 @@ impl Resolver {
 
     /// Handle a host becoming unreachable
     ///
-    /// Do the work to initiate the deletion of a task. Creation of the new task
-    /// will be done by [`Resolver::replenish_pool`].
+    /// Marks the address as [`State::Unhealthy`].
+    ///
+    /// Releasing the global in-use claim, removing the `task_state` entry, and
+    /// quarantining the address are all deferred to
+    /// [`Resolver::handle_ntp_task_shutdown`], which runs once the task has actually
+    /// exited. The task is still alive at this point, so its resources must not be
+    /// released yet.
     ///
     /// Returns [`RunLoopControl::Continue`] if the function completed normally, or
     /// [`RunLoopControl::Exit`] if a shutdown signal was received during a send to
     /// the daemon.
     #[tracing::instrument(level = "info", skip(self))]
     async fn handle_unreachable(&mut self, addr: IpAddr) -> RunLoopControl {
-        // When a host becomes unreachable, we quarantine it for a period of time
-        // before allowing it to be selected again. This prevents rapid cycling
-        // between healthy and unhealthy states.
-        self.quarantined.insert(addr, Instant::now());
+        // Mark the source unhealthy so it no longer counts as an expected-healthy
+        // member of the pool. The `task_state` entry itself is left in place (and
+        // still blocks re-selection) until the task's shutdown notification arrives.
         let state = self.task_state.get_mut(&addr).unwrap();
         assert_eq!(*state, State::Running);
         *state = State::Unhealthy;
-
-        // Release the address from the global in-use tracker so other resolvers
-        // (or this one on a future tick) can potentially select it after quarantine expires.
-        if self.in_use_ip_addrs.remove(&addr).is_err() {
-            // global radius could potentially be removed elsewhere in the app
-            warn!(%addr, "Address was not found in global in-use tracker");
-        }
-
-        info!(
-            quarantine_secs = QUARANTINE_DURATION.as_secs(),
-            "Quarantining unreachable NTP source."
-        );
 
         let socket_addr = SocketAddr::new(addr, 123);
         let message = DnsMessage::RemovePoolAddr(RemovePoolAddr {
@@ -337,22 +329,43 @@ impl Resolver {
             return RunLoopControl::Exit;
         }
 
-        self.task_state.remove(&addr);
-        info!(%addr, "Sent RemovePoolAddr to daemon and removed from task_state");
+        info!(%addr, "Marked source unhealthy and sent RemovePoolAddr to daemon.");
         RunLoopControl::Continue
     }
 
     /// Handle a notification of an NTP task shutdown
+    ///
+    /// This is the single authoritative teardown point for a source. It runs once
+    /// the NTP task has actually exited, so it is safe to release everything the
+    /// task held.
     #[tracing::instrument(level = "info", skip(self))]
     fn handle_ntp_task_shutdown(&mut self, addr: IpAddr) {
-        let state = self.task_state.remove(&addr);
         // Verify we are actually tracking this.
-        // I would LIKE to verify that it is unhealthy. However the shutdown could be from a
-        // quarantine or from a ctrl message. Either way, we want to remove it.
-        if state.is_none() {
+        let Some(state) = self.task_state.remove(&addr) else {
             error!(%addr, "Address not found in task_state.");
-            panic!("{addr} unable to removed from {}", self.pool_domain);
+            panic!("{addr} unable to be removed from {}.", self.pool_domain);
+        };
+
+        // Only quarantine sources torn down because they became unreachable.
+        // When a host becomes unreachable, we quarantine it for a period of time
+        // before allowing it to be selected again. This prevents rapid cycling
+        // between healthy and unhealthy states.
+        if state == State::Unhealthy {
+            self.quarantined.insert(addr, Instant::now());
+            info!(
+                quarantine_secs = QUARANTINE_DURATION.as_secs(),
+                %addr,
+                "Quarantining unhealthy NTP source."
+            );
         }
+
+        // Release the address from the global in-use tracker so other resolvers
+        // (or this one on a future tick) can potentially select it after quarantine expires.
+        if self.in_use_ip_addrs.remove(&addr).is_err() {
+            // global radius could potentially be removed elsewhere in the app
+            warn!(%addr, "Address was not found in global in-use tracker.");
+        }
+
         info!(%addr, "Removed address.");
     }
 
@@ -1005,7 +1018,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_unreachable_removes_addr_from_shared_tracker() {
+    async fn handle_unreachable_marks_unhealthy_and_notifies_daemon() {
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 
         let in_use = InUseIpAddrs::new();
@@ -1028,14 +1041,16 @@ mod tests {
         let control = resolver.handle_unreachable(addr).await;
         assert_eq!(control, RunLoopControl::Continue);
 
-        // The address should be released from the shared tracker.
-        assert!(!in_use.snapshot().contains(&addr));
+        // The address is marked Unhealthy but its task_state entry is retained; it is
+        // only removed once the task's shutdown notification arrives.
+        assert_eq!(resolver.task_state.get(&addr), Some(&State::Unhealthy));
 
-        // The address should be removed from task state.
-        assert!(!resolver.task_state.contains_key(&addr));
+        // The global claim must NOT be released here: the task is still alive during
+        // teardown, so releasing it would let another resolver launch a duplicate.
+        assert!(in_use.snapshot().contains(&addr));
 
-        // The address should be quarantined.
-        assert!(resolver.quarantined.contains_key(&addr));
+        // Quarantine is deferred to the shutdown handler, so nothing is quarantined yet.
+        assert!(!resolver.quarantined.contains_key(&addr));
 
         // A RemovePoolAddr message should have been sent to the daemon.
         let message = daemon_rx.recv().await.expect("daemon message sent");
@@ -1046,6 +1061,50 @@ mod tests {
             }
             other => panic!("expected RemovePoolAddr, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_source_shutdown_when_unhealthy_releases_tracker_and_quarantines() {
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        // An unreachable-driven teardown: the source was marked Unhealthy and still
+        // holds its global claim when the shutdown notification arrives.
+        let in_use = InUseIpAddrs::new();
+        in_use.add(addr).unwrap();
+        let task_state = HashMap::from([(addr, State::Unhealthy)]);
+        let mut resolver =
+            make_resolver_with_in_use(task_state, HashMap::new(), None, in_use.clone());
+
+        resolver.handle_ntp_task_shutdown(addr);
+
+        // The task is gone: remove from task_state and release the global claim.
+        assert!(!resolver.task_state.contains_key(&addr));
+        assert!(!in_use.snapshot().contains(&addr));
+
+        // An unhealthy teardown quarantines the address to prevent rapid re-selection.
+        assert!(resolver.quarantined.contains_key(&addr));
+    }
+
+    #[test]
+    fn handle_source_shutdown_when_healthy_releases_tracker_without_quarantine() {
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        // A benign teardown (e.g. pool resize or ctrl message): the source is still
+        // Running when it shuts down.
+        let in_use = InUseIpAddrs::new();
+        in_use.add(addr).unwrap();
+        let task_state = HashMap::from([(addr, State::Running)]);
+        let mut resolver =
+            make_resolver_with_in_use(task_state, HashMap::new(), None, in_use.clone());
+
+        resolver.handle_ntp_task_shutdown(addr);
+
+        // The task is gone: remove from task_state and release the global claim.
+        assert!(!resolver.task_state.contains_key(&addr));
+        assert!(!in_use.snapshot().contains(&addr));
+
+        // A healthy source must NOT be quarantined, so it stays immediately eligible.
+        assert!(!resolver.quarantined.contains_key(&addr));
     }
 
     #[test]
