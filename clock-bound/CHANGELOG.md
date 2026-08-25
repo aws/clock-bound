@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0-beta.0] - 2026-08-24
+
+### Added
+
+- The `clockbound` daemon accepts an optional TOML configuration file via `-c`/`--configuration`. Without one, the
+  daemon runs on built-in defaults and logs to stdout only. See `assets/example-config.toml` for a documented example.
+- Added `--check-configuration`, which loads and validates the file passed with `-c`, reports whether it is usable, and
+  exits without starting the daemon.
+- Added `-v`/`--verbose` to raise the stdout log level from info to debug.
+- Configurable log streams written to the configured log directory: `sync.log`, a human-readable clock synchronization
+  history snapshotted every minute, and `ffevents.log`, raw sync data for deterministic expert replay analysis. The daemon
+  reopens its log files on `SIGHUP` to support log rotation.
+- Additional NTP sources can be supplied in the configuration file alongside the built-in ones, specified as an
+  individual `server` (IPv4, IPv6, or hostname) or as a `pool` hostname that resolves to several servers. DNS pools are
+  resolved and their member hosts tracked at runtime.
+- Added a new `cbctl` command-line utility. `cbctl waitsync` blocks until the clock is synchronized
+
+### Changed
+
+- Replaced the `--log-dir` CLI parameter with `-c`/`--configuration`. A configuration that cannot be read, parsed, or
+  validated is reported and the daemon exits with a non-zero exit code.
+- Instance-type detection now uses local DMI data instead of an IMDS lookup
+- EC2 time sync sources are installed based off platform auto-detection. No configuration necessary
+- Renamed `tsc` to `counter` in logs.
+- Reduced the size of the `clockbound` binary through release profile settings.
+
 ## [3.0.0-alpha.2] - 2026-05-28
 
 ### Fixed
