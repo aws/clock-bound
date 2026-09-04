@@ -11,12 +11,6 @@ on:
   schedule:
     # Run daily at 9am EST (14:00 UTC)
     - cron: '0 14 * * *'
-  workflow_dispatch:
-    inputs:
-      sampling_loop_duration:
-        description: 'Sampling loop duration in seconds (excludes warmup)'
-        required: false
-        default: '300'
 
 jobs:
   build:
@@ -121,9 +115,8 @@ jobs:
 
       - name: Run SHM validation test
         run: |
-          SAMPLING_LOOP_DURATION="${{ github.event.inputs.sampling_loop_duration || '300' }}"
           ./shmv3-error-bound-validation \
-            --sampling-loop-duration "$SAMPLING_LOOP_DURATION" \
+            --sampling-loop-duration 300 \
             --warmup-secs 10 \
             --sample-interval-ms 250 \
             --output-path shmv3_error_bound_validation_results.json
