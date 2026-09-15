@@ -7,6 +7,7 @@
 //! Independent from what data is emitted, the tracing ecosystem is used in all cases. This aligns
 //! with the use in the ClockBound daemon, to ensure reproducible testing and data analysis.
 
+use std::fmt::Write;
 use std::path::Path;
 use tracing::Level;
 use tracing_subscriber::{
@@ -19,23 +20,78 @@ use clock_bound::daemon::logging::{
 
 // TODO: implement logging initialization for other use cases (simulator, etc)
 
-/// Initialize the tracing subscriber for feed-forward synchronization replay.
+/// Create a new directory to store output logs.
+///
+/// The daemon appends event to output log files if they already exist. This is never what we want
+/// in the current model where the input is a single `FFevents` log file, and would likely be
+/// confusing any post-processing / data analysis tool.
+///
+/// Exit with an error message if the output directory already exists.
 ///
 /// # Panics
+/// Panics if the output directory cannot be confirmed to exist
 /// Panics if the output directory cannot be created
-pub fn init_for_synchronization_replay(log_directory: impl AsRef<Path>) {
-    // Make sure that the destination directory exists
-    std::fs::create_dir_all(&log_directory)
-        .expect("Failed to create the algo analysis log directory");
+fn create_log_directory(log_directory: impl AsRef<Path>) {
+    let maybe_exists = match std::fs::exists(&log_directory) {
+        Ok(false) => false,
+        Ok(true) => {
+            eprintln!("Error: Output log directory already exists");
+            true
+        }
+        Err(e) => {
+            eprintln!("Failed to confirm if the output log directory already exists: {e}");
+            true
+        }
+    };
 
-    let (algo_analysis_layer, _algo_handle) = StructuredLogLayer::for_stream(
-        &log_directory,
-        StructuredLog::AlgoAnalysis,
-        env!("CARGO_PKG_VERSION"),
-    );
+    if maybe_exists {
+        std::process::exit(1);
+    }
+
+    // Can now create an empty directory to ensure we can write to
+    if let Err(e) = std::fs::create_dir_all(&log_directory) {
+        eprintln!("Failed to create the output log directory: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Initialize the tracing subscriber for feed-forward synchronization replay.
+///
+/// Create output directory where the logs of events and ffsync algorithm internal metrics will be
+/// stored fur further analysis.
+pub fn init_for_synchronization_replay(log_directory: impl AsRef<Path>) {
+    // The StructuredLogLayer attempts to create directory, so need to assert whether the directory
+    // already exists
+    // create a *new* directory where to write log files to
+    create_log_directory(&log_directory);
+
+    // Burn the git commit into the logs. This helps ensure we know which exact version of the
+    // algorithm is being used, and later on, analyzed for accuracy and performance. Also mark mark
+    // uncommitted changes if any.
+    let mut version = String::from(env!("CARGO_PKG_VERSION"));
+    if let Some(s) = option_env!("GIT_COMMIT_HASH_SHORT") {
+        write!(version, "+git-{s}").unwrap();
+    }
+    if let Some(s) = option_env!("GIT_REPO_STATUS")
+        && s == "dirty"
+    {
+        write!(version, "-dirty").unwrap();
+    }
+    let static_version: &'static str = version.leak();
+
+    // Create the various data streams.
+    // Note that `FFEvents` log is (re-)generated which is helpful for any schema migration but also to
+    // compare with original run and assert differences in ffsync algorithm versions.
+    let mut structured_layers = Vec::new();
+    let data_streams = [StructuredLog::AlgoAnalysis, StructuredLog::FFEvents];
+    for stream in data_streams {
+        let (layer, _algo_handle) =
+            StructuredLogLayer::for_stream(&log_directory, stream, static_version);
+        structured_layers.push(layer);
+    }
 
     // Logging layer for regular log events (progress, warnings) being pushed to stdout.
-    // Verbose messages to export ffevents, synchronization and source events are filtered out.
+    // Verbose messages to export FFevents, synchronization and source events are filtered out.
     // Defaults to INFO.
     let stdout_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout)
@@ -49,8 +105,8 @@ pub fn init_for_synchronization_replay(log_directory: impl AsRef<Path>) {
     tracing_subscriber::registry()
         // Register the stdout logging layer
         .with(stdout_layer)
-        // Register the synchronization algorithm layer
-        .with(algo_analysis_layer)
+        // Register the structured layers
+        .with(structured_layers)
         .init();
 
     tracing::info!("Initialized tracing subscriber");

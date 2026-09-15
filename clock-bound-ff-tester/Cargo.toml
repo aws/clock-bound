@@ -2,6 +2,7 @@
 name = "clock-bound-ff-tester"
 description = "A library for deterministic feed-forward clock synchronization algorithm testing"
 license = "MIT OR Apache-2.0"
+build = "build.rs"
 
 authors.workspace = true
 categories.workspace = true

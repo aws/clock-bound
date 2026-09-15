@@ -57,13 +57,14 @@ jobs:
           mkdir -p regression-logs
           aws s3 cp s3://${{ secrets.TESTS_S3_BUCKET }}/input regression-logs/ --recursive
 
+      # TODO: Manage output directory better, one per replay
       - name: Run repro-replay against log files
         run: |
           echo "Running repro-replay against repro logs."
           for logfile in regression-logs/*; do
             if [ -f "$logfile" ]; then
               echo "Processing: $logfile"
-              ./clock-bound-ff-tester repro-replay --logfile "$logfile" --output-dir ./repro-output
+              ./clock-bound-ff-tester repro-replay --logfile "$logfile" --output-dir "./repro-output/$logfile"
             fi
           done
 
