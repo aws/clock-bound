@@ -9,10 +9,14 @@ use crate::vmclock::shm_reader::VMClockShmReader;
 use errno::Errno;
 use std::ffi::CString;
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// The `ClockBoundClient`
 ///
 /// Use it to return current time, the clock error bound and clock status associated with it.
+///
+/// A single client can be shared across threads: reading the time only needs a shared reference,
+/// and concurrent reads do not serialize on each other.
 pub struct ClockBoundClient {
     clockbound_shm: ClockBoundSHM,
     vmclock_shm: VMClockSHM,
@@ -60,7 +64,7 @@ impl ClockBoundClient {
         vmclock_shm_path: &str,
     ) -> Result<ClockBoundClient, ClockBoundError> {
         // Create the clockbound shared memory accessor
-        let mut clockbound_shm = ClockBoundSHM::new(clockbound_shm_path)?;
+        let clockbound_shm = ClockBoundSHM::new(clockbound_shm_path)?;
 
         // Read the segment to determine whether the daemon has been instructed to provide support
         // for clock disruption. If true, the VMClock will be accessed.
@@ -89,7 +93,7 @@ impl ClockBoundClient {
     ///
     /// # Errors
     /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
-    pub fn now(&mut self) -> Result<ClockBoundNowResult, ClockBoundError> {
+    pub fn now(&self) -> Result<ClockBoundNowResult, ClockBoundError> {
         // The very first thing to do is to read from the ClockBound shared memory segment, take a
         // snapshot to obtain the clock parameters and bound on error, and create a timestamp.
         let cb_snap = self.clockbound_shm.snapshot()?;
@@ -98,12 +102,8 @@ impl ClockBoundClient {
         // Now that the timestamp is created, check whether the clockbound daemon has been
         // restarted and the option to enable the clock disruption support has been turned on. If
         // so, need to create a reader for the VMClock device shared memory.
-        if self.vmclock_shm.vmclock_shm_reader.is_none()
-            && cb_snap.clock_disruption_support_enabled()
-        {
-            self.vmclock_shm.vmclock_shm_reader = Some(VMClockShmReader::new(
-                self.vmclock_shm.vmclock_shm_path.as_str(),
-            )?);
+        if cb_snap.clock_disruption_support_enabled() {
+            self.vmclock_shm.open_reader()?;
         }
 
         // Check whether the clock is disrupted. If the support to capture the clock disruption
@@ -162,7 +162,7 @@ impl ClockBoundSHM {
     }
 
     /// Returns a snapshot of the shared memory segment last populated by the ClockBound daemon.
-    fn snapshot(&mut self) -> Result<&ClockErrorBound, ShmError> {
+    fn snapshot(&self) -> Result<ClockErrorBound, ShmError> {
         self.clockbound_shm_reader.snapshot()
     }
 }
@@ -170,7 +170,9 @@ impl ClockBoundSHM {
 /// `VMClockSHM` handles access to the shared memory segment populated by the VMClock device.
 struct VMClockSHM {
     vmclock_shm_path: String,
-    vmclock_shm_reader: Option<VMClockShmReader>,
+    // Opened up front when the daemon advertises clock disruption support, or later by `now()` if
+    // the daemon is restarted with that support turned on.
+    vmclock_shm_reader: OnceLock<VMClockShmReader>,
 }
 
 impl VMClockSHM {
@@ -183,9 +185,13 @@ impl VMClockSHM {
         vmclock_shm_path: &str,
         clock_disruption_support_enabled: bool,
     ) -> Result<VMClockSHM, ClockBoundError> {
+        let vmclock_shm = VMClockSHM {
+            vmclock_shm_path: String::from(vmclock_shm_path),
+            vmclock_shm_reader: OnceLock::new(),
+        };
+
         // Note that the support for clock disruption signal may be disabled on the ClockBound
         // daemon, in which case, no reader is created.
-        let mut vmclock_shm_reader: Option<VMClockShmReader> = None;
         if clock_disruption_support_enabled {
             // Fail early if the provided shared memory path does not exist.
             if !Path::new(vmclock_shm_path).exists() {
@@ -199,13 +205,22 @@ impl VMClockSHM {
                 };
                 return Err(error);
             }
-            vmclock_shm_reader = Some(VMClockShmReader::new(vmclock_shm_path)?);
+            vmclock_shm.open_reader()?;
         }
 
-        Ok(VMClockSHM {
-            vmclock_shm_path: String::from(vmclock_shm_path),
-            vmclock_shm_reader,
-        })
+        Ok(vmclock_shm)
+    }
+
+    /// Open the VMClock shared memory segment for reading, unless it is open already.
+    ///
+    /// Concurrent callers may both open the segment. The first reader stored wins and the other
+    /// one is dropped, which is harmless since both map the same segment read-only.
+    fn open_reader(&self) -> Result<(), ShmError> {
+        if self.vmclock_shm_reader.get().is_none() {
+            let vmclock_shm_reader = VMClockShmReader::new(self.vmclock_shm_path.as_str())?;
+            let _ = self.vmclock_shm_reader.set(vmclock_shm_reader);
+        }
+        Ok(())
     }
 
     /// Take a snapshot of the VMClock shared memory segment and extract the disruption marker.
@@ -215,8 +230,8 @@ impl VMClockSHM {
     /// # Errors
     /// Returns a [`ShmError`] if the content of the segment is uninitialized, unparseable, or
     /// otherwise malformed.
-    fn disruption_marker(&mut self) -> Result<Option<u64>, ShmError> {
-        if let Some(ref mut vmclock_shm_reader) = self.vmclock_shm_reader {
+    fn disruption_marker(&self) -> Result<Option<u64>, ShmError> {
+        if let Some(vmclock_shm_reader) = self.vmclock_shm_reader.get() {
             let snap = vmclock_shm_reader.snapshot()?;
             return Ok(Some(snap.disruption_marker));
         }
@@ -432,7 +447,7 @@ mod lib_tests {
         // Create the VMClock, and assert that the creation was successful.
         let vmclock_new_result = VMClockSHM::new(&vmclock_shm_path, true);
         match vmclock_new_result {
-            Ok(mut vmclock) => {
+            Ok(vmclock) => {
                 // Assert that now() does not return an error.
                 let marker_result = vmclock.disruption_marker();
                 assert!(marker_result.is_ok());
@@ -471,7 +486,7 @@ mod lib_tests {
         // There should be no error even though there is no file located at vmclock_shm_path.
         let vmclock_new_result = VMClockSHM::new(&vmclock_shm_path, false);
         match vmclock_new_result {
-            Ok(mut vmclock) => {
+            Ok(vmclock) => {
                 // Assert that now() does not return an error.
                 let marker_result = vmclock.disruption_marker();
                 assert!(marker_result.is_ok());
@@ -545,7 +560,7 @@ mod lib_tests {
         };
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
-        let mut clockbound =
+        let clockbound =
             match ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -563,6 +578,77 @@ mod lib_tests {
         };
 
         assert_eq!(now_result.clock_status, ClockStatus::Disrupted);
+    }
+
+    /// Assert that a single client can be shared across threads: `now()` only needs a shared
+    /// reference, and concurrent reads all observe the same, consistent, data.
+    #[test]
+    fn test_now_shared_across_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ClockBoundClient>();
+
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
+        write_clockbound_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            800,
+            0x0303,
+            10
+        );
+
+        let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
+        let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
+        let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
+        let mut vmclock_shm_file = OpenOptions::new()
+            .write(true)
+            .open(vmclock_shm_path)
+            .expect("open vmclock file failed");
+        let vmclock_content = VMClockContent {
+            magic: 0x4B4C4356,
+            size: 104_u32,
+            version: 1_u16,
+            counter_id: 1_u8,
+            time_type: 0_u8,
+            seq_count: 10_u32,
+            disruption_marker: 888888_u64,
+            flags: 0_u64,
+            _padding: [0x00, 0x00],
+            clock_status: VMClockClockStatus::Synchronized,
+            leap_second_smearing_hint: 0_u8,
+            tai_offset_sec: 0_i16,
+            leap_indicator: 0_u8,
+            counter_period_shift: 0_u8,
+            counter_value: 123456_u64,
+            counter_period_frac_sec: 0_u64,
+            counter_period_esterror_rate_frac_sec: 0_u64,
+            counter_period_maxerror_rate_frac_sec: 0_u64,
+            time_sec: 0_u64,
+            time_frac_sec: 0_u64,
+            time_esterror_nanosec: 0_u64,
+            time_maxerror_nanosec: 0_u64,
+        };
+        write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
+
+        let clockbound = ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path)
+            .expect("ClockBoundClient::new_with_paths() failed");
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..1_000 {
+                        let now_result = clockbound.now().expect("ClockBoundClient::now() failed");
+                        assert_eq!(now_result.clock_status, ClockStatus::Disrupted);
+                    }
+                });
+            }
+        });
     }
 
     #[test]
@@ -718,7 +804,7 @@ mod lib_tests {
         let ceb = ClockErrorBoundGeneric::builder().build(ClockErrorBoundLayoutVersion::V3);
         writer.write(&ceb);
 
-        let mut clockbound =
+        let clockbound =
             match ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path) {
                 Ok(c) => c,
                 Err(e) => {
