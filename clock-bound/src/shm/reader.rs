@@ -5,6 +5,7 @@ use std::ffi::{CStr, c_void};
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{self, AtomicU16};
+use std::sync::{Mutex, PoisonError};
 
 use crate::shm::shm_header::{CLOCKBOUND_SHM_LATEST_VERSION, ShmHeader};
 use crate::{
@@ -121,10 +122,6 @@ impl Drop for MmapGuard {
 /// value. Otherwise, the read was dirty and must be retried.
 #[derive(Debug)]
 pub struct ShmReader {
-    // Explicitly make the ShmReader be !Send and !Sync, since it is not thread safe. A bit ugly to
-    // use a phantom raw pointer, but effective and free at runtime.
-    _marker: std::marker::PhantomData<*const ()>,
-
     // Drop guard to unmap the shared memory segment
     _guard: MmapGuard,
 
@@ -146,15 +143,27 @@ pub struct ShmReader {
     // to assert the generation value.
     ceb_shm: *const ClockErrorBound,
 
-    // The last snapshot of ClockErrorBound taken. This acts as a cache to avoid waiting for the
-    // writer to complete an update and allow to share a reference to this memory location
-    // (avoiding some memory copy). Keeping a state here and sharing it with the caller makes the
-    // ShmReader not thread safe.
-    snapshot_ceb: ClockErrorBound,
+    // The last consistent snapshot of ClockErrorBound taken by this reader. It is what a read
+    // falls back to while the writer is in the middle of an update, or has restarted and not
+    // published data yet, instead of waiting for the writer to complete. It is refreshed only when
+    // the writer generation has moved on since the last refresh, so the mutex is uncontended on
+    // the read path.
+    last_snapshot: Mutex<ClockErrorBound>,
 
-    // The value of the writer generation when the ceb snapshot was taken.
-    snapshot_gen: u16,
+    // The value of the writer generation when `last_snapshot` was refreshed, mirrored outside the
+    // mutex so that reads can tell whether a refresh is due without taking it. Zero until the
+    // first consistent read, a value no initialized segment ever reports.
+    last_snapshot_gen: AtomicU16,
 }
+
+// SAFETY: The raw pointers point into a private, read-only (`PROT_READ`), `MAP_SHARED` mapping
+// owned by the reader, which stays mapped until the reader is dropped. All accesses through them
+// are atomic loads or volatile reads validated against the writer generation, none of which
+// require exclusive access. The reader's own mutable state is behind a `Mutex` and an atomic.
+// Nothing ties the mapping to the thread that created it, so it can be used and unmapped from any
+// thread.
+unsafe impl Send for ShmReader {}
+unsafe impl Sync for ShmReader {}
 
 impl ShmReader {
     /// Open a ClockBound shared memory segment for reading.
@@ -186,13 +195,12 @@ impl ShmReader {
         let shm_version = ClockErrorBoundLayoutVersion::try_from(CLOCKBOUND_SHM_LATEST_VERSION)?;
 
         Ok(ShmReader {
-            _marker: std::marker::PhantomData,
             _guard: mmap_guard,
             version,
             generation,
             ceb_shm,
-            snapshot_ceb: ClockErrorBoundGeneric::builder().build(shm_version),
-            snapshot_gen: 0,
+            last_snapshot: Mutex::new(ClockErrorBoundGeneric::builder().build(shm_version)),
+            last_snapshot_gen: AtomicU16::new(0),
         })
     }
 
@@ -217,13 +225,12 @@ impl ShmReader {
 
         Ok((
             ShmReader {
-                _marker: std::marker::PhantomData,
                 _guard: mmap_guard,
                 version,
                 generation,
                 ceb_shm,
-                snapshot_ceb: ClockErrorBoundGeneric::builder().build(current_version),
-                snapshot_gen: 0,
+                last_snapshot: Mutex::new(ClockErrorBoundGeneric::builder().build(current_version)),
+                last_snapshot_gen: AtomicU16::new(0),
             },
             max_version,
         ))
@@ -298,13 +305,13 @@ impl ShmReader {
     /// number in the header has not changed (which would indicate an update from the writer
     /// occurred while reading). If an update is detected, the read is retried.
     ///
-    /// This function returns a reference to the `ClockErrorBound` snapshot stored by the reader, and
-    /// not an owned value. This make the `ShmReader` NOT thread-safe: the data pointed to could be
-    /// updated without one of the thread knowing, leading to a incorrect clock error bond. The
-    /// advantage are in terms of performance: less data copied, but also no locking, yielding or
-    /// excessive retries.
+    /// The snapshot is returned by value: the `ClockErrorBound` data is small, and copying it out
+    /// of the segment is what lets a single `ShmReader` be shared across threads. Every call reads
+    /// the shared memory segment, except while the writer is in the middle of an update or has
+    /// restarted and not published data yet: the last consistent snapshot taken by this reader is
+    /// then returned instead of waiting, yielding or retrying excessively.
     #[expect(clippy::missing_errors_doc, reason = "todo")]
-    pub fn snapshot(&mut self) -> Result<&ClockErrorBound, ShmError> {
+    pub fn snapshot(&self) -> Result<ClockErrorBound, ShmError> {
         // Atomically read the current version in the shared memory segment
         // SAFETY: `self.version` has been validated when creating the reader
         let version = unsafe { &*self.version };
@@ -316,7 +323,7 @@ impl ShmReader {
         // middle of restarting, the snapshot will eventually be stale. Enough information is
         // returned to the caller to take appropriate action (e.g. assert clock status).
         if version == 0 {
-            return Ok(&self.snapshot_ceb);
+            return Ok(self.last_snapshot());
         }
 
         // It is possible the daemon has been upgraded and restarted. It is meant to be backward
@@ -347,23 +354,7 @@ impl ShmReader {
         // information is returned to the caller to take appropriate action (e.g. assert clock
         // status).
         if first_gen == 0 {
-            return Ok(&self.snapshot_ceb);
-        }
-
-        // Quick optimization, if the generation number matches the last one recorded, the shared
-        // memory segment has not been updated since last read. No need to read more of the memory
-        // segment, instead return the reference to the snapshot. This is useful in cases where the
-        // rate of clockbound read is much higher than the rate of write to the shared memory
-        // segment.
-        //
-        // Note that the generation number DOES roll over, but never take a value of 0 once the
-        // segment is initialized. It is still possible that the generation number matches although
-        // the counter has rolled over. Assuming one update per sec, this leaves a collision
-        // probability of 1 / 2^16, and a rollover once every 18 hours. Although the risk is very
-        // small it exists, but the `void_after` member on the ClockErrorBound struct can be used
-        // to provide an additional layer of protection.
-        if first_gen == self.snapshot_gen {
-            return Ok(&self.snapshot_ceb);
+            return Ok(self.last_snapshot());
         }
 
         // If the generation is an odd number, the shared memory segment is in the process of being
@@ -374,12 +365,12 @@ impl ShmReader {
         // an update, the snapshot will eventually be stale. The caller is returned enough
         // information to act accordingly.
         if first_gen & 0x0001 == 1 {
-            return Ok(&self.snapshot_ceb);
+            return Ok(self.last_snapshot());
         }
 
-        // The generation number is an even number, and has changed since the last snapshot. Loop
-        // until we obtain a consistent read of the clock error bound data. This relies on reading
-        // the generation value twice, making sure they are identical and an even number.
+        // The generation number is an even number. Loop until we obtain a consistent read of the
+        // clock error bound data. This relies on reading the generation value twice, making sure
+        // they are identical and an even number.
         //
         // The writer could die in the middle of the update. This could lead to not making any
         // progress hence capping the number of retries.
@@ -392,9 +383,21 @@ impl ShmReader {
             // Confirm no update occurred during the read
             let second_gen = generation.load(atomic::Ordering::Acquire);
             if first_gen == second_gen {
-                self.snapshot_gen = first_gen;
-                self.snapshot_ceb = snapshot;
-                return Ok(&self.snapshot_ceb);
+                // Keep the fallback snapshot current, but only when the writer has moved on since
+                // it was last refreshed. This keeps the mutex off the read path, which only sees
+                // the generation change at the rate of writer updates.
+                //
+                // Note that the generation number DOES roll over, but never take a value of 0 once
+                // the segment is initialized. It is still possible that the generation number
+                // matches although the counter has rolled over, in which case the fallback is not
+                // refreshed this time around. Assuming one update per sec, this leaves a collision
+                // probability of 1 / 2^16, and a rollover once every 18 hours. Although the risk is
+                // very small it exists, but the `void_after` member on the ClockErrorBound struct
+                // can be used to provide an additional layer of protection.
+                if self.last_snapshot_gen.load(atomic::Ordering::Acquire) != first_gen {
+                    self.remember(first_gen, snapshot);
+                }
+                return Ok(snapshot);
             }
             // Only track complete updates indicated by an even generation number.
             if second_gen & 0x0001 == 0 {
@@ -407,6 +410,31 @@ impl ShmReader {
         Err(ShmError::SegmentNotInitialized(String::from(
             "Failed to read the SHM segment after all attempts",
         )))
+    }
+
+    /// Return the last consistent snapshot taken by this reader.
+    fn last_snapshot(&self) -> ClockErrorBound {
+        *self
+            .last_snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Record the snapshot taken at `generation` as the fallback for reads made while the writer
+    /// is updating the segment.
+    ///
+    /// Concurrent readers may race here with snapshots from different generations, and whichever
+    /// stores last wins. This is harmless: any consistent snapshot is a valid, if slightly more
+    /// pessimistic, bound on clock error, and the next read to see a newer generation refreshes
+    /// the fallback again.
+    fn remember(&self, generation: u16, snapshot: ClockErrorBound) {
+        let mut last_snapshot = self
+            .last_snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *last_snapshot = snapshot;
+        self.last_snapshot_gen
+            .store(generation, atomic::Ordering::Release);
     }
 }
 
@@ -603,7 +631,7 @@ mod t_reader {
         );
 
         let path = CString::new(clockbound_shm_path).expect("CString failed");
-        let mut reader = ShmReader::new(&path).expect("Failed to create ShmReader");
+        let reader = ShmReader::new(&path).expect("Failed to create ShmReader");
         let version = unsafe { &*reader.version };
         assert_eq!(version.load(atomic::Ordering::Relaxed), 0x0303);
 
@@ -636,5 +664,136 @@ mod t_reader {
         assert!(
             matches!(result.unwrap_err(), ShmError::SegmentVersionNotSupported(msg) if msg.starts_with("Clockbound shared memory segment supports versions"))
         );
+    }
+
+    /// Assert that a snapshot falls back to the last consistent one while the writer is in the
+    /// middle of an update or has restarted, and picks up new data once an update is complete.
+    #[test]
+    fn test_reader_snapshot_falls_back_while_writer_updates() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut clockbound_shm_file = OpenOptions::new()
+            .write(true)
+            .open(clockbound_shm_path)
+            .expect("open clockbound file failed");
+        write_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            400,
+            0x0303,
+            10,
+            (0, 0),
+            (0, 0),
+            123,
+            0
+        );
+
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
+        let reader = ShmReader::new(&path).expect("Failed to create ShmReader");
+        let snapshot = reader.snapshot().expect("Failed to take a snapshot");
+        assert_eq!(snapshot.bound_nsec(), 123);
+
+        // An odd generation marks an update in progress: the previous snapshot is returned.
+        let _ = clockbound_shm_file.rewind();
+        write_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            400,
+            0x0303,
+            11,
+            (0, 0),
+            (0, 0),
+            456,
+            0
+        );
+        let snapshot = reader.snapshot().expect("Failed to take a snapshot");
+        assert_eq!(snapshot.bound_nsec(), 123);
+
+        // The update completed: the new data is returned.
+        let _ = clockbound_shm_file.rewind();
+        write_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            400,
+            0x0303,
+            12,
+            (0, 0),
+            (0, 0),
+            456,
+            0
+        );
+        let snapshot = reader.snapshot().expect("Failed to take a snapshot");
+        assert_eq!(snapshot.bound_nsec(), 456);
+
+        // A generation of zero marks a writer that restarted and has not published data yet.
+        let _ = clockbound_shm_file.rewind();
+        write_memory_segment!(
+            clockbound_shm_file,
+            0x414D5A4E,
+            0x43420200,
+            400,
+            0x0303,
+            0,
+            (0, 0),
+            (0, 0),
+            789,
+            0
+        );
+        let snapshot = reader.snapshot().expect("Failed to take a snapshot");
+        assert_eq!(snapshot.bound_nsec(), 456);
+    }
+
+    /// Assert that one reader can be shared across threads while the writer keeps updating the
+    /// segment: every snapshot is one of the values written, never a torn or failed read.
+    #[test]
+    fn test_reader_shared_across_threads_with_concurrent_writer() {
+        use crate::shm::{ShmWrite, ShmWriter};
+
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ShmReader>();
+
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        let mut writer = ShmWriter::new(
+            std::path::Path::new(clockbound_shm_path),
+            ClockErrorBoundLayoutVersion::V3,
+            ClockErrorBoundLayoutVersion::V3,
+        )
+        .expect("Failed to create a writer");
+        let cebs = [123, 456].map(|bound_nsec| {
+            ClockErrorBoundGeneric::builder()
+                .bound_nsec(bound_nsec)
+                .clock_status(ClockStatus::Synchronized)
+                .build(ClockErrorBoundLayoutVersion::V3)
+        });
+        writer.write(&cebs[0]);
+
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
+        let reader = ShmReader::new(&path).expect("Failed to create ShmReader");
+        // Seed the fallback snapshot so a read that lands in the middle of an update below is
+        // still one of the values written.
+        assert_eq!(
+            reader.snapshot().expect("Failed to take a snapshot"),
+            cebs[0]
+        );
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..10_000 {
+                        let snapshot = reader.snapshot().expect("Failed to take a snapshot");
+                        assert!(cebs.contains(&snapshot), "torn read: {snapshot:?}");
+                    }
+                });
+            }
+            for i in 0..10_000 {
+                writer.write(&cebs[i % 2]);
+            }
+        });
     }
 }

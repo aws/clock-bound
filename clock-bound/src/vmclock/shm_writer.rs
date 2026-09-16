@@ -361,13 +361,13 @@ mod t_writer {
         writer.write(&vmclock_shm_body);
 
         // Read it back into a snapshot
-        let mut reader =
+        let reader =
             VMClockShmReader::new(&vmclock_shm_path).expect("Failed to create VMClockShmReader");
         let snapshot = reader
             .snapshot()
             .expect("Failed to take a VMClockShmBody snapshot");
 
-        assert_eq!(*snapshot, vmclock_shm_body);
+        assert_eq!(snapshot, vmclock_shm_body);
     }
 
     /// Assert that an existing memory mapped segment is wiped clean if dirty.
@@ -390,13 +390,13 @@ mod t_writer {
         writer.write(&vmclock_shm_body);
 
         // Read it back into a snapshot
-        let mut reader =
+        let reader =
             VMClockShmReader::new(&vmclock_shm_path).expect("Failed to create VMClockShmReader");
         let snapshot = reader
             .snapshot()
             .expect("Failed to take a clock error bound snapshot");
 
-        assert_eq!(*snapshot, vmclock_shm_body);
+        assert_eq!(snapshot, vmclock_shm_body);
     }
 
     /// Assert that an existing and valid segment is reused and updated.

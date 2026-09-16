@@ -77,8 +77,8 @@ impl VMClock {
             return Err(Error::FileNonexistent(self.path.clone()));
         }
 
-        let mut reader = Reader::new(&self.path)?;
-        let previous_shm_body = *reader.snapshot()?;
+        let reader = VMClockShmReader::new(&self.path)?;
+        let previous_shm_body = reader.snapshot()?;
 
         self.transition_to_running(Running {
             reader,
@@ -227,29 +227,6 @@ impl std::fmt::Debug for VMClock {
     }
 }
 
-/// This is a wrapper for the [`VMClockShmReader`] struct used to bypass its !Send rules.
-///
-/// [`VMClockShmReader`] has explicit rules against the implementation of `Send`. These were
-/// implemented, in part, to protect those using Clockbound as a library, where the underlying
-/// pointers in `VMClockShmReader` could result in unexpected behavior due to their unsafe nature.
-/// Unlike the `VMClockShmReader` `Reader` is not apart of the external facing library and in the
-/// context of the ClockBound daemon its use is constrained such that it can be utilized safely.
-/// Within the Clockbound context that means the Reader cannot be copied, the underlying pointers
-/// can not be accessed directly and only one task has access to the struct.
-struct Reader(VMClockShmReader);
-
-impl Reader {
-    fn new(path: &str) -> Result<Self, ShmError> {
-        Ok(Reader(VMClockShmReader::new(path)?))
-    }
-
-    fn snapshot(&mut self) -> Result<&VMClockShmBody, ShmError> {
-        self.0.snapshot()
-    }
-}
-
-unsafe impl Send for Reader {}
-
 /// Indicates the current status of the VMClock.
 #[derive(Debug, PartialEq)]
 pub enum ClockDisruptionStatus {
@@ -299,7 +276,7 @@ enum InternalState {
 
 /// The working data owned by the VMClock task while it is sampling the shared memory file.
 struct Running {
-    reader: Reader,
+    reader: VMClockShmReader,
     previous_shm_body: VMClockShmBody,
 }
 

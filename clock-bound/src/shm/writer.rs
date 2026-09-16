@@ -385,12 +385,12 @@ mod t_writer {
 
         // Read it back into a snapshot
         let path = CString::new(clockbound_shm_path).expect("CString failed");
-        let mut reader = ShmReader::new(&path).expect("Failed to create ShmReader");
+        let reader = ShmReader::new(&path).expect("Failed to create ShmReader");
         let snapshot = reader
             .snapshot()
             .expect("Failed to take a clock error bound snapshot");
 
-        assert_eq!(*snapshot, ceb);
+        assert_eq!(snapshot, ceb);
     }
 
     /// Assert that an existing memory mapped segment is wiped clean if dirty.
@@ -420,12 +420,12 @@ mod t_writer {
 
         // Read it back into a snapshot
         let path = CString::new(clockbound_shm_path).expect("CString failed");
-        let mut reader = ShmReader::new(&path).expect("Failed to create ShmReader");
+        let reader = ShmReader::new(&path).expect("Failed to create ShmReader");
         let snapshot = reader
             .snapshot()
             .expect("Failed to take a clock error bound snapshot");
 
-        assert_eq!(*snapshot, ceb);
+        assert_eq!(snapshot, ceb);
     }
 
     /// Assert that an existing and valid segment is reused and updated.
