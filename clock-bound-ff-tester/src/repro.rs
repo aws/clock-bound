@@ -2,6 +2,8 @@
 
 mod log_format_primer;
 mod log_parse;
+#[cfg(test)]
+pub(crate) use log_parse::repro_events_from_reader;
 pub use log_parse::{ReproEventReader, repro_events_from_log_file};
 
 use std::{borrow::Borrow, io::Write};
