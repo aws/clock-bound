@@ -105,37 +105,44 @@ impl<T: TscRtt> RingBuffer<T> {
     /// Return the value with the lowest rtt in the specified quarter of the ring buffer.
     ///
     /// This returns `Some` as long as the buffer is not empty.
-    #[expect(clippy::missing_panics_doc, reason = "unwraps have checks")]
     pub fn min_rtt_in_quarter(&self, quarter: Quarter) -> Option<&T> {
-        if self.is_empty() {
+        self.min_rtt_in_quarter_from(0, quarter)
+    }
+
+    /// Return the value with the lowest rtt in the specified quarter of the events from index
+    /// `start` (oldest first) to the newest.
+    ///
+    /// The quarters are measured on the `counter_pre` span of that range, exactly as
+    /// [`Self::min_rtt_in_quarter`] measures them on the whole buffer. This returns `Some` as
+    /// long as the range is not empty.
+    #[expect(clippy::missing_panics_doc, reason = "unwraps have checks")]
+    pub fn min_rtt_in_quarter_from(&self, start: usize, quarter: Quarter) -> Option<&T> {
+        if start >= self.len() {
             return None;
         }
+        // unwraps okay: start < len, so both the oldest and the newest of the range exist
+        let range_start_pre_tsc = self.peek_at(start).unwrap().counter_pre();
+        let range_end_pre_tsc = self.head().unwrap().counter_pre();
+        let quarter_span = (range_end_pre_tsc - range_start_pre_tsc) / 4;
 
         // Identify the element range
         let (start_idx, end_idx) = match quarter {
             Quarter::Oldest => {
-                let start_idx = 0;
-                // unwraps okay. buffer isn't empty
-                let start_pre_tsc = self.tail().unwrap().counter_pre();
-                let end_pre_tsc = self.head().unwrap().counter_pre();
-                let end_pre_tsc = start_pre_tsc + (end_pre_tsc - start_pre_tsc) / 4;
-                let mut end_idx = 0;
-                for event in self.iter() {
+                let end_pre_tsc = range_start_pre_tsc + quarter_span;
+                let mut end_idx = start;
+                for event in self.iter().skip(start) {
                     if event.counter_pre() > end_pre_tsc {
                         break;
                     }
                     end_idx += 1;
                 }
-                (start_idx, end_idx)
+                (start, end_idx)
             }
             Quarter::Newest => {
                 let end_idx = self.len();
-                // unwraps okay. buffer isn't empty
-                let start_pre_tsc = self.tail().unwrap().counter_pre();
-                let end_pre_tsc = self.head().unwrap().counter_pre();
-                let start_pre_tsc = end_pre_tsc - (end_pre_tsc - start_pre_tsc) / 4;
+                let start_pre_tsc = range_end_pre_tsc - quarter_span;
                 let mut start_idx = self.len();
-                for event in self.iter().rev() {
+                for event in self.iter().rev().take(self.len() - start) {
                     if event.counter_pre() < start_pre_tsc {
                         break;
                     }
@@ -150,6 +157,18 @@ impl<T: TscRtt> RingBuffer<T> {
             .skip(start_idx)
             .take(end_idx - start_idx)
             .min_by_key(|v| v.rtt())
+    }
+
+    /// Index (oldest first) of the first event whose `counter_post` is at or after `counter_post`,
+    /// or `len()` if there is none.
+    ///
+    /// Same comparison as [`Self::expunge_old`], so "the events a window keeps" and "the events a
+    /// window's view contains" can never disagree by one.
+    pub fn index_at_or_after(&self, counter_post: TscCount) -> usize {
+        self.buffer
+            .iter()
+            .position(|event| event.counter_post() >= counter_post)
+            .unwrap_or(self.len())
     }
 }
 
@@ -451,5 +470,94 @@ mod tests {
         assert_eq!(buffer.len(), 2);
         assert_eq!(buffer.tail().unwrap().counter_pre(), TscCount::new(200));
         assert_eq!(buffer.head().unwrap().counter_pre(), TscCount::new(300));
+    }
+
+    #[test]
+    fn index_at_or_after_mirrors_expunge_old() {
+        let mut buffer = RingBuffer::new(NonZeroUsize::new(8).unwrap());
+        for post in [100_u64, 200, 300, 400] {
+            buffer.push(TestEvent::new(post - 10, post));
+        }
+        assert_eq!(buffer.index_at_or_after(TscCount::new(50)), 0);
+        assert_eq!(buffer.index_at_or_after(TscCount::new(200)), 1); // at
+        assert_eq!(buffer.index_at_or_after(TscCount::new(201)), 2); // after
+        assert_eq!(buffer.index_at_or_after(TscCount::new(400)), 3);
+        assert_eq!(buffer.index_at_or_after(TscCount::new(401)), buffer.len());
+
+        // Whatever expunge_old(before) keeps is exactly the suffix starting at index_at_or_after(before).
+        let before = TscCount::new(250);
+        let start = buffer.index_at_or_after(before);
+        let expected: Vec<_> = buffer.iter().skip(start).cloned().collect();
+        buffer.expunge_old(before);
+        assert_eq!(buffer.iter().cloned().collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn min_rtt_in_quarter_from_zero_is_min_rtt_in_quarter() {
+        let mut buffer = RingBuffer::new(NonZeroUsize::new(16).unwrap());
+        for (i, rtt) in [50_u64, 40, 30, 20, 10, 60, 70, 80].iter().enumerate() {
+            buffer.push(TestEvent::pre_and_rtt((i as u64 + 1) * 1_000, *rtt));
+        }
+        for quarter in [Quarter::Oldest, Quarter::Newest] {
+            assert_eq!(
+                buffer.min_rtt_in_quarter_from(0, quarter),
+                buffer.min_rtt_in_quarter(quarter)
+            );
+        }
+    }
+
+    #[test]
+    fn min_rtt_in_quarter_from_measures_quarters_on_the_suffix() {
+        // pre = 1000, 2000, ..., 8000; rtt chosen so each quarter has a distinct minimum.
+        let mut buffer = RingBuffer::new(NonZeroUsize::new(16).unwrap());
+        for (i, rtt) in [5_u64, 90, 90, 90, 20, 90, 90, 7].iter().enumerate() {
+            buffer.push(TestEvent::pre_and_rtt((i as u64 + 1) * 1_000, *rtt));
+        }
+        // Whole buffer: oldest quarter spans pre 1000..=2750 -> min rtt 5 (idx 0).
+        assert_eq!(
+            buffer
+                .min_rtt_in_quarter(Quarter::Oldest)
+                .unwrap()
+                .rtt()
+                .get(),
+            5
+        );
+        // Suffix from idx 4 (pre 5000..8000): oldest quarter spans 5000..=5750 -> the rtt-20 event.
+        assert_eq!(
+            buffer
+                .min_rtt_in_quarter_from(4, Quarter::Oldest)
+                .unwrap()
+                .rtt()
+                .get(),
+            20
+        );
+        // Newest quarter of that suffix spans 7250..=8000 -> the rtt-7 event.
+        assert_eq!(
+            buffer
+                .min_rtt_in_quarter_from(4, Quarter::Newest)
+                .unwrap()
+                .rtt()
+                .get(),
+            7
+        );
+        // A suffix of one element is its own oldest and newest quarter.
+        assert_eq!(
+            buffer
+                .min_rtt_in_quarter_from(7, Quarter::Oldest)
+                .unwrap()
+                .rtt()
+                .get(),
+            7
+        );
+        assert_eq!(
+            buffer
+                .min_rtt_in_quarter_from(7, Quarter::Newest)
+                .unwrap()
+                .rtt()
+                .get(),
+            7
+        );
+        // Out of range: nothing.
+        assert!(buffer.min_rtt_in_quarter_from(8, Quarter::Oldest).is_none());
     }
 }

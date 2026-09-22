@@ -138,22 +138,44 @@ impl<T: TscRtt + Debug> Local<T> {
     /// # Starvation warning
     /// This will clear out anything older than the cutoff. This CAN leave the ring buffer EMPTY
     pub fn expunge_old_events(&mut self, period: Period) {
-        let Some(head) = self.inner.head() else {
-            return; // we empty
-        };
-        let now_post_tsc = head.counter_post();
-
-        // We need to calculate the corresponding TSC for an SKM window ago
-        let cutoff_tsc = now_post_tsc - (self.window / period);
-
-        // If cutoff tsc is negative, that means we booted within an SKM window seconds.
-        // Log and bail
-        if cutoff_tsc <= TscCount::EPOCH {
-            tracing::debug!(%period, ?now_post_tsc, "We booted less than 1 window ago. Not deleting events.");
+        if self.inner.is_empty() {
             return;
         }
+        match self.cutoff(self.window, period) {
+            Some(cutoff_tsc) => self.inner.expunge_old(cutoff_tsc),
+            // A cutoff before the epoch means we booted within one window. Log and bail.
+            None => {
+                tracing::debug!(%period, ?self.window, "We booted less than 1 window ago. Not deleting events.");
+            }
+        }
+    }
 
-        self.inner.expunge_old(cutoff_tsc);
+    /// The counter value `window` before the newest event, or `None` when that instant falls at
+    /// or before the epoch (the machine booted less than one window ago) or the buffer is empty.
+    ///
+    /// Requires a period measurement to convert the window to counter ticks. The same cutoff
+    /// serves [`Self::expunge_old_events`] and [`Self::window_start`], so the two agree.
+    pub fn cutoff(&self, window: Duration, period: Period) -> Option<TscCount> {
+        let now_post_tsc = self.inner.head()?.counter_post();
+        let cutoff_tsc = now_post_tsc - (window / period);
+        (cutoff_tsc > TscCount::EPOCH).then_some(cutoff_tsc)
+    }
+
+    /// Index (oldest first) where the last `window` of events begins.
+    ///
+    /// A window at least as long as this buffer's own window is the whole buffer: `0`, with no
+    /// cutoff computed at all, so that the production configuration (windows equal to the buffer)
+    /// behaves exactly as before the windows existed. A shorter window narrows the view to the
+    /// events whose `counter_post` is at or after the cutoff; a cutoff before the epoch also means
+    /// the whole buffer.
+    pub fn window_start(&self, window: Duration, period: Period) -> usize {
+        if window >= self.window {
+            return 0;
+        }
+        match self.cutoff(window, period) {
+            Some(cutoff_tsc) => self.inner.index_at_or_after(cutoff_tsc),
+            None => 0,
+        }
     }
 }
 
@@ -282,5 +304,66 @@ mod tests {
 
         assert_eq!(local.inner.len(), 0);
         assert_eq!(local.rtt_threshold_multiplier, thresh); // unchanged
+    }
+
+    #[test]
+    fn cutoff_is_window_before_head_or_none_near_epoch() {
+        let period = Period::from_seconds(1e-9); // 1 GHz: 1 tick = 1 ns
+        let mut local: Local<TestEvent> = Local::new(NonZeroUsize::new(8).unwrap());
+        assert!(local.cutoff(Duration::from_secs(1), period).is_none()); // empty
+        local
+            .feed(TestEvent::new(5_000_000_000, 5_000_000_100))
+            .unwrap(); // head post = 5 s
+        assert_eq!(
+            local.cutoff(Duration::from_secs(2), period),
+            Some(TscCount::new(3_000_000_100))
+        );
+        // 5 s back from 5 s + 100 ns leaves 100 ticks: still after the epoch.
+        assert_eq!(
+            local.cutoff(Duration::from_secs(5), period),
+            Some(TscCount::new(100))
+        );
+        // A window reaching the epoch or before: None ("booted less than one window ago").
+        assert!(
+            local
+                .cutoff(Duration::from_secs(5) + Duration::from_nanos(100), period)
+                .is_none()
+        );
+        assert!(local.cutoff(Duration::from_secs(6), period).is_none());
+    }
+
+    #[test]
+    fn window_start_whole_buffer_when_window_is_not_shorter() {
+        let period = Period::from_seconds(1e-9);
+        let mut local: Local<TestEvent> =
+            Local::new(NonZeroUsize::new(8).unwrap()).with_window(Duration::from_secs(100));
+        for s in 1..=5_u64 {
+            local
+                .feed(TestEvent::new(s * 1_000_000_000, s * 1_000_000_000 + 100))
+                .unwrap();
+        }
+        // Equal to or longer than the buffer's window: index 0, regardless of the data.
+        assert_eq!(local.window_start(Duration::from_secs(100), period), 0);
+        assert_eq!(local.window_start(Duration::from_secs(1024), period), 0);
+    }
+
+    #[test]
+    fn window_start_narrows_to_the_last_window() {
+        let period = Period::from_seconds(1e-9);
+        let mut local: Local<TestEvent> =
+            Local::new(NonZeroUsize::new(8).unwrap()).with_window(Duration::from_secs(100));
+        // Events at 10 s, 11 s, ..., 15 s (post = pre + 100 ticks).
+        for s in 10..=15_u64 {
+            local
+                .feed(TestEvent::new(s * 1_000_000_000, s * 1_000_000_000 + 100))
+                .unwrap();
+        }
+        // Last 2 s before head post (15 s + 100 ns): cutoff 13 s + 100 ns -> events at 14 s, 15 s
+        // (the 13 s event's post equals the cutoff and is kept: same rule as expunge).
+        assert_eq!(local.window_start(Duration::from_secs(2), period), 3);
+        // A window shorter than the spacing: only the head.
+        assert_eq!(local.window_start(Duration::from_millis(500), period), 5);
+        // A window reaching before the epoch: the whole buffer.
+        assert_eq!(local.window_start(Duration::from_secs(20), period), 0);
     }
 }

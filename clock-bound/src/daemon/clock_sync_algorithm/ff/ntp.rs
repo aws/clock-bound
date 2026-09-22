@@ -133,32 +133,48 @@ impl Ntp {
         // Calculate uncorrected clock, aka `p^` and `K`
         self.uncorrected_clock = Self::calculate_uncorrected_clock(&self.local, &self.estimate);
 
-        // Then calculate the local period using just the local event buffer
+        // Without an uncorrected clock there is no period estimate to measure the windows with,
+        // and (fewer than two samples anywhere) no local period either: nothing to compute yet.
+        let Some(uncorrected_clock) = self.uncorrected_clock else {
+            tracing::debug!("Early exit. No uncorrected clock yet.");
+            return None;
+        };
+
+        // Then calculate the local period using the last `period_window` of the local event buffer
         //
         // This value is not used in the above equation, but IS reported in the final clock parameters
-        let Some(local_period) = Self::calculate_local_period_and_error(&self.local) else {
+        let Some(local_period) = Self::calculate_local_period_and_error(
+            &self.local,
+            self.source_params.period_window,
+            uncorrected_clock,
+        ) else {
             tracing::debug!("Early exit. Calculate local period returned none.");
             return None;
         };
 
-        // expect because not having an uncorrected clock is a bug at this point
+        // Calculate `θ^(t)` over the last `theta_window` of the local event buffer.
         //
-        // If we are able to calculate a local period, then uncorrected clock must be available
-        #[expect(clippy::missing_panics_doc, reason = "comment above")]
-        let uncorrected_clock = self
-            .uncorrected_clock
-            .expect("No uncorrected period but we have local period");
-
-        // Calculate `θ^(t)`
-        let CalculateThetaOutput {
+        // An empty window means the source is starving: no new clock parameters are emitted and
+        // the previous calculation remains the best one available.
+        //
+        // TODO: the window is never widened to compensate or adapt to starvation; to revisit.
+        let Some(CalculateThetaOutput {
             theta,
             clock_error_bound,
-        } = Self::calculate_theta(
+        }) = Self::calculate_theta(
             &self.local,
+            self.source_params.theta_window,
             local_period.period_local,
             uncorrected_clock,
             self.source_params.error_normalization_factor,
-        );
+        )
+        else {
+            tracing::warn!(
+                theta_window = ?self.source_params.theta_window,
+                "No sample within the theta window. We are likely starving; keeping previous clock parameters."
+            );
+            return None;
+        };
 
         // Calculate `C(t)`
         //
@@ -357,13 +373,25 @@ impl Ntp {
     /// Returns `None` if `local` has less than 2 data points
     fn calculate_local_period_and_error(
         local: &event_buffer::Local<event::Ntp>,
+        period_window: Duration,
+        uncorrected_clock: UncorrectedClock,
     ) -> Option<LocalPeriodAndError> {
-        if local.as_ref().len() < 2 {
+        // Only the samples within the last `period_window` take part; a window equal to the
+        // buffer's own is the whole buffer (see `Local::window_start`).
+        let start = local.window_start(period_window, uncorrected_clock.p_estimate);
+        if local.as_ref().len() - start < 2 {
+            // Fewer than two samples in the window: no period can be estimated.
             return None;
         }
-        // unwrap okay, length of 2 means both quarters and min check will succeed
-        let old = local.as_ref().min_rtt_in_quarter(Quarter::Oldest).unwrap();
-        let new = local.as_ref().min_rtt_in_quarter(Quarter::Newest).unwrap();
+        // unwrap okay, a range of at least 2 means both quarters and min check will succeed
+        let old = local
+            .as_ref()
+            .min_rtt_in_quarter_from(start, Quarter::Oldest)
+            .unwrap();
+        let new = local
+            .as_ref()
+            .min_rtt_in_quarter_from(start, Quarter::Newest)
+            .unwrap();
 
         let local_period_and_error = old.calculate_period_with_error(new);
 
@@ -410,15 +438,23 @@ impl Ntp {
     )]
     fn calculate_theta(
         local: &event_buffer::Local<event::Ntp>,
+        theta_window: Duration,
         period_local: Period,
         uncorrected_clock: UncorrectedClock,
         error_normalization_factor: f64,
-    ) -> CalculateThetaOutput {
+    ) -> Option<CalculateThetaOutput> {
         // `error_normalization_factor` penalises the feed-forward samples that have a slower
         // reference clock read duration (see `SourceParams::error_normalization_factor`).
 
-        assert!(!local.is_empty());
+        // Only the samples within the last `theta_window` take part in the weighted average. The
+        // RTT filter below keeps the whole local buffer as its reference: the buffer's window
+        // (the larger of the two source windows) is the scope of the filter, not `theta_window`.
+        let start = local.window_start(theta_window, uncorrected_clock.p_estimate);
+        if start >= local.as_ref().len() {
+            return None;
+        }
 
+        // unwraps okay: the range is not empty, so the buffer is not empty
         let now_post = local.as_ref().head().unwrap().counter_post();
         let skew = Skew::from_ratio(period_local, uncorrected_clock.p_estimate);
         let mut numerator = 0.0;
@@ -428,7 +464,7 @@ impl Ntp {
 
         let mut max_ceb = Duration::from_secs(0);
 
-        for event in local.iter() {
+        for event in local.iter().skip(start) {
             if event.rtt() > (min_event.rtt() * local.rtt_threshold_multiplier()) {
                 tracing::trace!(?event, ?min_event, "skipping event due to rtt threshold");
                 continue;
@@ -465,10 +501,10 @@ impl Ntp {
         let theta_nsec = numerator / denominator;
         let theta = Duration::from_seconds_f64(theta_nsec / 1e9);
         tracing::debug!(?theta, ?uncorrected_clock, %period_local, "Calculated theta");
-        CalculateThetaOutput {
+        Some(CalculateThetaOutput {
             theta,
             clock_error_bound: max_ceb,
-        }
+        })
     }
 }
 
@@ -485,6 +521,19 @@ mod tests {
 
     use super::*;
 
+    /// A window at least as long as any test buffer's own window: the whole buffer.
+    fn whole_buffer() -> Duration {
+        Local::<event::Ntp>::SKM_WINDOW
+    }
+
+    /// A 1 GHz counter with an arbitrary epoch, for measuring windows in tests.
+    fn uncorrected_1ghz() -> UncorrectedClock {
+        UncorrectedClock {
+            p_estimate: Period::from_seconds(1e-9),
+            k: Instant::from_days(1),
+        }
+    }
+
     #[test]
     fn empty_buffers() {
         let local = Local::new(NonZeroUsize::new(1).unwrap());
@@ -498,7 +547,8 @@ mod tests {
         // return none if local has < 2 events
 
         let mut local = event_buffer::Local::new(NonZeroUsize::new(2).unwrap());
-        let result = Ntp::calculate_local_period_and_error(&local);
+        let result =
+            Ntp::calculate_local_period_and_error(&local, whole_buffer(), uncorrected_1ghz());
         assert!(result.is_none());
 
         local
@@ -518,7 +568,8 @@ mod tests {
             )
             .unwrap();
 
-        let result = Ntp::calculate_local_period_and_error(&local);
+        let result =
+            Ntp::calculate_local_period_and_error(&local, whole_buffer(), uncorrected_1ghz());
         assert!(result.is_none());
     }
 
@@ -557,7 +608,9 @@ mod tests {
         local.feed(old_event).unwrap();
         local.feed(new_event).unwrap();
 
-        let result = Ntp::calculate_local_period_and_error(&local).unwrap();
+        let result =
+            Ntp::calculate_local_period_and_error(&local, whole_buffer(), uncorrected_1ghz())
+                .unwrap();
         assert_eq!(result.period_local, Period::from_seconds(1.0e-9));
     }
 
@@ -755,7 +808,8 @@ mod tests {
         let CalculateThetaOutput {
             theta,
             clock_error_bound,
-        } = Ntp::calculate_theta(&local, local_period, uncorrected_clock, 1e5);
+        } = Ntp::calculate_theta(&local, whole_buffer(), local_period, uncorrected_clock, 1e5)
+            .unwrap();
 
         assert_eq!(theta, Duration::from_secs(0));
         assert_eq!(
@@ -817,7 +871,8 @@ mod tests {
         let CalculateThetaOutput {
             theta,
             clock_error_bound,
-        } = Ntp::calculate_theta(&local, local_period, uncorrected_clock, 1e5);
+        } = Ntp::calculate_theta(&local, whole_buffer(), local_period, uncorrected_clock, 1e5)
+            .unwrap();
 
         assert_eq!(theta, Duration::from_micros(-5));
         assert_eq!(
