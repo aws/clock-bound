@@ -10,9 +10,9 @@ use crate::daemon::ClockSyncAlgorithm;
 use crate::daemon::ReceiverStream;
 use crate::daemon::async_ring_buffer;
 use crate::daemon::autodetect::{self, Autodetect};
+use crate::daemon::clock_sync_algorithm::FfSyncParams;
 use crate::daemon::clock_sync_algorithm::source;
 use crate::daemon::io::SourceIO;
-use crate::daemon::time::tsc::Skew;
 use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 use tracing::info;
 
@@ -46,7 +46,7 @@ impl<'a> SourceMutator<'a> {
     pub async fn init_from_autodetect_results(
         &mut self,
         autodetect: &Autodetect,
-        max_dispersion: Skew,
+        ff_sync_params: &FfSyncParams,
     ) {
         match autodetect {
             Autodetect::Amazon(amazon) => {
@@ -59,7 +59,7 @@ impl<'a> SourceMutator<'a> {
                         "Amazon EC2 Xen instance detected. Installing Amazon-specific sources."
                     ),
                 }
-                self.init_amazon_sources(amazon, max_dispersion).await;
+                self.init_amazon_sources(amazon, ff_sync_params).await;
             }
             Autodetect::Other => {
                 info!("Non-Amazon platform detected. Skipping Amazon-specific sources.");
@@ -70,9 +70,13 @@ impl<'a> SourceMutator<'a> {
     /// Install all Amazon-specific clock sources: local Amazon Time Sync NTP, PHC, and VMClock.
     ///
     /// VMClock is only installed on non-metal instances
-    async fn init_amazon_sources(&mut self, amazon: &autodetect::Amazon, max_dispersion: Skew) {
-        self.set_amazon_time_sync(max_dispersion);
-        self.set_phc(max_dispersion).await;
+    async fn init_amazon_sources(
+        &mut self,
+        amazon: &autodetect::Amazon,
+        ff_sync_params: &FfSyncParams,
+    ) {
+        self.set_amazon_time_sync(ff_sync_params);
+        self.set_phc(ff_sync_params).await;
 
         // VMClock only touches the IO layer — it does not wire into the clock sync algorithm or
         // receiver stream. It provides clock disruption events, not time samples.
@@ -88,9 +92,9 @@ impl<'a> SourceMutator<'a> {
     }
 
     /// Set the Amazon Time Sync source in the daemon
-    pub fn set_amazon_time_sync(&mut self, max_dispersion: Skew) {
+    pub fn set_amazon_time_sync(&mut self, ff_sync_params: &FfSyncParams) {
         self.clock_sync_algorithm
-            .set_amazon_time_sync(source::AmazonTimeSync::new(max_dispersion));
+            .set_amazon_time_sync(source::AmazonTimeSync::new(ff_sync_params));
 
         let (tx, rx) = async_ring_buffer::create(2);
         self.receiver_stream.set_amazon_time_sync(rx);
@@ -101,7 +105,7 @@ impl<'a> SourceMutator<'a> {
     // TODO: make this function no longer async io moves to task runtime
     // TODO: This creates the io component first. This is not ideal, as it complicates
     // the logic of moving io initialization to the PHC IO task
-    pub async fn set_phc(&mut self, max_dispersion_growth: Skew) {
+    pub async fn set_phc(&mut self, ff_sync_params: &FfSyncParams) {
         let (tx, rx) = async_ring_buffer::create(2);
         self.io_front_end.create_phc(tx).await;
 
@@ -115,15 +119,15 @@ impl<'a> SourceMutator<'a> {
 
         self.receiver_stream.set_phc(phc_path.clone(), rx);
         self.clock_sync_algorithm
-            .set_phc(source::Phc::new(phc_path, max_dispersion_growth));
+            .set_phc(source::Phc::new(phc_path, ff_sync_params));
     }
 
     /// Add an NTP source in the daemon
-    pub fn add_ntp_source(&mut self, socket_addr: SocketAddr, max_dispersion: Skew) {
+    pub fn add_ntp_source(&mut self, socket_addr: SocketAddr, ff_sync_params: &FfSyncParams) {
         self.clock_sync_algorithm
             .add_ntp_source(source::NtpSource::new_ip_addr_source(
                 socket_addr,
-                max_dispersion,
+                ff_sync_params,
             ));
 
         let (tx, rx) = async_ring_buffer::create(2);
@@ -165,10 +169,10 @@ impl<'a> SourceMutator<'a> {
         &mut self,
         pool_domain: &str,
         socket_addr: SocketAddr,
-        max_dispersion: Skew,
+        ff_sync_params: &FfSyncParams,
     ) {
         let source =
-            source::NtpSource::new_with_pool(socket_addr, pool_domain.to_owned(), max_dispersion);
+            source::NtpSource::new_with_pool(socket_addr, pool_domain.to_owned(), ff_sync_params);
         self.clock_sync_algorithm.add_ntp_source(source);
 
         let (tx, rx) = async_ring_buffer::create(2);
@@ -196,13 +200,13 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::daemon::ClockSyncAlgorithm;
+    use crate::daemon::clock_sync_algorithm::FfSyncParams;
     use crate::daemon::clock_sync_algorithm::Selector;
     use crate::daemon::io::SourceIO;
     use crate::daemon::io::ntp::DaemonInfo;
     use crate::daemon::message::Dns as DnsMessage;
     use crate::daemon::receiver_stream::ReceiverStream;
     use crate::daemon::selected_clock::SelectedClockSource;
-    use crate::daemon::time::tsc::Skew;
 
     use super::SourceMutator;
 
@@ -217,9 +221,10 @@ mod tests {
 
         let (dns_message_tx, _dns_message_rx) = mpsc::channel::<DnsMessage>(1);
         let io = SourceIO::construct(selected_clock.clone(), daemon_info, dns_message_tx);
+        let ff_sync_params = FfSyncParams::default();
         let csa = ClockSyncAlgorithm::builder()
             .selected_clock(selected_clock)
-            .selector(Selector::new(Skew::from_ppm(15.0)))
+            .selector(Selector::new(ff_sync_params.max_dispersion))
             .build();
         let receiver_stream = ReceiverStream::default();
 
@@ -234,7 +239,8 @@ mod tests {
         assert!(rs.amazon_time_sync().is_none());
 
         let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
-        mutator.set_amazon_time_sync(Skew::from_ppm(15.0));
+        let ff_sync_params = FfSyncParams::default();
+        mutator.set_amazon_time_sync(&ff_sync_params);
 
         assert!(csa.amazon_time_sync().is_some());
         assert!(rs.amazon_time_sync().is_some());
@@ -249,7 +255,8 @@ mod tests {
         assert!(csa.ntp_sources().is_empty());
 
         let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
-        mutator.add_ntp_source(addr, Skew::from_ppm(15.0));
+        let ff_sync_params = FfSyncParams::default();
+        mutator.add_ntp_source(addr, &ff_sync_params);
 
         assert_eq!(csa.ntp_sources().len(), 1);
         assert_eq!(csa.ntp_sources()[0].socket_address(), addr);
@@ -264,8 +271,9 @@ mod tests {
 
         {
             let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
-            mutator.add_ntp_source(addr1, Skew::from_ppm(15.0));
-            mutator.add_ntp_source(addr2, Skew::from_ppm(10.0));
+            let ff_sync_params = FfSyncParams::default();
+            mutator.add_ntp_source(addr1, &ff_sync_params);
+            mutator.add_ntp_source(addr2, &ff_sync_params);
         }
 
         assert_eq!(csa.ntp_sources().len(), 2);

@@ -64,10 +64,15 @@ impl<T> Estimate<T> {
     // Hold data from 600 SKM windows
     const CAPACITY: NonZeroUsize = NonZeroUsize::new(600).unwrap();
 
-    /// Construct
+    /// Construct with the production capacity (600 SKM windows of history).
     pub fn new() -> Self {
+        Self::with_capacity(Self::CAPACITY)
+    }
+
+    /// Construct with an explicit capacity, in SKM windows of history.
+    pub fn with_capacity(capacity: NonZeroUsize) -> Self {
         Self {
-            inner: RingBuffer::new(Self::CAPACITY),
+            inner: RingBuffer::new(capacity),
             last_counter_post: None,
         }
     }

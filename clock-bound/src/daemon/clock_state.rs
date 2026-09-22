@@ -9,7 +9,6 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::daemon::MAX_DISPERSION_GROWTH_PPB;
 use crate::daemon::async_ring_buffer::Receiver;
 use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_state::adjust_data::ClockAdjustData;
@@ -28,6 +27,7 @@ use crate::daemon::logging::synchronization::{
     log_clock_status_change, log_sync_snapshot, log_system_clock_step, log_system_clock_summary,
 };
 use crate::daemon::time::clocks::{ClockBound, MonotonicCoarse};
+use crate::daemon::time::tsc::Skew;
 use crate::daemon::time::{Clock, Duration};
 use crate::shm::{
     CLOCKBOUND_SHM_DEFAULT_PATH_V0, CLOCKBOUND_SHM_DEFAULT_PATH_V1, ClockErrorBoundLayoutVersion,
@@ -84,6 +84,7 @@ impl ClockState {
         cancellation_token: CancellationToken,
         vmclock_params: Option<VMClockParams>,
         clock_status: ClockStatus,
+        max_dispersion: Skew,
     ) -> Self {
         // Clock disruption support is enabled whenever a VMClock source exists (i.e. we expected
         // one on this platform), even if it failed to initialize.
@@ -118,7 +119,13 @@ impl ClockState {
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
             .shm_writer_0(safe_shm_writer_0)
             .shm_writer_1(safe_shm_writer_1)
-            .max_drift_ppb(MAX_DISPERSION_GROWTH_PPB)
+            // The same oscillator bound the synchronization algorithm uses; always representable
+            // (validated positive and far below 1e9 ppb).
+            .max_drift_ppb(
+                max_dispersion
+                    .to_ppb()
+                    .expect("max_dispersion is a valid ppb value"),
+            )
             .disruption_marker(disruption_marker)
             .build();
         #[cfg(not(feature = "test-side-by-side"))]

@@ -47,14 +47,13 @@ use {
             async_ring_buffer::Sender,
             autodetect::Autodetect,
             clock_state::ClockState,
-            clock_sync_algorithm::{ClockSyncAlgorithm, Selector, SyncParameters},
+            clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector, SyncParameters},
             config::{Host, SourcesConfig},
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
             message::Dns as DnsMessage,
             receiver_stream::{ReceiverStream, RoutableEvent},
             selected_clock::SelectedClockSource,
             source_mutator::SourceMutator,
-            time::tsc::Skew,
         },
         shm::ClockStatus,
     },
@@ -64,22 +63,6 @@ use {
     tokio_util::{sync::CancellationToken, task::TaskTracker},
     tracing::{debug, error, warn},
 };
-
-/// The maximum dispersion growth every second
-///
-/// In between updates, the clock error bound continuously grows to take into account the worse
-/// case drift of the underlying oscillator. The maximum dispersion is the rate of growth applied
-/// to the last clock error bound update.
-///
-/// If the value is 15,000 parts per billion, for example, then every second we go without an
-/// updated measurement the clock error bound will increase by 15 microseconds.
-///
-/// This number is based on CPU spec sheet error tolerances
-#[cfg(feature = "daemon")]
-pub(crate) const MAX_DISPERSION_GROWTH_PPB: u32 = 15_000;
-
-#[cfg(feature = "daemon")]
-const MAX_DISPERSION_GROWTH: Skew = Skew::from_ppb(MAX_DISPERSION_GROWTH_PPB as f64);
 
 /// The number of messages that can be in the daemon's mpsc channel
 ///
@@ -92,6 +75,8 @@ const DAEMON_MESSAGE_CAPACITY: usize = 5;
 pub struct Daemon {
     io_front_end: io::SourceIO,
     clock_sync_algorithm: ClockSyncAlgorithm,
+    /// The algorithm's tunables. Always the production defaults in the daemon.
+    ff_sync_params: FfSyncParams,
     receiver_stream: ReceiverStream,
     clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
     cancellation_token: CancellationToken,
@@ -129,9 +114,11 @@ impl Daemon {
         let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
 
         let mut receiver_stream = ReceiverStream::default();
+        // The daemon runs the algorithm with its production tunables and nothing else.
+        let ff_sync_params = FfSyncParams::default();
         let mut clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .selected_clock(selected_clock.clone())
-            .selector(Selector::new(MAX_DISPERSION_GROWTH))
+            .selector(Selector::new(ff_sync_params.max_dispersion))
             .build();
 
         let mut source_mutator = SourceMutator::new(
@@ -154,14 +141,14 @@ impl Daemon {
 
         // Install Amazon-conditional sources.
         source_mutator
-            .init_from_autodetect_results(&autodetect_result, MAX_DISPERSION_GROWTH)
+            .init_from_autodetect_results(&autodetect_result, &ff_sync_params)
             .await;
 
         // Install default pool
         source_mutator.add_pool(String::from("time.aws.com"));
 
         // Install sources from the configuration file.
-        Self::install_configured_sources(&mut source_mutator, &configured_sources);
+        Self::install_configured_sources(&mut source_mutator, &configured_sources, &ff_sync_params);
 
         // Read VMClock params (the source may have been created by init_amazon_sources above).
         let vmclock_params = io_front_end.vmclock_params();
@@ -175,6 +162,7 @@ impl Daemon {
                 clock_state_cancellation_token.clone(),
                 vmclock_params,
                 ClockStatus::Unknown,
+                ff_sync_params.max_dispersion,
             );
             (tx, clock_state)
         };
@@ -189,6 +177,7 @@ impl Daemon {
         Self {
             io_front_end,
             clock_sync_algorithm,
+            ff_sync_params,
             receiver_stream,
             clock_disruption_receiver,
             cancellation_token,
@@ -207,11 +196,12 @@ impl Daemon {
     fn install_configured_sources(
         source_mutator: &mut SourceMutator<'_>,
         configured_sources: &SourcesConfig,
+        ff_sync_params: &FfSyncParams,
     ) {
         for configured_source in configured_sources.ntp() {
             match configured_source {
                 config::NtpSource::Server(Host::Ip(ip)) => {
-                    source_mutator.add_ntp_source(SocketAddr::new(*ip, 123), MAX_DISPERSION_GROWTH);
+                    source_mutator.add_ntp_source(SocketAddr::new(*ip, 123), ff_sync_params);
                 }
                 config::NtpSource::Server(Host::Domain(d)) => {
                     source_mutator.add_domain_host(d.to_string());
@@ -319,7 +309,7 @@ impl Daemon {
         );
         match dns_message {
             DnsMessage::AddPoolAddr(msg) => {
-                source_mutator.add_pool_source(&msg.pool_domain, msg.addr, MAX_DISPERSION_GROWTH);
+                source_mutator.add_pool_source(&msg.pool_domain, msg.addr, &self.ff_sync_params);
             }
             DnsMessage::RemovePoolAddr(msg) => {
                 source_mutator
@@ -335,6 +325,7 @@ impl Daemon {
         let Self {
             io_front_end: _,
             clock_sync_algorithm,
+            ff_sync_params: _,
             receiver_stream,
             clock_disruption_receiver,
             cancellation_token: _,
@@ -390,10 +381,10 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-    use super::{DAEMON_MESSAGE_CAPACITY, Daemon, MAX_DISPERSION_GROWTH, RunLoopControl};
+    use super::{DAEMON_MESSAGE_CAPACITY, Daemon, RunLoopControl};
     use crate::daemon::{
         async_ring_buffer,
-        clock_sync_algorithm::{ClockSyncAlgorithm, Selector},
+        clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector},
         config::SourcesConfig,
         io::SourceIO,
         io::dns::resolver::{Message as ResolverMessage, Resolver},
@@ -440,9 +431,10 @@ mod tests {
             SourceIO::construct(selected_clock.clone(), daemon_info, dns_message_tx.clone());
         let clock_disruption_receiver = io_front_end.clock_disruption_receiver();
 
+        let ff_sync_params = FfSyncParams::default();
         let clock_sync_algorithm = ClockSyncAlgorithm::builder()
             .selected_clock(selected_clock)
-            .selector(Selector::new(MAX_DISPERSION_GROWTH))
+            .selector(Selector::new(ff_sync_params.max_dispersion))
             .build();
 
         let receiver_stream = ReceiverStream::default();
@@ -459,6 +451,7 @@ mod tests {
         let daemon = Daemon {
             io_front_end,
             clock_sync_algorithm,
+            ff_sync_params,
             receiver_stream,
             clock_disruption_receiver,
             cancellation_token: CancellationToken::new(),
@@ -617,7 +610,8 @@ mod tests {
                 &mut daemon.receiver_stream,
             );
             mutator.add_pool(POOL_DOMAIN.to_string());
-            mutator.add_pool_source(POOL_DOMAIN, addr, MAX_DISPERSION_GROWTH);
+            let ff_sync_params = FfSyncParams::default();
+            mutator.add_pool_source(POOL_DOMAIN, addr, &ff_sync_params);
         }
 
         // Sanity: the source is installed everywhere before removal.
@@ -691,7 +685,8 @@ mod tests {
                 &mut daemon.clock_sync_algorithm,
                 &mut daemon.receiver_stream,
             );
-            Daemon::install_configured_sources(&mut mutator, &sources);
+            let ff_sync_params = FfSyncParams::default();
+            Daemon::install_configured_sources(&mut mutator, &sources, &ff_sync_params);
         }
 
         assert!(daemon.io_front_end.pools().is_empty());
@@ -716,7 +711,8 @@ mod tests {
                 &mut daemon.clock_sync_algorithm,
                 &mut daemon.receiver_stream,
             );
-            Daemon::install_configured_sources(&mut mutator, &sources);
+            let ff_sync_params = FfSyncParams::default();
+            Daemon::install_configured_sources(&mut mutator, &sources, &ff_sync_params);
         }
 
         let expected = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 123);
@@ -748,7 +744,8 @@ mod tests {
                 &mut daemon.clock_sync_algorithm,
                 &mut daemon.receiver_stream,
             );
-            Daemon::install_configured_sources(&mut mutator, &sources);
+            let ff_sync_params = FfSyncParams::default();
+            Daemon::install_configured_sources(&mut mutator, &sources, &ff_sync_params);
         }
 
         // Registered as a DNS-backed pool, no time source until resolution.
@@ -774,7 +771,8 @@ mod tests {
                 &mut daemon.clock_sync_algorithm,
                 &mut daemon.receiver_stream,
             );
-            Daemon::install_configured_sources(&mut mutator, &sources);
+            let ff_sync_params = FfSyncParams::default();
+            Daemon::install_configured_sources(&mut mutator, &sources, &ff_sync_params);
         }
 
         assert!(daemon.io_front_end.pools().contains_key("pool.ntp.example"));
@@ -805,7 +803,8 @@ mod tests {
                 &mut daemon.clock_sync_algorithm,
                 &mut daemon.receiver_stream,
             );
-            Daemon::install_configured_sources(&mut mutator, &sources);
+            let ff_sync_params = FfSyncParams::default();
+            Daemon::install_configured_sources(&mut mutator, &sources, &ff_sync_params);
         }
 
         // The IP server is a fixed-address NTP source.

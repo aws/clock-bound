@@ -1,5 +1,10 @@
 //! Feed forward clock sync algorithm
 
+mod ffsync_params;
+pub use ffsync_params::{
+    DEFAULT_ESTIMATE_CAPACITY, DEFAULT_MAX_DISPERSION_PPB, DEFAULT_SKM_WINDOW, FfSyncParams,
+    FfSyncParamsError, SourceParams,
+};
 mod selector;
 pub use selector::{Selector, SyncParameters};
 pub use source::SourceInfo;
@@ -289,7 +294,7 @@ mod tests {
     use crate::daemon::{
         event::Stratum,
         selected_clock::ClockSource,
-        time::{Duration, Instant, TscCount, tsc::Skew},
+        time::{Duration, Instant, TscCount},
     };
 
     use super::*;
@@ -314,11 +319,12 @@ mod tests {
 
         let event = RoutableEvent::AmazonTimeSync(event);
 
+        let ff_sync_params = FfSyncParams::default();
         let mut csa = ClockSyncAlgorithm::builder()
-            .amazon_time_sync(source::AmazonTimeSync::new(Skew::from_ppm(15.0)))
+            .amazon_time_sync(source::AmazonTimeSync::new(&ff_sync_params))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
-            .selector(Selector::new(Skew::from_ppm(15.0)))
+            .selector(Selector::new(ff_sync_params.max_dispersion))
             .build();
 
         let clock_parameters = csa.feed(event.clone());
@@ -372,14 +378,16 @@ mod tests {
     }
 
     fn make_csa() -> ClockSyncAlgorithm {
+        let ff_sync_params = FfSyncParams::default();
         ClockSyncAlgorithm::builder()
             .selected_clock(Arc::new(SelectedClockSource::default()))
-            .selector(Selector::new(Skew::from_ppm(15.0)))
+            .selector(Selector::new(ff_sync_params.max_dispersion))
             .build()
     }
 
     #[test]
     fn add_pool_source_and_feed() {
+        let ff_sync_params = FfSyncParams::default();
         let mut csa = make_csa();
         let pool_domain = "pool.ntp.org".to_string();
         let addr: SocketAddr = "192.0.2.1:123".parse().unwrap();
@@ -387,7 +395,7 @@ mod tests {
         csa.add_ntp_source(source::NtpSource::new_with_pool(
             addr,
             pool_domain,
-            Skew::from_ppm(15.0),
+            &ff_sync_params,
         ));
 
         let event = RoutableEvent::NtpSource(addr, make_ntp_event(500, 1000));
@@ -398,6 +406,7 @@ mod tests {
 
     #[test]
     fn remove_pool_source_removes_correct_source() {
+        let ff_sync_params = FfSyncParams::default();
         let mut csa = make_csa();
         let pool_domain = "pool.ntp.org".to_string();
         let addr: SocketAddr = "192.0.2.1:123".parse().unwrap();
@@ -405,7 +414,7 @@ mod tests {
         csa.add_ntp_source(source::NtpSource::new_with_pool(
             addr,
             pool_domain,
-            Skew::from_ppm(15.0),
+            &ff_sync_params,
         ));
         assert_eq!(csa.ntp_sources().len(), 1);
 

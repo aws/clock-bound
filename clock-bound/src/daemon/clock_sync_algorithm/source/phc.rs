@@ -1,10 +1,8 @@
 //! PHC source
 
 use crate::daemon::{
-    clock_parameters::ClockParameters,
-    clock_sync_algorithm::ff,
-    event,
-    time::{Duration, tsc::Skew},
+    clock_parameters::ClockParameters, clock_sync_algorithm::FfSyncParams,
+    clock_sync_algorithm::ff, event, time::Duration,
 };
 
 use super::DevicePath;
@@ -19,13 +17,14 @@ pub struct Phc {
 }
 
 impl Phc {
-    const POLL_INTERVAL: Duration = Duration::from_millis(500);
+    /// Expected sampling period; sizes the estimator's buffers (not a tunable).
+    pub(super) const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
     /// Create a new PHC reference clock source
-    pub fn new(device_path: DevicePath, max_dispersion: Skew) -> Self {
+    pub fn new(device_path: DevicePath, ff_sync_params: &FfSyncParams) -> Self {
         Self {
             device_path,
-            inner: ff::Phc::new(Self::POLL_INTERVAL, max_dispersion),
+            inner: ff::Phc::new(Self::POLL_INTERVAL, ff_sync_params, &ff_sync_params.phc),
         }
     }
 

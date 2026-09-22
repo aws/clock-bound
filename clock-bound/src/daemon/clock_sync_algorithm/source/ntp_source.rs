@@ -3,10 +3,10 @@
 use std::net::SocketAddr;
 
 use crate::daemon::clock_parameters::ClockParameters;
+use crate::daemon::clock_sync_algorithm::FfSyncParams;
 use crate::daemon::clock_sync_algorithm::ff;
 use crate::daemon::event;
 use crate::daemon::time::Duration;
-use crate::daemon::time::tsc::Skew;
 
 /// A NTP Server reference clock source
 ///
@@ -21,41 +21,34 @@ pub struct NtpSource {
 }
 
 impl NtpSource {
-    const POLL_INTERVAL: Duration = Duration::from_secs(16);
+    /// Expected sampling period; sizes the estimator's buffers (not a tunable).
+    pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(16);
 
     /// Constructor
     pub fn new(
         source_address: SocketAddr,
         pool_domain: Option<String>,
-        max_dispersion: Skew,
+        ff_sync_params: &FfSyncParams,
     ) -> Self {
         Self {
             source_address,
             pool_domain,
-            inner: ff::Ntp::new(Self::POLL_INTERVAL, max_dispersion),
+            inner: ff::Ntp::new(Self::POLL_INTERVAL, ff_sync_params, &ff_sync_params.ntp),
         }
     }
 
     /// Create a new NTP Source reference clock source
-    pub fn new_ip_addr_source(source_address: SocketAddr, max_dispersion: Skew) -> Self {
-        Self {
-            source_address,
-            pool_domain: None,
-            inner: ff::Ntp::new(Self::POLL_INTERVAL, max_dispersion),
-        }
+    pub fn new_ip_addr_source(source_address: SocketAddr, ff_sync_params: &FfSyncParams) -> Self {
+        Self::new(source_address, None, ff_sync_params)
     }
 
     /// Create a new NTP Source that belongs to a DNS pool
     pub fn new_with_pool(
         source_address: SocketAddr,
         pool_domain: String,
-        max_dispersion: Skew,
+        ff_sync_params: &FfSyncParams,
     ) -> Self {
-        Self {
-            source_address,
-            pool_domain: Some(pool_domain),
-            inner: ff::Ntp::new(Self::POLL_INTERVAL, max_dispersion),
-        }
+        Self::new(source_address, Some(pool_domain), ff_sync_params)
     }
 
     pub fn socket_address(&self) -> SocketAddr {

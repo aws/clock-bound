@@ -57,24 +57,22 @@ impl<T> Local<T> {
         }
     }
 
-    pub fn with_window(capacity: NonZeroUsize, window: Duration) -> Self {
-        Self {
-            inner: RingBuffer::new(capacity),
-            rtt_threshold_multiplier: 5,
-            window,
-        }
+    /// Use an expunge window other than [`Self::SKM_WINDOW`].
+    /// TODO: revisit the use of `bon` if valuable. This minimal implementation helps transition
+    /// into specializing the variants of the ffsync algorithm.
+    #[must_use]
+    pub fn with_window(mut self, window: Duration) -> Self {
+        self.window = window;
+        self
     }
 
-    /// Construct with a `rtt_threshold` multiplier
-    pub fn with_rtt_threshold_multiplier(
-        capacity: NonZeroUsize,
-        rtt_threshold_multiplier: usize,
-    ) -> Self {
-        Self {
-            inner: RingBuffer::new(capacity),
-            rtt_threshold_multiplier,
-            window: Self::SKM_WINDOW,
-        }
+    /// Use an RTT threshold multiplier other than the production default.
+    /// TODO: revisit the use of `bon` if valuable. This minimal implementation helps transition
+    /// into specializing the variants of the ffsync algorithm.
+    #[must_use]
+    pub fn with_rtt_threshold_multiplier(mut self, rtt_threshold_multiplier: usize) -> Self {
+        self.rtt_threshold_multiplier = rtt_threshold_multiplier;
+        self
     }
 
     pub fn window(&self) -> Duration {

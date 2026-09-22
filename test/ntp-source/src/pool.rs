@@ -42,14 +42,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clock_bound::daemon::clock_sync_algorithm::{ClockSyncAlgorithm, Selector};
+use clock_bound::daemon::clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector};
 use clock_bound::daemon::io::SourceIO;
 use clock_bound::daemon::io::ntp::DaemonInfo;
 use clock_bound::daemon::message::Dns as DnsMessage;
 use clock_bound::daemon::receiver_stream::{ReceiverStream, RoutableEvent};
 use clock_bound::daemon::selected_clock::SelectedClockSource;
 use clock_bound::daemon::source_mutator::SourceMutator;
-use clock_bound::daemon::time::tsc::Skew;
 
 use rand::{RngCore, rng};
 use tokio::sync::mpsc;
@@ -72,9 +71,6 @@ const EXPECTED_SINGLE_HOST_SOURCES: usize = 1;
 /// Minimum number of NTP responses we require from each created source
 /// before declaring the test successful.
 const MIN_RESPONSES_PER_SOURCE: usize = 2;
-
-/// Maximum oscillator dispersion growth (15 ppm), same as the daemon.
-const MAX_DISPERSION_GROWTH: Skew = Skew::from_ppm(15.0);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -115,9 +111,10 @@ fn setup(kind: PoolKind) -> TestHarness {
     let (dns_message_tx, dns_message_rx) = mpsc::channel::<DnsMessage>(16);
 
     let mut io = SourceIO::construct(selected_clock.clone(), daemon_info, dns_message_tx);
+    let ff_sync_params = FfSyncParams::default();
     let mut csa = ClockSyncAlgorithm::builder()
         .selected_clock(selected_clock.clone())
-        .selector(Selector::new(MAX_DISPERSION_GROWTH))
+        .selector(Selector::new(ff_sync_params.max_dispersion))
         .build();
     let mut receiver_stream = ReceiverStream::default();
 
@@ -348,7 +345,8 @@ async fn handle_dns_message(
                 &mut harness.csa,
                 &mut harness.receiver_stream,
             );
-            mutator.add_pool_source(&add.pool_domain, add.addr, MAX_DISPERSION_GROWTH);
+            let ff_sync_params = FfSyncParams::default();
+            mutator.add_pool_source(&add.pool_domain, add.addr, &ff_sync_params);
             // Register the created IP so we can track its response count. Use
             // `entry` so a re-added address does not reset an existing count.
             responses_per_source.entry(add.addr).or_insert(0);

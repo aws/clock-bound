@@ -117,9 +117,8 @@ mod tests {
     use std::sync::Arc;
 
     use clock_bound::daemon::{
-        clock_sync_algorithm::{Selector, source::AmazonTimeSync},
+        clock_sync_algorithm::{FfSyncParams, Selector, source::AmazonTimeSync},
         selected_clock::SelectedClockSource,
-        time::tsc::Skew,
     };
 
     use crate::time::CbBridge;
@@ -128,12 +127,13 @@ mod tests {
 
     #[test]
     fn perfect_does_not_panic() {
+        let ff_sync_params = FfSyncParams::default();
         let mut tester = TestAmazonTimeSync::new(
             ClockSyncAlgorithm::builder()
-                .amazon_time_sync(AmazonTimeSync::new(Skew::from_ppm(15.0)))
+                .amazon_time_sync(AmazonTimeSync::new(&ff_sync_params))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(Skew::from_ppm(15.0)))
+                .selector(Selector::new(ff_sync_params.max_dispersion))
                 .build(),
         );
         // running a week long scenario in -O0 is asking for trouble
@@ -143,12 +143,13 @@ mod tests {
 
     #[test]
     fn alg_is_perfect_under_perfect_conditions() {
+        let ff_sync_params = FfSyncParams::default();
         let mut tester = TestAmazonTimeSync::new(
             ClockSyncAlgorithm::builder()
-                .amazon_time_sync(AmazonTimeSync::new(Skew::from_ppm(15.0)))
+                .amazon_time_sync(AmazonTimeSync::new(&ff_sync_params))
                 .ntp_sources(vec![])
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(Skew::from_ppm(15.0)))
+                .selector(Selector::new(ff_sync_params.max_dispersion))
                 .build(),
         );
         let scenario = perfect_symmetric(TrueDuration::from_secs(1024 * 5));

@@ -3,10 +3,10 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::daemon::clock_parameters::ClockParameters;
+use crate::daemon::clock_sync_algorithm::FfSyncParams;
 use crate::daemon::clock_sync_algorithm::ff;
 use crate::daemon::event;
 use crate::daemon::time::Duration;
-use crate::daemon::time::tsc::Skew;
 
 /// Amazon Time Sync NTP endpoint address (Amazon Time Sync Service on EC2)
 // FIXME: This duplicates the definition in daemon/io/ntp.rs. The algorithm should not
@@ -25,13 +25,18 @@ pub struct AmazonTimeSync {
 }
 
 impl AmazonTimeSync {
-    const POLL_INTERVAL: Duration = Duration::from_secs(2);
+    /// Expected sampling period; sizes the estimator's buffers (not a tunable).
+    pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
     /// Create a new Amazon Time Sync reference clock source
-    pub fn new(max_dispersion: Skew) -> Self {
+    pub fn new(ff_sync_params: &FfSyncParams) -> Self {
         Self {
             source_address: AMAZON_TIME_SYNC_ADDRESS,
-            inner: ff::Ntp::new(Self::POLL_INTERVAL, max_dispersion),
+            inner: ff::Ntp::new(
+                Self::POLL_INTERVAL,
+                ff_sync_params,
+                &ff_sync_params.amazon_time_sync,
+            ),
         }
     }
 

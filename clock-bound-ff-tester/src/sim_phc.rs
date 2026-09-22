@@ -117,25 +117,24 @@ mod tests {
 
     use clock_bound::daemon::{
         clock_sync_algorithm::{
-            Selector,
+            FfSyncParams, Selector,
             source::{self, AmazonTimeSync},
         },
         selected_clock::SelectedClockSource,
-        time::tsc::Skew,
     };
 
     use super::*;
 
     #[test]
     fn perfect_does_not_panic() {
-        let skew = Skew::from_ppm(15.0);
+        let ff_sync_params = FfSyncParams::default();
         let mut tester = TestPhc::new(
             ClockSyncAlgorithm::builder()
-                .amazon_time_sync(AmazonTimeSync::new(skew))
+                .amazon_time_sync(AmazonTimeSync::new(&ff_sync_params))
                 .ntp_sources(vec![])
-                .phc(source::Phc::new("path".into(), skew))
+                .phc(source::Phc::new("path".into(), &ff_sync_params))
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(skew))
+                .selector(Selector::new(ff_sync_params.max_dispersion))
                 .build(),
         );
 
@@ -145,14 +144,14 @@ mod tests {
 
     #[test]
     fn alg_is_perfect_under_perfect_conditions() {
-        let skew = Skew::from_ppm(15.0);
+        let ff_sync_params = FfSyncParams::default();
         let mut tester = TestPhc::new(
             ClockSyncAlgorithm::builder()
-                .amazon_time_sync(AmazonTimeSync::new(skew))
+                .amazon_time_sync(AmazonTimeSync::new(&ff_sync_params))
                 .ntp_sources(vec![])
-                .phc(source::Phc::new("path".into(), skew))
+                .phc(source::Phc::new("path".into(), &ff_sync_params))
                 .selected_clock(Arc::new(SelectedClockSource::default()))
-                .selector(Selector::new(skew))
+                .selector(Selector::new(ff_sync_params.max_dispersion))
                 .build(),
         );
         let scenario = perfect_symmetric(TrueDuration::from_secs(1024));

@@ -8,6 +8,7 @@ use crate::daemon::{
     clock_parameters::ClockParameters,
     clock_sync_algorithm::ff::event_buffer::FeedError,
     clock_sync_algorithm::ring_buffer::Quarter,
+    clock_sync_algorithm::{FfSyncParams, SourceParams},
     event::{self, TscRtt},
     time::{
         Clock, Duration, TscDiff,
@@ -19,11 +20,11 @@ use crate::daemon::{
 /// Feed forward time synchronization algorithm for a single PHC source
 #[derive(Debug, Clone, PartialEq)]
 pub struct Phc {
-    /// Events within 100 seconds.
+    /// Events within the source's local window (`SourceParams::local_window`, 100 s by default).
     ///
     /// Used for calculation of `period_local` and `theta`
     local: event_buffer::Local<event::Phc>,
-    /// Staging data over the last 1024 seconds.
+    /// Staging data over the last SKM window (1024 seconds by default).
     ///
     /// This data is used solely to stage data before feeding
     /// into the estimate buffer
@@ -39,40 +40,54 @@ pub struct Phc {
     /// Used to compare clock error bounds with older samples while
     /// taking into account CEB growth from dispersion
     max_dispersion: Skew,
+    /// This source's tunables (windows, RTT filter, error normalization)
+    source_params: SourceParams,
 }
 
 impl Phc {
     /// Create a new feed forward time synchronization algorithm
     ///
-    /// `local_capacity` should be the number of data-points to span an SKM window.
-    /// For example, if the source is expected to sample once every second, the `local_capacity`
-    /// should have a max value of 1024.
+    /// The local buffer is sized to span the source's local window at `poll_period`, the staging
+    /// buffer to span one SKM window.
     ///
     /// # Panics
-    /// Panics if poll duration is zero or greater than or equal to 512 seconds
-    pub fn new(poll_period: Duration, max_dispersion: Skew) -> Self {
-        const WINDOW: Duration = Duration::from_secs(100);
+    /// Panics if the poll period is zero or does not fit at least twice in the local window
+    pub fn new(
+        poll_period: Duration,
+        ff_sync_params: &FfSyncParams,
+        source_params: &SourceParams,
+    ) -> Self {
+        // FIXME: for now, the search window is also used to define the buffer capacity, which is
+        // not what we want, and a side effect of previous implementation. The change here does not
+        // change the behavior, to support code changes while maintaining byte-for-byte validation.
+        // This needs to be revisited once the instrumentation of the ffsync algo is in place.
+        let window = source_params.local_window();
         assert!(poll_period > Duration::ZERO, "poll period must be positive");
         assert!(
-            poll_period < WINDOW / 2,
+            poll_period < window / 2,
             "Must be able to get at least 2 samples in local buffer"
         );
-        let local_capacity = WINDOW.get() / poll_period.get();
+        let local_capacity = window.get() / poll_period.get();
 
         // unwrap: input is bound and numerator is never 0
         let local_capacity = NonZeroUsize::new(local_capacity.try_into().unwrap()).unwrap();
 
         // unwrap: input is bound and numerator is never 0
-        let staging_capacity = event_buffer::Local::<Phc>::SKM_WINDOW.get() / poll_period.get();
+        let staging_capacity = ff_sync_params.skm_window.get() / poll_period.get();
         let staging_capacity = NonZeroUsize::new(staging_capacity.try_into().unwrap()).unwrap();
 
         Self {
-            local: event_buffer::Local::with_window(local_capacity, WINDOW),
-            staging: event_buffer::Local::new(staging_capacity),
-            estimate: event_buffer::Estimate::new(),
+            local: event_buffer::Local::new(local_capacity)
+                .with_window(window)
+                .with_rtt_threshold_multiplier(source_params.rtt_threshold_multiplier),
+            staging: event_buffer::Local::new(staging_capacity)
+                .with_window(ff_sync_params.skm_window)
+                .with_rtt_threshold_multiplier(source_params.rtt_threshold_multiplier),
+            estimate: event_buffer::Estimate::with_capacity(ff_sync_params.estimate_capacity),
             clock_parameters: None,
             uncorrected_clock: None,
-            max_dispersion,
+            max_dispersion: ff_sync_params.max_dispersion,
+            source_params: source_params.clone(),
         }
     }
 
@@ -143,7 +158,12 @@ impl Phc {
         let CalculateThetaOutput {
             theta,
             clock_error_bound,
-        } = Self::calculate_theta(&self.local, local_period.period_local, uncorrected_clock);
+        } = Self::calculate_theta(
+            &self.local,
+            local_period.period_local,
+            uncorrected_clock,
+            self.source_params.error_normalization_factor,
+        );
 
         // Calculate `C(t)`
         //
@@ -242,6 +262,7 @@ impl Phc {
             clock_parameters,
             uncorrected_clock,
             max_dispersion: _, // value currently does not change
+            source_params: _,  // value currently does not change
         } = self;
 
         local.handle_disruption();
@@ -401,11 +422,10 @@ impl Phc {
         local: &event_buffer::Local<event::Phc>,
         period_local: Period,
         uncorrected_clock: UncorrectedClock,
+        error_normalization_factor: f64,
     ) -> CalculateThetaOutput {
-        // Feed-forward time synchronization algorithm's error normalization factor.
-        // This constant is used to penalize the feed_forward_samples that have a
-        // slower reference clock read duration.
-        const ERROR_NORMALIZATION_FACTOR: f64 = 1e5;
+        // `error_normalization_factor` penalises the feed-forward samples that have a slower
+        // reference clock read duration (see `SourceParams::error_normalization_factor`).
 
         assert!(!local.is_empty());
 
@@ -438,7 +458,7 @@ impl Phc {
             // escaping into f64 to minimize rounding error. Sticking with nanoseconds as the base unit
             // NOTE/FIXME: is there a world where we take into account either age of the event or the
             // clock_error_bound?
-            let weight = -((sample_error.get() as f64 / ERROR_NORMALIZATION_FACTOR).sqrt());
+            let weight = -((sample_error.get() as f64 / error_normalization_factor).sqrt());
             let weight = weight.exp();
 
             let offset_nsec = offset.as_seconds_f64() * 1e9;
@@ -689,7 +709,7 @@ mod tests {
         let CalculateThetaOutput {
             theta,
             clock_error_bound,
-        } = Phc::calculate_theta(&local, local_period, uncorrected_clock);
+        } = Phc::calculate_theta(&local, local_period, uncorrected_clock, 1e5);
 
         assert_eq!(theta, Duration::from_secs(0));
         assert_eq!(
@@ -737,7 +757,7 @@ mod tests {
         let CalculateThetaOutput {
             theta,
             clock_error_bound,
-        } = Phc::calculate_theta(&local, local_period, uncorrected_clock);
+        } = Phc::calculate_theta(&local, local_period, uncorrected_clock, 1e5);
 
         assert_eq!(theta, Duration::from_micros(-5));
         assert_eq!(
@@ -748,7 +768,12 @@ mod tests {
 
     #[test]
     fn feed_two_events() {
-        let mut ff = Phc::new(Duration::from_secs(20), Skew::from_ppm(15.0));
+        let ff_sync_params = FfSyncParams::default();
+        let mut ff = Phc::new(
+            Duration::from_secs(20),
+            &ff_sync_params,
+            &ff_sync_params.phc,
+        );
 
         let event1 = event::Phc::builder()
             .counter_pre(TscCount::new(1_000_000_000))

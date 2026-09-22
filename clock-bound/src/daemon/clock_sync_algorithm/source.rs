@@ -15,6 +15,16 @@ pub use amazon_time_sync::AmazonTimeSync;
 pub use ntp_source::NtpSource;
 pub use phc::Phc;
 
+/// Poll intervals of the three source types, in the order of their expected accuracy — PHC,
+/// EC2 link-local NTP, other NTP servers — the order used for sources throughout the code and
+/// for the fields of `FfSyncParams`. They size the estimators' buffers and bound the parameter
+/// windows from below (`FfSyncParams::validate`); for now, they are not tunables.
+pub(crate) const POLL_INTERVALS: [crate::daemon::time::Duration; 3] = [
+    Phc::POLL_INTERVAL,
+    AmazonTimeSync::POLL_INTERVAL,
+    NtpSource::POLL_INTERVAL,
+];
+
 use std::fmt::{self, Display, Formatter};
 use std::net::SocketAddr;
 use std::sync::Arc;

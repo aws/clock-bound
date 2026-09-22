@@ -18,11 +18,10 @@ use std::{path::PathBuf, sync::Arc};
 use crate::{
     logging,
     repro::{self, ReproEvent},
-    time::Skew,
 };
 use clap::Parser;
 use clock_bound::daemon::{
-    clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
+    clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector, source},
     receiver_stream::RoutableEvent,
     selected_clock::SelectedClockSource,
 };
@@ -46,7 +45,7 @@ pub struct Cli {
 fn ensure_source(
     alg: &mut ClockSyncAlgorithm,
     event: &RoutableEvent,
-    max_dispersion: Skew,
+    ff_sync_params: &FfSyncParams,
 ) -> bool {
     match event {
         RoutableEvent::Phc(device_path, _) => {
@@ -54,14 +53,14 @@ fn ensure_source(
             if alg.phc().is_some() {
                 return false;
             }
-            alg.set_phc(source::Phc::new(device_path.clone(), max_dispersion));
+            alg.set_phc(source::Phc::new(device_path.clone(), ff_sync_params));
             tracing::info!(%device_path, "Created PHC source");
         }
         RoutableEvent::AmazonTimeSync(_) => {
             if alg.amazon_time_sync().is_some() {
                 return false;
             }
-            alg.set_amazon_time_sync(source::AmazonTimeSync::new(max_dispersion));
+            alg.set_amazon_time_sync(source::AmazonTimeSync::new(ff_sync_params));
             tracing::info!("Created Amazon Time Sync source");
         }
         RoutableEvent::NtpSource(addr, _) => {
@@ -72,7 +71,7 @@ fn ensure_source(
             {
                 return false;
             }
-            alg.add_ntp_source(source::NtpSource::new_ip_addr_source(*addr, max_dispersion));
+            alg.add_ntp_source(source::NtpSource::new_ip_addr_source(*addr, ff_sync_params));
             tracing::info!(%addr, "Created NTP source");
         }
     }
@@ -80,11 +79,12 @@ fn ensure_source(
 }
 
 pub fn main(args: Cli) -> anyhow::Result<()> {
-    let max_dispersion = Skew::from_ppm(15.0);
+    // TODO: for now, pass the same default values as the daemon, instrumentation is next.
+    let ff_sync_params = FfSyncParams::default();
     // No source yet: they are created from the log as they appear
     let mut alg = ClockSyncAlgorithm::builder()
         .selected_clock(Arc::new(SelectedClockSource::default()))
-        .selector(Selector::new(max_dispersion))
+        .selector(Selector::new(ff_sync_params.max_dispersion))
         .build();
 
     // Needed to output updated clock estimates and internal algorithm calculations to their
@@ -110,7 +110,7 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
             }
             ReproEvent::Feed { event, .. } => {
                 feeds += 1;
-                if ensure_source(&mut alg, &event, max_dispersion) {
+                if ensure_source(&mut alg, &event, &ff_sync_params) {
                     sources += 1;
                 }
                 // unused result since output log directory will contain this
@@ -143,15 +143,17 @@ mod tests {
     use crate::repro::repro_events_from_reader;
 
     fn empty_alg() -> ClockSyncAlgorithm {
+        let ff_sync_params = FfSyncParams::default();
         ClockSyncAlgorithm::builder()
             .selected_clock(Arc::new(SelectedClockSource::default()))
-            .selector(Selector::new(Skew::from_ppm(15.0)))
+            .selector(Selector::new(ff_sync_params.max_dispersion))
             .build()
     }
 
     /// Feed events of the parser's fixture: each source is created exactly once, on first sight.
     #[test]
     fn sources_are_created_once_from_the_log() {
+        let ff_sync_params = FfSyncParams::default();
         let events =
             repro_events_from_reader(include_str!("../repro/test_ffevents.log").as_bytes())
                 .unwrap();
@@ -171,7 +173,7 @@ mod tests {
 
         let created: usize = feeds
             .iter()
-            .map(|e| usize::from(ensure_source(&mut alg, e, Skew::from_ppm(15.0))))
+            .map(|e| usize::from(ensure_source(&mut alg, e, &ff_sync_params)))
             .sum();
         let distinct = {
             let mut ids: Vec<String> = feeds
@@ -191,7 +193,7 @@ mod tests {
         // A second pass creates nothing.
         let again: usize = feeds
             .iter()
-            .map(|e| usize::from(ensure_source(&mut alg, e, Skew::from_ppm(15.0))))
+            .map(|e| usize::from(ensure_source(&mut alg, e, &ff_sync_params)))
             .sum();
         assert_eq!(again, 0);
 
@@ -203,6 +205,7 @@ mod tests {
 
     #[test]
     fn ntp_sources_are_keyed_by_address() {
+        let ff_sync_params = FfSyncParams::default();
         let mut alg = empty_alg();
         let ntp = |port: u16| {
             RoutableEvent::NtpSource(
@@ -221,9 +224,9 @@ mod tests {
                     .unwrap(),
             )
         };
-        assert!(ensure_source(&mut alg, &ntp(123), Skew::from_ppm(15.0)));
-        assert!(!ensure_source(&mut alg, &ntp(123), Skew::from_ppm(15.0)));
-        assert!(ensure_source(&mut alg, &ntp(1123), Skew::from_ppm(15.0))); // different port: different source
+        assert!(ensure_source(&mut alg, &ntp(123), &ff_sync_params));
+        assert!(!ensure_source(&mut alg, &ntp(123), &ff_sync_params));
+        assert!(ensure_source(&mut alg, &ntp(1123), &ff_sync_params)); // different port: different source
         assert_eq!(alg.ntp_sources().len(), 2);
     }
 }

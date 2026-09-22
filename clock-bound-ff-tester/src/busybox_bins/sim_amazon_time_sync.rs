@@ -5,10 +5,10 @@ use std::sync::Arc;
 use crate::{
     events::{Scenario, v1::EventKind},
     sim_amazon_time_sync::{self, TestAmazonTimeSync},
-    time::{CbBridge, Skew, TrueDuration},
+    time::{CbBridge, TrueDuration},
 };
 use clock_bound::daemon::{
-    clock_sync_algorithm::{ClockSyncAlgorithm, Selector, source},
+    clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector, source},
     logging::StructuredLog,
     selected_clock::SelectedClockSource,
 };
@@ -29,12 +29,15 @@ pub fn main() {
         )
         .init();
 
+    // Simulation uses the same default set of synchronization algorithm parameters as the daemon.
+    // The replay feature is where instrumentation can more easily take place.
+    let ff_sync_params = FfSyncParams::default();
     let mut tester = TestAmazonTimeSync::new(
         ClockSyncAlgorithm::builder()
-            .amazon_time_sync(source::AmazonTimeSync::new(Skew::from_ppm(15.0)))
+            .amazon_time_sync(source::AmazonTimeSync::new(&ff_sync_params))
             .ntp_sources(vec![])
             .selected_clock(Arc::new(SelectedClockSource::default()))
-            .selector(Selector::new(Skew::from_ppm(15.0)))
+            .selector(Selector::new(ff_sync_params.max_dispersion))
             .build(),
     );
 
