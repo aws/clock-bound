@@ -15,6 +15,11 @@ pub struct Cli {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Commands {
+    /// Print the production algorithm parameters as a file for `repro-replay --ffsync-params`
+    // Pinned: clap would derive `default-ff-sync-params` from the variant name; the code and the
+    // docs spell it `ffsync` everywhere.
+    #[command(name = "default-ffsync-params")]
+    DefaultFfSyncParams,
     FixLogOrder(bins::fix_log_order::Cli),
     OscillatorGenerator(bins::oscillator_generator::Cli),
     ReproReplay(bins::repro_replay::Cli),
@@ -26,6 +31,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::DefaultFfSyncParams => bins::default_ffsync_params::main(),
         Commands::FixLogOrder(cli) => bins::fix_log_order::main(cli)?,
         Commands::OscillatorGenerator(cli) => bins::oscillator_generator::main(cli)?,
         Commands::ReproReplay(cli) => bins::repro_replay::main(cli)?,

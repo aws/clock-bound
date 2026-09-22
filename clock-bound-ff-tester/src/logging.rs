@@ -58,8 +58,16 @@ fn create_log_directory(log_directory: impl AsRef<Path>) {
 /// Initialize the tracing subscriber for feed-forward synchronization replay.
 ///
 /// Create output directory where the logs of events and ffsync algorithm internal metrics will be
-/// stored fur further analysis.
-pub fn init_for_synchronization_replay(log_directory: impl AsRef<Path>) {
+/// stored for further analysis.
+///
+/// `version_suffix` is appended to the version string burnt into every log line; the replay
+/// passes `+params-<hash>` when it runs with non-default algorithm parameters (see
+/// [`crate::ffsync_params`]), and nothing when it runs with the defaults, so that a default
+/// replay carries exactly the version string the daemon carries.
+pub fn init_for_synchronization_replay(
+    log_directory: impl AsRef<Path>,
+    version_suffix: Option<&str>,
+) {
     // The StructuredLogLayer attempts to create directory, so need to assert whether the directory
     // already exists
     // create a *new* directory where to write log files to
@@ -76,6 +84,9 @@ pub fn init_for_synchronization_replay(log_directory: impl AsRef<Path>) {
         && s == "dirty"
     {
         write!(version, "-dirty").unwrap();
+    }
+    if let Some(suffix) = version_suffix {
+        version.push_str(suffix);
     }
     let static_version: &'static str = version.leak();
 

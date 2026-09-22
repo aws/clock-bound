@@ -1,6 +1,7 @@
 //! Feed Forward Time sync algorithm tester
 
 pub mod events;
+pub mod ffsync_params;
 pub mod logging;
 pub mod logs;
 pub mod repro;

@@ -6,6 +6,7 @@
     reason = "Treating these functions as main()"
 )]
 
+pub mod default_ffsync_params;
 pub mod fix_log_order;
 pub mod oscillator_generator;
 pub mod repro_replay;

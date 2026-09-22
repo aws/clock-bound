@@ -16,7 +16,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use crate::{
-    logging,
+    ffsync_params, logging,
     repro::{self, ReproEvent},
 };
 use clap::Parser;
@@ -36,6 +36,12 @@ pub struct Cli {
     /// The output log directory
     #[arg(short, long)]
     output_dir: PathBuf,
+
+    /// Algorithm parameters to replay with (TOML; see `ffsync_params`). Every key is required;
+    /// `default-ffsync-params` prints the production file to start from. Without this flag the replay
+    /// uses the production parameters, exactly as the daemon does.
+    #[arg(long = "ffsync-params")]
+    ffsync_params_file: Option<PathBuf>,
 }
 
 /// Make sure the source an event is addressed to exists, creating it the first time it is
@@ -79,8 +85,12 @@ fn ensure_source(
 }
 
 pub fn main(args: Cli) -> anyhow::Result<()> {
-    // TODO: for now, pass the same default values as the daemon, instrumentation is next.
-    let ff_sync_params = FfSyncParams::default();
+    // The production parameters unless a file says otherwise. A file is validated before anything
+    // is replayed, so a bad one is refused with a message rather than hitting an assertion mid-run.
+    let ff_sync_params = match &args.ffsync_params_file {
+        Some(path) => ffsync_params::load(path)?,
+        None => FfSyncParams::default(),
+    };
     // No source yet: they are created from the log as they appear
     let mut alg = ClockSyncAlgorithm::builder()
         .selected_clock(Arc::new(SelectedClockSource::default()))
@@ -88,8 +98,11 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
         .build();
 
     // Needed to output updated clock estimates and internal algorithm calculations to their
-    // respective log files.
-    logging::init_for_synchronization_replay(args.output_dir);
+    // respective log files. Non-default parameters mark the version string, and the effective
+    // parameters are the first record of both streams.
+    let version_suffix = ffsync_params::version_suffix(&ff_sync_params);
+    logging::init_for_synchronization_replay(args.output_dir, version_suffix.as_deref());
+    ffsync_params::log_effective(&ff_sync_params);
 
     let mut repro_events = repro::repro_events_from_log_file(&args.logfile)?;
 
