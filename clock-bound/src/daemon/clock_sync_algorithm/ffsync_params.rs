@@ -76,9 +76,8 @@ pub struct SourceParams {
 }
 
 impl SourceParams {
-    /// Production values for the PHC estimator.
-    /// The period and theta windows currently scoped at 100s.
-    /// TODO: revisit window size after calibration.
+    /// Production values for the PHC estimator: period and theta windows of 100 s.
+    /// TODO: revisit the window sizes after calibration.
     pub const PHC_DEFAULTS: Self = Self {
         period_window: Duration::from_secs(100),
         theta_window: Duration::from_secs(100),
@@ -86,8 +85,8 @@ impl SourceParams {
         error_normalization_factor: 1e5,
     };
 
-    /// Production values for the NTP estimator.
-    /// The period and theta windows cover the whole `SKM_WINDOW`.
+    /// Production values for the NTP estimator: period and theta windows spanning the whole SKM
+    /// window (`DEFAULT_SKM_WINDOW`).
     /// TODO: this is currently used by both the EC2 Link local, and any NTP source. To revisit.
     pub const NTP_DEFAULTS: Self = Self {
         period_window: DEFAULT_SKM_WINDOW,

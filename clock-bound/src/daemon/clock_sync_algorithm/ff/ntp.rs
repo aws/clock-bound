@@ -20,7 +20,7 @@ use crate::daemon::{
 /// Feed forward time synchronization algorithm for a single NTP source
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ntp {
-    /// Events within the current SKM (within 1024 seconds)
+    /// Events within the last SKM window (`FfSyncParams::skm_window`, 1024 s by default).
     local: event_buffer::Local<event::Ntp>,
     /// Best RTT values of each SKM over the last week
     estimate: event_buffer::Estimate<event::Ntp>,
@@ -370,7 +370,8 @@ impl Ntp {
 
     /// Calculate the local period and associated error
     ///
-    /// Returns `None` if `local` has less than 2 data points
+    /// Returns `None` if fewer than two of `local`'s samples fall within the last `period_window`:
+    /// no period can be estimated, and the window is not widened.
     fn calculate_local_period_and_error(
         local: &event_buffer::Local<event::Ntp>,
         period_window: Duration,
@@ -428,10 +429,9 @@ impl Ntp {
     /// and
     /// Eᵢ = RTTᵢ − min(RTT)
     /// ```
-    ///  
     ///
-    /// # Panics
-    /// Panics if `Local` is empty
+    /// Returns `None` if no sample of `local` falls within the last `theta_window` (the source is
+    /// starving); the caller keeps the previous clock parameters.
     #[expect(
         clippy::cast_precision_loss,
         reason = "exp and weight require floats. Values are small enough to not lose precision"
@@ -942,5 +942,96 @@ mod tests {
         // clock_error_bound should be max value
         let expected_ceb = event1.calculate_clock_error_bound(clock_params.period);
         assert_eq!(clock_params.clock_error_bound, expected_ceb);
+    }
+
+    /// One NTP exchange at `t_s` seconds on a 1 GHz counter: the server's midpoint sits `offset`
+    /// behind the client's, so the sample's offset is exactly `offset`; `rtt_ticks` is the RTT.
+    fn ntp_exchange(t_s: i64, offset: Duration, rtt_ticks: i64) -> event::Ntp {
+        let pre = t_s * 1_000_000_000;
+        let client_midpoint =
+            Instant::from_days(1) + Duration::from_secs(t_s) + Duration::from_nanos(rtt_ticks / 2);
+        event::Ntp::builder()
+            .counter_pre(TscCount::new(pre))
+            .counter_post(TscCount::new(pre + rtt_ticks))
+            .ntp_data(event::NtpData {
+                server_recv_time: client_midpoint - offset - Duration::from_nanos(100),
+                server_send_time: client_midpoint - offset + Duration::from_nanos(100),
+                root_delay: Duration::from_micros(15),
+                root_dispersion: Duration::from_micros(17),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap()
+    }
+
+    /// A local buffer holding exchanges at 10 s..=19 s whose offset steps from 0 to 1 µs at 15 s,
+    /// so that a window over the whole buffer and a window over the last few seconds disagree.
+    fn stepped_local() -> Local<event::Ntp> {
+        let mut local =
+            Local::new(NonZeroUsize::new(16).unwrap()).with_window(Duration::from_secs(100));
+        for t in 10..=19_i64 {
+            let offset = if t >= 15 {
+                Duration::from_micros(1)
+            } else {
+                Duration::ZERO
+            };
+            local.feed(ntp_exchange(t, offset, 1_000)).unwrap();
+        }
+        local
+    }
+
+    #[test]
+    fn theta_window_narrows_the_view() {
+        let local = stepped_local();
+        let uc = uncorrected_1ghz();
+        let period = Period::from_seconds(1e-9);
+
+        let whole = Ntp::calculate_theta(&local, whole_buffer(), period, uc, 1e5).unwrap();
+        let equal =
+            Ntp::calculate_theta(&local, Duration::from_secs(100), period, uc, 1e5).unwrap();
+        let recent = Ntp::calculate_theta(&local, Duration::from_secs(3), period, uc, 1e5).unwrap();
+
+        // A window equal to the buffer's own is the whole buffer.
+        assert_eq!(equal.theta, whole.theta);
+        // Over the whole buffer the step is averaged in (half the samples at 0, half at 1 µs);
+        // over the last 3 s every sample sits at 1 µs.
+        assert!(whole.theta > Duration::from_nanos(400) && whole.theta < Duration::from_nanos(600));
+        assert_eq!(recent.theta, Duration::from_micros(1));
+    }
+
+    #[test]
+    fn empty_theta_view_is_starvation_not_a_panic() {
+        // The view is measured from the head, so no positive window excludes it; the empty case
+        // arises only from an empty buffer, which must yield None rather than panic.
+        let local: Local<event::Ntp> = Local::new(NonZeroUsize::new(4).unwrap());
+        assert!(
+            Ntp::calculate_theta(
+                &local,
+                Duration::from_secs(1),
+                Period::from_seconds(1e-9),
+                uncorrected_1ghz(),
+                1e5
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn period_window_narrows_the_view_and_needs_two_samples() {
+        let local = stepped_local();
+        let uc = uncorrected_1ghz();
+        // Whole buffer and an equal window agree.
+        let whole = Ntp::calculate_local_period_and_error(&local, whole_buffer(), uc).unwrap();
+        let equal =
+            Ntp::calculate_local_period_and_error(&local, Duration::from_secs(100), uc).unwrap();
+        assert_eq!(whole, equal);
+        // Two samples in the window (18 s and 19 s): still a period.
+        assert!(
+            Ntp::calculate_local_period_and_error(&local, Duration::from_secs(1), uc).is_some()
+        );
+        // Only the head in the window: no period, and no widening.
+        assert!(
+            Ntp::calculate_local_period_and_error(&local, Duration::from_millis(500), uc).is_none()
+        );
     }
 }

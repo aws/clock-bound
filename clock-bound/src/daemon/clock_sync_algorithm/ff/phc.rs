@@ -380,7 +380,8 @@ impl Phc {
 
     /// Calculate the local period and associated error
     ///
-    /// Returns `None` if `local` has less than 2 data points
+    /// Returns `None` if fewer than two of `local`'s samples fall within the last `period_window`:
+    /// no period can be estimated, and the window is not widened.
     fn calculate_local_period_and_error(
         local: &event_buffer::Local<event::Phc>,
         period_window: Duration,
@@ -438,10 +439,9 @@ impl Phc {
     /// and
     /// Eᵢ = RTTᵢ − min(RTT)
     /// ```
-    ///  
     ///
-    /// # Panics
-    /// Panics if `Local` is empty
+    /// Returns `None` if no sample of `local` falls within the last `theta_window` (the source is
+    /// starving); the caller keeps the previous clock parameters.
     #[expect(
         clippy::cast_precision_loss,
         reason = "exp and weight require floats. Values are small enough to not lose precision"
