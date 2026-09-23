@@ -15,7 +15,8 @@ use tracing_subscriber::{
 };
 
 use clock_bound::daemon::logging::{
-    StructuredLog, is_structured_target, layer::StructuredLogLayer,
+    StructuredLog, is_structured_target,
+    layer::{StructuredLogLayer, TimestampSource},
 };
 
 // TODO: implement logging initialization for other use cases (simulator, etc)
@@ -93,11 +94,20 @@ pub fn init_for_synchronization_replay(
     // Create the various data streams.
     // Note that `FFEvents` log is (re-)generated which is helpful for any schema migration but also to
     // compare with original run and assert differences in ffsync algorithm versions.
+    //
+    // A replay is a pure function of (trace, algorithm, parameters), and given the same input, the
+    // output must be identical across runs and hosts. Although the daemon stamps every log line
+    // with the wall clock, this is meaningless for a replay. Hence the logging layer is initialized
+    // with a timestamp fixed at the epoch, so that the same replay yields the same output.
     let mut structured_layers = Vec::new();
     let data_streams = [StructuredLog::AlgoAnalysis, StructuredLog::FFEvents];
     for stream in data_streams {
-        let (layer, _algo_handle) =
-            StructuredLogLayer::for_stream(&log_directory, stream, static_version);
+        let (layer, _handle) = StructuredLogLayer::for_stream(
+            &log_directory,
+            stream,
+            static_version,
+            TimestampSource::Fixed,
+        );
         structured_layers.push(layer);
     }
 

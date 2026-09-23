@@ -2,6 +2,11 @@
 //!
 //! Provides [`StructuredLogLayer`], which writes newline-delimited JSON to a file
 //! with automatic injection of `timestamp` and `version` fields.
+//!
+//! Note that there are two distinct use case defining the type of timestamp
+//! offered by a  [`TimestampSource`]:
+//! - the wall clock for the daemon at the time events are processed
+//! - a fixed value for a replay whose output must be traceable and reproducible
 
 use std::{
     fmt,
@@ -11,7 +16,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use tracing::{
     Event, Subscriber,
@@ -71,6 +76,32 @@ impl LogHandle {
     }
 }
 
+/// Where the `timestamp` injected into every log line comes from.
+///
+/// The daemon records when each line was written, as it should. A replay of a recorded trace
+/// (`clock-bound-ff-tester repro-replay`), however, is a pure function of its inputs, and the same
+/// input should lead to the same output; a wall-clock stamp on every line would defeat that.
+/// The mechanism chosen here is to maintain the logging format, but for the replay to use a fixed
+/// value instead of wallclock time. Instead of the replay passing through timestamps "at the time
+/// of the capture" the fixed value unambiguously distinguishes a replayed trace from a daemon capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimestampSource {
+    /// `Utc::now()` at the time each line is written.
+    WallClock,
+    /// The Unix epoch (`1970-01-01T00:00:00.000000Z`) on every line: unmistakably not a
+    /// real time, and the same on every host.
+    Fixed,
+}
+
+impl TimestampSource {
+    fn now(self) -> DateTime<Utc> {
+        match self {
+            Self::WallClock => Utc::now(),
+            Self::Fixed => DateTime::UNIX_EPOCH,
+        }
+    }
+}
+
 /// A tracing [`Layer`] that writes pre-serialized JSON entries as newline-delimited
 /// JSON to a file, injecting `timestamp` and `version` fields automatically.
 ///
@@ -83,6 +114,7 @@ pub struct StructuredLogLayer {
     writer: Arc<Mutex<Option<File>>>,
     target_prefix: &'static str,
     version: &'static str,
+    timestamp_source: TimestampSource,
 }
 
 impl StructuredLogLayer {
@@ -96,6 +128,7 @@ impl StructuredLogLayer {
     /// - `filename` - Name of the log file (e.g., `"synchronization.log"`)
     /// - `target_prefix` - Tracing target prefix to filter events (e.g., `"clock_bound::synchronization"`)
     /// - `version` - Version string to inject into every log entry
+    /// - `timestamp_source` - Where the `timestamp` injected into every log entry comes from
     ///
     /// # Panics
     /// Panics if the log file cannot be opened or created at `log_directory/filename`.
@@ -104,6 +137,7 @@ impl StructuredLogLayer {
         filename: &str,
         target_prefix: &'static str,
         version: &'static str,
+        timestamp_source: TimestampSource,
     ) -> (Self, LogHandle) {
         let dir = log_directory.as_ref();
         std::fs::create_dir_all(dir)
@@ -121,6 +155,7 @@ impl StructuredLogLayer {
             writer: Arc::clone(&writer),
             target_prefix,
             version,
+            timestamp_source,
         };
 
         let handle = LogHandle { writer, path };
@@ -136,8 +171,15 @@ impl StructuredLogLayer {
         log_directory: impl AsRef<Path>,
         stream: StructuredLog,
         version: &'static str,
+        timestamp_source: TimestampSource,
     ) -> (Self, LogHandle) {
-        Self::new(log_directory, stream.file_name(), stream.target(), version)
+        Self::new(
+            log_directory,
+            stream.file_name(),
+            stream.target(),
+            version,
+            timestamp_source,
+        )
     }
 }
 
@@ -170,7 +212,7 @@ where
         let mut output = Map::new();
         output.insert(
             "timestamp".into(),
-            Value::String(format_log_timestamp(Utc::now())),
+            Value::String(format_log_timestamp(self.timestamp_source.now())),
         );
         output.extend(entry_map);
         output.insert("version".into(), Value::String(self.version.into()));
@@ -215,10 +257,15 @@ mod tests {
 
     /// Helper: set up a layer writing to a temp file and run a closure with
     /// the subscriber active. Returns the file contents after the closure completes.
-    fn with_layer(f: impl FnOnce()) -> String {
+    fn with_layer(source: TimestampSource, f: impl FnOnce()) -> String {
         let tmp_dir = TempDir::new().unwrap();
-        let (layer, _handle) =
-            StructuredLogLayer::new(tmp_dir.path(), "test.log", TEST_TARGET, TEST_VERSION);
+        let (layer, _handle) = StructuredLogLayer::new(
+            tmp_dir.path(),
+            "test.log",
+            TEST_TARGET,
+            TEST_VERSION,
+            source,
+        );
 
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, f);
@@ -239,7 +286,7 @@ mod tests {
 
     #[test]
     fn writes_entry_with_correct_target() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             let json = r#"{"event":"test_event","value":42}"#;
             tracing::info!(target: TEST_TARGET, entry = json);
         });
@@ -251,7 +298,7 @@ mod tests {
 
     #[test]
     fn ignores_events_with_wrong_target() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             let json = r#"{"event":"test_event","value":42}"#;
             tracing::info!(target: "wrong::target", entry = json);
         });
@@ -261,7 +308,7 @@ mod tests {
 
     #[test]
     fn injects_timestamp() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             let json = r#"{"event":"test_event"}"#;
             tracing::info!(target: TEST_TARGET, entry = json);
         });
@@ -276,8 +323,25 @@ mod tests {
     }
 
     #[test]
+    fn fixed_timestamp_source_stamps_every_line_identically() {
+        let output = with_layer(TimestampSource::Fixed, || {
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"a"}"#);
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"b"}"#);
+        });
+
+        let stamps: Vec<&str> = output
+            .lines()
+            .map(|l| {
+                let map: Map<String, Value> = serde_json::from_str(l).unwrap();
+                map["timestamp"].as_str().unwrap().to_owned().leak() as &str
+            })
+            .collect();
+        assert_eq!(stamps, ["1970-01-01T00:00:00.000000Z"; 2]);
+    }
+
+    #[test]
     fn injects_version() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             let json = r#"{"event":"test_event"}"#;
             tracing::info!(target: TEST_TARGET, entry = json);
         });
@@ -288,7 +352,7 @@ mod tests {
 
     #[test]
     fn field_ordering_timestamp_event_fields_version() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             let json = r#"{"event":"test_event","alpha":"first","beta":"second"}"#;
             tracing::info!(target: TEST_TARGET, entry = json);
         });
@@ -305,7 +369,7 @@ mod tests {
 
     #[test]
     fn preserves_nested_objects() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             let json = r#"{"event":"test_event","clock":{"timestamp":"2026-07-16T14:33:05.000000Z","clock_error_bound_ns":108000}}"#;
             tracing::info!(target: TEST_TARGET, entry = json);
         });
@@ -318,7 +382,7 @@ mod tests {
 
     #[test]
     fn ignores_event_without_entry_field() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             tracing::info!(target: TEST_TARGET, "a message without entry field");
         });
 
@@ -327,7 +391,7 @@ mod tests {
 
     #[test]
     fn ignores_malformed_json_in_entry() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             tracing::info!(target: TEST_TARGET, entry = "not valid json {{{");
         });
 
@@ -336,7 +400,7 @@ mod tests {
 
     #[test]
     fn writes_multiple_entries() {
-        let output = with_layer(|| {
+        let output = with_layer(TimestampSource::WallClock, || {
             let json1 = r#"{"event":"first"}"#;
             let json2 = r#"{"event":"second"}"#;
             tracing::info!(target: TEST_TARGET, entry = json1);

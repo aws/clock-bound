@@ -13,7 +13,7 @@ use tracing_subscriber::Registry;
 use tracing_subscriber::layer::Filter;
 use tracing_subscriber::{Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt};
 
-use super::layer::StructuredLogLayer;
+use super::layer::{StructuredLogLayer, TimestampSource};
 use super::{LogHandles, StructuredLog, is_structured_target};
 
 /// The effective logging settings the subscriber initializes with, after merging
@@ -68,8 +68,12 @@ pub fn init(settings: &LogSettings) -> LogHandles {
             .into_iter()
             .filter(|stream| streams.enables(*stream))
         {
-            let (layer, handle) =
-                StructuredLogLayer::for_stream(&streams.directory, stream, cargo_version);
+            let (layer, handle) = StructuredLogLayer::for_stream(
+                &streams.directory,
+                stream,
+                cargo_version,
+                TimestampSource::WallClock,
+            );
             structured_layers.push(layer);
             handles.push(handle);
         }

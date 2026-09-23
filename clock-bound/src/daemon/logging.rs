@@ -293,7 +293,7 @@ pub(crate) mod test_support {
     use tracing_subscriber::layer::SubscriberExt;
 
     use super::StructuredLog;
-    use super::layer::StructuredLogLayer;
+    use super::layer::{StructuredLogLayer, TimestampSource};
 
     /// Set up a [`StructuredLogLayer`] for `stream` writing to a fresh tempdir,
     /// run `f` with the subscriber active, and return the file contents. The
@@ -304,7 +304,12 @@ pub(crate) mod test_support {
         f: impl FnOnce(),
     ) -> (String, TempDir) {
         let tmp_dir = TempDir::new().unwrap();
-        let (layer, _handle) = StructuredLogLayer::for_stream(tmp_dir.path(), stream, version);
+        let (layer, _handle) = StructuredLogLayer::for_stream(
+            tmp_dir.path(),
+            stream,
+            version,
+            TimestampSource::WallClock,
+        );
 
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, f);
