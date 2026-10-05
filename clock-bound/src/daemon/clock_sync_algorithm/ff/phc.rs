@@ -361,6 +361,10 @@ impl Phc {
             ?k,
             "Calculated period and k values"
         );
+        algo_trace!(TraceUncorrectedClock {
+            p_estimate: p_estimate,
+            k_ns: k,
+        });
 
         Some(UncorrectedClock { p_estimate, k })
     }

@@ -19,8 +19,23 @@
 
 use crate::daemon::{
     logging::{LogEvent, StructuredLog},
-    time::{Duration, tsc::Period},
+    time::{Duration, Instant, tsc::Period},
 };
+
+/// The uncorrected clock `C(t) = TSC(t) · p_estimate + K`, as recomputed at each sample: the reference
+/// every naive offset of the theta window is measured against.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct TraceUncorrectedClock {
+    /// The period estimate (seconds per tick).
+    pub p_estimate: Period,
+    /// The constant `K`: the uncorrected time at `TSC = 0`, in nanoseconds since the epoch.
+    pub k_ns: Instant,
+}
+
+impl LogEvent for TraceUncorrectedClock {
+    const STREAM: StructuredLog = StructuredLog::AlgoAnalysis;
+    const EVENT: &'static str = "uncorrected_clock";
+}
 
 /// The theta calculation internals: the offset estimate, the bound over, and characterization of
 /// the observation window and more.
@@ -175,6 +190,27 @@ mod tests {
         assert_eq!(
             record["local_period"]["age_ns"],
             Value::from(3_000_000_000_i64)
+        );
+    }
+
+    #[test]
+    fn uncorrected_clock_record() {
+        let (output, _tmp) = with_layer(StructuredLog::AlgoAnalysis, TEST_VERSION, || {
+            algo_trace!(TraceUncorrectedClock {
+                p_estimate: Period::from_seconds(3.846e-10),
+                k_ns: Instant::from_secs(1_700_000_000),
+            });
+        });
+        let record = parse_single_record(&output);
+        assert_eq!(record["event"], "uncorrected_clock");
+        assert_eq!(
+            record["uncorrected_clock"]["p_estimate"],
+            Value::from(3.846e-10)
+        );
+        // An Instant is an exact JSON integer (nanoseconds since the epoch).
+        assert_eq!(
+            record["uncorrected_clock"]["k_ns"],
+            Value::from(1_700_000_000_000_000_000_i64)
         );
     }
 }
