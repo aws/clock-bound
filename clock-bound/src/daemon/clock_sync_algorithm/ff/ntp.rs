@@ -478,7 +478,8 @@ impl Ntp {
         // `theta` tracepoint metrics: the current sample's own view. Its naive offset against the
         // time source and its weight contribution to the theta calculation.
         let head_offset = head.calculate_offset(uncorrected_clock);
-        let head_weight = head.calculate_offset_weight(min_rtt, error_normalization_factor);
+        let head_weight =
+            head.calculate_offset_weight(min_rtt, period_local, error_normalization_factor);
 
         let mut max_ceb = Duration::from_secs(0);
         // `theta` tracepoint metrics: the algorithm local error bound (the largest half delay among
@@ -502,7 +503,8 @@ impl Ntp {
             let offset = event.calculate_offset(uncorrected_clock);
 
             // estimate error based off of TSC rtt
-            let weight = event.calculate_offset_weight(min_rtt, error_normalization_factor);
+            let weight =
+                event.calculate_offset_weight(min_rtt, period_local, error_normalization_factor);
 
             let offset_nsec = offset.as_seconds_f64() * 1e9;
 

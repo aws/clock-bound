@@ -159,10 +159,10 @@ impl Phc {
 
     /// Calculate the weight of this event's offset in the theta weighted average
     ///
-    /// The weight is `e^(-sqrt(error / E))`, the error being the event's excess RTT over `min_rtt`,
-    /// the smallest RTT of the observation window, and `E` the source's error normalization factor.
-    /// It is in `(0, 1]`, and 1 for the window's best event. Escaping into f64 to minimize rounding
-    /// error.
+    /// The weight is `e^(-(error / E)^2)`, the error being the event's excess RTT over `min_rtt`,
+    /// the smallest RTT of the observation window, converted to seconds with `period_local`, and
+    /// `E` the source's error normalization factor, in seconds. It is in `(0, 1]`, and 1 for the
+    /// window's best event. Escaping into f64 to minimize rounding error.
     ///
     /// # Panics
     ///
@@ -170,18 +170,17 @@ impl Phc {
     /// window this event belongs to.
     // NOTE/FIXME: is there a world where we take into account either age of the event or the
     // clock_error_bound?
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "exp and weight require floats. Values are small enough to not lose precision"
-    )]
     pub fn calculate_offset_weight(
         &self,
         min_rtt: TscDiff,
+        period_local: Period,
         error_normalization_factor: f64,
     ) -> f64 {
         let sample_error = self.rtt() - min_rtt;
         assert!(sample_error.get() >= 0, "cannot have a negative error");
-        (-((sample_error.get() as f64 / error_normalization_factor).sqrt())).exp()
+
+        let error = sample_error * period_local;
+        (-((error.as_seconds_f64() / error_normalization_factor).powi(2))).exp()
     }
 }
 

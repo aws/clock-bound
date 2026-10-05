@@ -70,8 +70,9 @@ pub struct SourceParams {
     pub theta_window: Duration,
     /// A sample whose RTT exceeds `multiplier x min RTT` (over the local buffer) is rejected.
     pub rtt_threshold_multiplier: usize,
-    /// Weight of a sample in `theta_hat`: `exp(-sqrt(sample_error / factor))`. Penalises slow
-    /// reads. `f64` because the arithmetic requires it.
+    /// Weight of a sample in `theta_hat`: `exp(-(sample_error / factor)^2)`. The factor is
+    /// calibrated to penalise slow read for a class of time source, and is the scale of the
+    /// Gaussian weight applied.
     pub error_normalization_factor: f64,
 }
 
@@ -82,7 +83,7 @@ impl SourceParams {
         period_window: Duration::from_secs(100),
         theta_window: Duration::from_secs(100),
         rtt_threshold_multiplier: 5,
-        error_normalization_factor: 1e5,
+        error_normalization_factor: 5e-7,
     };
 
     /// Production values for the NTP estimator: period and theta windows spanning the whole SKM
@@ -92,7 +93,7 @@ impl SourceParams {
         period_window: DEFAULT_SKM_WINDOW,
         theta_window: DEFAULT_SKM_WINDOW,
         rtt_threshold_multiplier: 5,
-        error_normalization_factor: 1e5,
+        error_normalization_factor: 5e-5,
     };
 
     /// The window the local buffer must hold: the larger of the two.
@@ -249,7 +250,8 @@ mod tests {
         assert_eq!(p.phc.theta_window, Duration::from_secs(100));
         assert_eq!(p.phc.local_window(), Duration::from_secs(100));
         assert_eq!(p.ntp.rtt_threshold_multiplier, 5);
-        assert_eq!(p.phc.error_normalization_factor, 1e5);
+        assert_eq!(p.phc.error_normalization_factor, 5e-7);
+        assert_eq!(p.ntp.error_normalization_factor, 5e-5);
     }
 
     #[test]

@@ -20,19 +20,19 @@
 //! period_window_s = 100
 //! theta_window_s = 100
 //! rtt_threshold_multiplier = 5
-//! error_normalization_factor = 100000
+//! error_normalization_factor_ns = 500
 //!
 //! [amazon_time_sync]
 //! period_window_s = 1024
 //! theta_window_s = 1024
 //! rtt_threshold_multiplier = 5
-//! error_normalization_factor = 100000
+//! error_normalization_factor_ns = 50000
 //!
 //! [ntp]
 //! period_window_s = 1024
 //! theta_window_s = 1024
 //! rtt_threshold_multiplier = 5
-//! error_normalization_factor = 100000
+//! error_normalization_factor_ns = 50000
 //! ```
 //!
 //! # Identity
@@ -87,7 +87,8 @@ pub struct SourceParamsFile {
     pub period_window_s: u64,
     pub theta_window_s: u64,
     pub rtt_threshold_multiplier: usize,
-    pub error_normalization_factor: u64,
+    /// The naive offset weight normalization, expressed in nanoseconds when passing parameters to replay
+    pub error_normalization_factor_ns: u64,
 }
 
 /// Read a parameter file, validate it, and return the typed parameters.
@@ -124,7 +125,7 @@ impl TryFrom<&FfSyncParamsFile> for FfSyncParams {
                     clippy::cast_precision_loss,
                     reason = "factors are small integers (1e5 in production); f64 is exact far beyond them"
                 )]
-                error_normalization_factor: f.error_normalization_factor as f64,
+                error_normalization_factor: f.error_normalization_factor_ns as f64 / 1e9,
             })
         };
         Ok(Self {
@@ -157,7 +158,7 @@ impl From<&FfSyncParams> for FfSyncParamsFile {
             period_window_s: whole_seconds(s.period_window, "period_window"),
             theta_window_s: whole_seconds(s.theta_window, "theta_window"),
             rtt_threshold_multiplier: s.rtt_threshold_multiplier,
-            error_normalization_factor: whole_factor(s.error_normalization_factor),
+            error_normalization_factor_ns: whole_ns(s.error_normalization_factor),
         };
         Self {
             max_dispersion_ppb: params
@@ -190,12 +191,13 @@ fn whole_seconds(d: Duration, what: &str) -> u64 {
     clippy::cast_sign_loss,
     reason = "checked integral and non-negative first"
 )]
-fn whole_factor(f: f64) -> u64 {
+fn whole_ns(seconds: f64) -> u64 {
+    let ns = (seconds * 1e9).round();
     assert!(
-        f.is_finite() && f >= 0.0 && f.fract() == 0.0,
-        "error_normalization_factor must be a non-negative integer, got {f}"
+        seconds.is_finite() && seconds >= 0.0 && (seconds * 1e9 - ns).abs() < 1e-6,
+        "error_normalization_factor must be a non-negative whole number of nanoseconds, got {seconds} s"
     );
-    f as u64
+    ns as u64
 }
 
 /// The complete production parameter file, as TOML: what `default-ffsync-params` prints.
@@ -235,8 +237,8 @@ pub fn canonical(params: &FfSyncParams) -> String {
         );
         let _ = writeln!(
             out,
-            "{name}.error_normalization_factor={}",
-            s.error_normalization_factor
+            "{name}.error_normalization_factor_ns={}",
+            s.error_normalization_factor_ns
         );
     }
     out
@@ -373,8 +375,8 @@ mod tests {
         );
         assert!(
             toml::from_str::<FfSyncParamsFile>(&base.replacen(
-                "error_normalization_factor = 100000",
-                "error_normalization_factor = 1e5",
+                "error_normalization_factor_ns = 500",
+                "error_normalization_factor_ns = 5e2",
                 1
             ))
             .is_err()
