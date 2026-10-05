@@ -37,6 +37,12 @@ pub(crate) struct TraceTheta {
     pub samples_used: usize,
     /// Samples of the theta window the RTT filter rejected.
     pub samples_rejected: usize,
+    /// The current sample's naive offset against the uncorrected clock.
+    pub offset_ns: Duration,
+    /// The current sample's weight in the weighted average, in (0, 1]; 1 for the window's best RTT.
+    pub weight: f64,
+    /// The sum of the weights of the samples used.
+    pub weight_sum: f64,
 }
 
 impl LogEvent for TraceTheta {
@@ -79,6 +85,9 @@ mod tests {
             delay_bound_ns: Duration::from(4_112),
             samples_used: 98,
             samples_rejected: 2,
+            offset_ns: Duration::from(-350),
+            weight: 0.8,
+            weight_sum: 61.5,
         });
     }
 
@@ -119,11 +128,17 @@ mod tests {
                 "delay_bound_ns",
                 "samples_used",
                 "samples_rejected",
+                "offset_ns",
+                "weight",
+                "weight_sum",
             ]
         );
-        // Durations are exact JSON integers (nanoseconds).
+        // Durations are exact JSON integers (nanoseconds); the weights are plain numbers.
         assert_eq!(body["theta_ns"], Value::from(-1_348_i64));
         assert_eq!(body["delay_bound_ns"], Value::from(4_112_i64));
+        assert_eq!(body["offset_ns"], Value::from(-350_i64));
+        assert_eq!(body["weight"], Value::from(0.8));
+        assert_eq!(body["weight_sum"], Value::from(61.5));
     }
 
     /// Outside any span the record has no `seq`: the layer stamps what the span says, nothing else.

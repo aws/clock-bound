@@ -448,12 +448,19 @@ impl Ntp {
         }
 
         // unwraps okay: the range is not empty, so the buffer is not empty
-        let now_post = local.as_ref().head().unwrap().counter_post();
+        let head = local.as_ref().head().unwrap();
+        let now_post = head.counter_post();
         let skew = Skew::from_ratio(period_local, uncorrected_clock.p_estimate);
         let mut numerator = 0.0;
         let mut denominator = 0.0;
 
         let min_event = local.as_ref().min_rtt().unwrap();
+        let min_rtt = min_event.rtt();
+
+        // `theta` tracepoint metrics: the current sample's own view. Its naive offset against the
+        // time source and its weight contribution to the theta calculation.
+        let head_offset = head.calculate_offset(uncorrected_clock);
+        let head_weight = head.calculate_offset_weight(min_rtt, error_normalization_factor);
 
         let mut max_ceb = Duration::from_secs(0);
         // `theta` tracepoint metrics: the algorithm local error bound (the largest half delay among
@@ -477,15 +484,7 @@ impl Ntp {
             let offset = event.calculate_offset(uncorrected_clock);
 
             // estimate error based off of TSC rtt
-            let sample_error = event.rtt() - min_event.rtt();
-            assert!(sample_error.get() >= 0, "cannot have a negative error");
-
-            // weight is e^(-sqrt(Error_{i}/E))
-            // escaping into f64 to minimize rounding error. Sticking with nanoseconds as the base unit
-            // NOTE/FIXME: is there a world where we take into account either age of the event or the
-            // clock_error_bound?
-            let weight = -((sample_error.get() as f64 / error_normalization_factor).sqrt());
-            let weight = weight.exp();
+            let weight = event.calculate_offset_weight(min_rtt, error_normalization_factor);
 
             let offset_nsec = offset.as_seconds_f64() * 1e9;
 
@@ -507,6 +506,9 @@ impl Ntp {
             delay_bound_ns: max_delay_bound,
             samples_used: samples_used,
             samples_rejected: samples_rejected,
+            offset_ns: head_offset,
+            weight: head_weight,
+            weight_sum: denominator,
         });
         Some(CalculateThetaOutput {
             theta,
