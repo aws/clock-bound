@@ -21,6 +21,7 @@ use serde_json::{Map, Value};
 use tracing::{
     Event, Subscriber,
     field::{Field, Visit},
+    span::{Attributes, Id},
     warn,
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
@@ -91,13 +92,18 @@ pub enum TimestampSource {
     /// The Unix epoch (`1970-01-01T00:00:00.000000Z`) on every line: unmistakably not a
     /// real time, and the same on every host.
     Fixed,
+    /// No `timestamp` field at all, for a stream whose records carry their own time reference
+    /// (the `algo_analysis` records are joined to the feed on `seq`).
+    None,
 }
 
 impl TimestampSource {
-    fn now(self) -> DateTime<Utc> {
+    /// The timestamp to stamp a line with, if any.
+    fn now(self) -> Option<DateTime<Utc>> {
         match self {
-            Self::WallClock => Utc::now(),
-            Self::Fixed => DateTime::UNIX_EPOCH,
+            Self::WallClock => Some(Utc::now()),
+            Self::Fixed => Some(DateTime::UNIX_EPOCH),
+            Self::None => None,
         }
     }
 }
@@ -187,7 +193,22 @@ impl<S> tracing_subscriber::Layer<S> for StructuredLogLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+    /// Remember a span's `seq` field so that records emitted inside it can carry it (see
+    /// `on_event`). Only spans on this layer's own target: a span is one object seen by every layer,
+    /// and only the stream the span names stamps its records.
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        if !attrs.metadata().target().starts_with(self.target_prefix) {
+            return;
+        }
+        let mut visitor = SeqVisitor::default();
+        attrs.record(&mut visitor);
+        if let (Some(seq), Some(span)) = (visitor.seq, ctx.span(id)) {
+            // `replace`, not `insert`: another layer on the same target may have stored it first.
+            span.extensions_mut().replace(SpanSeq(seq));
+        }
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         if !event.metadata().target().starts_with(self.target_prefix) {
             return;
         }
@@ -208,13 +229,29 @@ where
             return;
         };
 
-        // Build output with desired field ordering: timestamp, event fields, version
+        // A record that carries no `seq` of its own takes the nearest enclosing span's, if that
+        // span was remembered by `on_new_span`.
+        let span_seq = if entry_map.contains_key("seq") {
+            None
+        } else {
+            ctx.event_span(event).and_then(|span| {
+                span.scope()
+                    .find_map(|s| s.extensions().get::<SpanSeq>().map(|x| x.0))
+            })
+        };
+
+        // Build output with desired field ordering: [timestamp], event, [seq], body, version
         let mut output = Map::new();
-        output.insert(
-            "timestamp".into(),
-            Value::String(format_log_timestamp(self.timestamp_source.now())),
-        );
-        output.extend(entry_map);
+        if let Some(now) = self.timestamp_source.now() {
+            output.insert("timestamp".into(), Value::String(format_log_timestamp(now)));
+        }
+        for (key, value) in entry_map {
+            let is_event = key == "event";
+            output.insert(key, value);
+            if is_event && let Some(seq) = span_seq {
+                output.insert("seq".into(), Value::from(seq));
+            }
+        }
         output.insert("version".into(), Value::String(self.version.into()));
 
         // Write as a single JSON line
@@ -225,6 +262,25 @@ where
             let _ = writeln!(w, "{line}");
         }
     }
+}
+
+/// A span's `seq` field, kept in the span's extensions for the records emitted inside it.
+struct SpanSeq(u64);
+
+/// Visitor that extracts a `seq` field from a span's attributes.
+#[derive(Default)]
+struct SeqVisitor {
+    seq: Option<u64>,
+}
+
+impl Visit for SeqVisitor {
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if field.name() == "seq" {
+            self.seq = Some(value);
+        }
+    }
+
+    fn record_debug(&mut self, _field: &Field, _value: &dyn fmt::Debug) {}
 }
 
 /// Visitor that extracts the `entry` field from a tracing event.
@@ -414,5 +470,44 @@ mod tests {
         let map2: Map<String, Value> = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(map1["event"], "first");
         assert_eq!(map2["event"], "second");
+    }
+    /// A record emitted inside a span on this layer's target, whose `seq` field it lacks, is
+    /// stamped with the span's `seq` right after `event`. A span on another target is ignored.
+    #[test]
+    fn seq_is_stamped_from_a_span_on_the_layers_target() {
+        let output = with_layer(TimestampSource::Fixed, || {
+            let _own = tracing::trace_span!(target: TEST_TARGET, "feed", seq = 7_u64).entered();
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"x","x":{}}"#);
+            let _other = tracing::trace_span!(target: "elsewhere", "feed", seq = 9_u64).entered();
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"y","y":{}}"#);
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"z","seq":3,"z":{}}"#);
+        });
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            lines[0].contains(r#""event":"x","seq":7,"x""#),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains(r#""event":"y","seq":7,"y""#),
+            "{}",
+            lines[1]
+        ); // nearest own span
+        assert!(
+            lines[2].contains(r#""event":"z","seq":3,"z""#),
+            "{}",
+            lines[2]
+        ); // its own seq wins
+    }
+    /// `TimestampSource::None` writes no `timestamp` field at all; the line starts at `event`.
+    #[test]
+    fn no_timestamp_source_omits_the_field() {
+        let output = with_layer(TimestampSource::None, || {
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"x","x":{}}"#);
+        });
+        assert_eq!(
+            output.trim_end(),
+            r#"{"event":"x","x":{},"version":"1.2.3"}"#
+        );
     }
 }

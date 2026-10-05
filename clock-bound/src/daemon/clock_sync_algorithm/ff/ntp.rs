@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 
 use super::event_buffer;
 use super::{CalculateThetaOutput, LocalPeriodAndError, UncorrectedClock};
+use crate::daemon::algo_trace;
 use crate::daemon::{
     clock_parameters::ClockParameters,
     clock_sync_algorithm::ff::event_buffer::FeedError,
@@ -183,19 +184,6 @@ impl Ntp {
         //
         // uses `tsc_midpoint` as that is the value that was used during the `Self::calculate_theta` fn
         let time = uncorrected_clock.time_at(tsc_midpoint) - theta;
-
-        // Emit internal calculations for after-the-fact analysis (replay only,
-        // no-op in daemon builds; see the algo_analysis module)
-        #[cfg(feature = "algorithm")]
-        crate::daemon::algo_analysis::emit_theta_calculation(
-            "ntp",
-            theta,
-            clock_error_bound,
-            uncorrected_clock,
-            &local_period,
-            tsc_midpoint,
-            time,
-        );
 
         let clock_parameters = ClockParameters {
             tsc_count: tsc_midpoint,
@@ -402,6 +390,11 @@ impl Ntp {
             ?local_period_and_error,
             "Calculated local period and error"
         );
+        algo_trace!(TraceLocalPeriod {
+            period_local: local_period_and_error.period_local,
+            period_local_error: local_period_and_error.error,
+            samples: local.as_ref().len() - start,
+        });
         Some(local_period_and_error)
     }
 
@@ -463,12 +456,19 @@ impl Ntp {
         let min_event = local.as_ref().min_rtt().unwrap();
 
         let mut max_ceb = Duration::from_secs(0);
+        // `theta` tracepoint metrics: the algorithm local error bound (the largest half delay among
+        // the samples used) and observation window characterization.
+        let mut max_delay_bound = Duration::from_secs(0);
+        let (mut samples_used, mut samples_rejected) = (0_usize, 0_usize);
 
         for event in local.iter().skip(start) {
             if event.rtt() > (min_event.rtt() * local.rtt_threshold_multiplier()) {
                 tracing::trace!(?event, ?min_event, "skipping event due to rtt threshold");
+                samples_rejected += 1;
                 continue;
             }
+            samples_used += 1;
+            max_delay_bound = std::cmp::max(max_delay_bound, (event.rtt() * period_local) / 2);
             // Use the worst CEB in calculation as the algorithm's CEB
             max_ceb = std::cmp::max(max_ceb, event.calculate_clock_error_bound(period_local));
 
@@ -501,6 +501,13 @@ impl Ntp {
         let theta_nsec = numerator / denominator;
         let theta = Duration::from_seconds_f64(theta_nsec / 1e9);
         tracing::debug!(?theta, ?uncorrected_clock, %period_local, "Calculated theta");
+        algo_trace!(TraceTheta {
+            theta_ns: theta,
+            clock_error_bound_ns: max_ceb,
+            delay_bound_ns: max_delay_bound,
+            samples_used: samples_used,
+            samples_rejected: samples_rejected,
+        });
         Some(CalculateThetaOutput {
             theta,
             clock_error_bound: max_ceb,

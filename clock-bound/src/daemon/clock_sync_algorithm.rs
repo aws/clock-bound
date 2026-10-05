@@ -189,8 +189,29 @@ impl ClockSyncAlgorithm {
         reason = "serializing event before logging is unergonomic"
     )]
     fn feed_repro(&mut self, routable_event: RoutableEvent) -> Option<&SyncParameters> {
+        // One `seq` per event, numbered here in processing order.
+        // Note: saying it differently, `seq` is not read from the input replay file. But it will
+        // follow the input ordering, hence matching what a trace captured would be. A risk exist if
+        // the input file has been scrambled and not re-ordered based on `seq`.
+        //
+        // In any case, consistency is maintain for the output logs. The same value goes into the
+        // feed record (below) and onto this span, from which the logging layer stamps it onto every
+        // algo_analysis record emitted while the event is processed. The feed row and its
+        // algo_analysis records therefore agree by construction, whatever the order of the input.
+        //
+        // The span carries the algo_analysis target so that the stdout layers, which exclude
+        // structured targets, never print it; in a daemon build it is one span allocation per event
+        // that nothing reads.
         let seq = self.next_seq();
-        let output = self.feed_inner(routable_event.clone());
+        let output = {
+            let _feed = tracing::trace_span!(
+                target: logging::StructuredLog::AlgoAnalysis.target(),
+                "feed",
+                seq
+            )
+            .entered();
+            self.feed_inner(routable_event.clone())
+        };
         logging::ffevents::log_feed(&routable_event, output.map(|sp| &sp.clock_parameters), seq);
         output
     }

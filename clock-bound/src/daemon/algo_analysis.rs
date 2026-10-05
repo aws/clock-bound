@@ -1,83 +1,63 @@
-//! Synchronization algorithm analysis tooling
+//! Synchronization algorithm analysis and tracing
 //!
 //! This module emits internal clock synchronization algorithm calculations for data analysis. It
 //! exists solely for `algorithm` feature consumers (e.g. ff-tester).
 //!
-//! In daemon only mode (without the specific `algorithm` feature) everything here compiles away and
-//! no extra logging is emitted.
+//! `ffevents.log` records what the algorithm was given and what it published. This module's records
+//! go to `algo_analysis.log` and describe the internals of each layer of the calculation — one
+//! record *kind* per layer, emitted by a tracepoint (`algo_trace!`, in `algo_trace.rs`). This is
+//! instrumentation at the point where the layer knows the value.
 //!
-//! Records to emit are serialized with serde and tunneled through tracing via the shared
-//! [`emit_event`](crate::daemon::logging::emit_event) helper, bound to the
-//! [`StructuredLog::AlgoAnalysis`](crate::daemon::logging::StructuredLog::AlgoAnalysis) stream and
-//! decorated by [`StructuredLogLayer`](crate::daemon::logging::layer::StructuredLogLayer).
+//! The stream exists for replays only: in a daemon build this module is not compiled and the
+//! tracepoints expand to a use of their arguments and nothing else.
 //!
 //! Records share the standard structured-log envelope
-//! `{"timestamp", "event": "<name>", "<name>": { ...body... }, "version"}`. The `event`
-//! discriminator lets multiple record types share the log file; each record body carries a
-//! `source` field identifying the algorithm flavor.
+//! `{"event": "<kind>", "seq", "<kind>": { ...body... }, "version"}`.
+//! `event` names the kind. `seq` is the feed event's sequence number: the algorithm opens a `feed`
+//! span carrying it around each event and the logging layer stamps it onto every record emitted
+//! inside. It is the key that joins a record to its feed row and kinds to each other.
 
 use crate::daemon::{
-    clock_sync_algorithm::ff::{LocalPeriodAndError, UncorrectedClock},
-    logging::{LogEvent, StructuredLog, emit_event},
-    time::{Duration, Instant, TscCount, tsc::Period},
+    logging::{LogEvent, StructuredLog},
+    time::{Duration, tsc::Period},
 };
 
-/// Internal values of an uncorrected clock offset calculation (theta).
-///
-/// Serializes to the *body* of a `theta_calculation` event; [`emit_event`] wraps it in the
-/// standard envelope.
-///
-/// FIXME: the keys for this record are subject to change and not completely defined yet
+/// The theta calculation internals: the offset estimate, the bound over, and characterization of
+/// the observation window and more.
 #[derive(Debug, Clone, serde::Serialize)]
-struct ThetaCalculation {
-    /// Time source
-    source: &'static str,
-    /// The correction applied to the uncorrected clock
-    theta_ns: Duration,
-    /// The clock error bound used in calculation
-    clock_error_bound_ns: Duration,
-    /// Estimated period of the uncorrected clock
-    period: Period,
-    /// Epoch of the uncorrected clock
-    uncorrected_k_ns: Instant,
-    /// Local period estimate (f64 seconds per tick)
-    local_period: Period,
-    /// Local period estimation error (f64 seconds per tick)
-    local_period_error: Period,
-    /// Counter reading the calculation was anchored to
-    counter_midpoint: TscCount,
-    /// Corrected time at counter midpoint
-    time_ns: Instant,
+pub(crate) struct TraceTheta {
+    /// The correction applied to the uncorrected clock.
+    pub theta_ns: Duration,
+    /// The corresponding calculated clock error bound
+    pub clock_error_bound_ns: Duration,
+    /// The algorithm's own share of the clock error bound: the largest sample error on the
+    /// observation window.
+    pub delay_bound_ns: Duration,
+    /// Samples of the theta window that took part in the weighted average.
+    pub samples_used: usize,
+    /// Samples of the theta window the RTT filter rejected.
+    pub samples_rejected: usize,
 }
 
-impl LogEvent for ThetaCalculation {
+impl LogEvent for TraceTheta {
     const STREAM: StructuredLog = StructuredLog::AlgoAnalysis;
-    const EVENT: &'static str = "theta_calculation";
+    const EVENT: &'static str = "theta";
 }
 
-/// Emit the internal values of a theta calculation.
-pub(crate) fn emit_theta_calculation(
-    source: &'static str,
-    theta: Duration,
-    clock_error_bound: Duration,
-    uncorrected_clock: UncorrectedClock,
-    local_period: &LocalPeriodAndError,
-    counter_midpoint: TscCount,
-    time_ns: Instant,
-) {
-    let snapshot = ThetaCalculation {
-        source,
-        theta_ns: theta,
-        clock_error_bound_ns: clock_error_bound,
-        period: uncorrected_clock.p_estimate,
-        uncorrected_k_ns: uncorrected_clock.k,
-        local_period: local_period.period_local,
-        local_period_error: local_period.error,
-        counter_midpoint,
-        time_ns,
-    };
+/// The local period estimate over the period window.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct TraceLocalPeriod {
+    /// The oscillator local period estimate.
+    pub period_local: Period,
+    /// Its error (seconds per tick).
+    pub period_local_error: Period,
+    /// Samples of the period window the estimate was made from.
+    pub samples: usize,
+}
 
-    emit_event(&snapshot);
+impl LogEvent for TraceLocalPeriod {
+    const STREAM: StructuredLog = StructuredLog::AlgoAnalysis;
+    const EVENT: &'static str = "local_period";
 }
 
 #[cfg(test)]
@@ -85,35 +65,21 @@ mod tests {
     use serde_json::{Map, Value};
 
     use super::*;
-    use crate::daemon::logging::{StructuredLog, test_support::with_layer};
+    use crate::daemon::{
+        algo_trace,
+        logging::{StructuredLog, test_support::with_layer},
+    };
 
     const TEST_VERSION: &str = "test-version";
 
-    /// Run `f` with a StructuredLogLayer capturing
-    /// [`StructuredLog::AlgoAnalysis`] records to a temp file, and return the
-    /// file contents. The [`tempfile::TempDir`] is returned to keep it alive for
-    /// the caller's scope.
-    fn with_algo_analysis_layer(f: impl FnOnce()) -> (String, tempfile::TempDir) {
-        with_layer(StructuredLog::AlgoAnalysis, TEST_VERSION, f)
-    }
-
-    /// Emit one record built from easily recognizable values.
-    fn emit_test_record() {
-        emit_theta_calculation(
-            "phc",
-            Duration::from(-1_348), // theta: -1348 ns
-            Duration::from(27_528), // clock error bound: 27528 ns
-            UncorrectedClock {
-                p_estimate: Period::from_seconds(9.523_683_333_064_784e-10),
-                k: Instant::from(1_766_707_502_857_115_074),
-            },
-            &LocalPeriodAndError {
-                period_local: Period::from_seconds(9.523_683_333_064_784e-10),
-                error: Period::from_seconds(9.065_418_261_058_853e-14),
-            },
-            TscCount::from(270_765_653_528_298),
-            Instant::from(1_766_965_370_641_132_697),
-        );
+    fn emit_theta() {
+        algo_trace!(TraceTheta {
+            theta_ns: Duration::from(-1_348),
+            clock_error_bound_ns: Duration::from(27_528),
+            delay_bound_ns: Duration::from(4_112),
+            samples_used: 98,
+            samples_rejected: 2,
+        });
     }
 
     fn parse_single_record(output: &str) -> Map<String, Value> {
@@ -124,94 +90,61 @@ mod tests {
         record
     }
 
+    /// Envelope and body keys, in on-disk order, with `seq` taken from the enclosing `feed` span.
     #[test]
-    fn emits_one_record_routed_to_the_analysis_log() {
-        let (output, _tmp) = with_algo_analysis_layer(emit_test_record);
+    fn theta_record_inside_a_feed_span() {
+        let (output, _tmp) = with_layer(StructuredLog::AlgoAnalysis, TEST_VERSION, || {
+            let _feed = tracing::trace_span!(
+                target: StructuredLog::AlgoAnalysis.target(),
+                "feed",
+                seq = 42_u64
+            )
+            .entered();
+            emit_theta();
+        });
         let record = parse_single_record(&output);
-        assert_eq!(record["event"], "theta_calculation");
-        assert_eq!(record["theta_calculation"]["source"], "phc");
-    }
-
-    /// The exact key set is the analysis schema: changing it breaks downstream
-    /// analysis tooling, so a change here must be deliberate. Records use the
-    /// standard nested envelope, so the top level carries the discriminator and
-    /// the data fields live inside `theta_calculation`.
-    #[test]
-    fn record_schema_is_stable() {
-        let (output, _tmp) = with_algo_analysis_layer(emit_test_record);
-        let record = parse_single_record(&output);
-
         let keys: Vec<&str> = record.keys().map(String::as_str).collect();
-        assert_eq!(
-            keys,
-            [
-                // injected by StructuredLogLayer
-                "timestamp",
-                // envelope discriminator + nested content key (both from LogEvent::EVENT)
-                "event",
-                "theta_calculation",
-                // injected by StructuredLogLayer
-                "version",
-            ]
-        );
-
-        let body = record["theta_calculation"]
+        assert_eq!(keys, ["timestamp", "event", "seq", "theta", "version"]);
+        assert_eq!(record["event"], "theta");
+        assert_eq!(record["seq"], Value::from(42_u64));
+        let body = record["theta"]
             .as_object()
-            .expect("theta_calculation body is a JSON object");
+            .expect("theta body is a JSON object");
         let body_keys: Vec<&str> = body.keys().map(String::as_str).collect();
         assert_eq!(
             body_keys,
             [
-                "source",
                 "theta_ns",
                 "clock_error_bound_ns",
-                "period",
-                "uncorrected_k_ns",
-                "local_period",
-                "local_period_error",
-                "counter_midpoint",
-                "time_ns",
+                "delay_bound_ns",
+                "samples_used",
+                "samples_rejected",
             ]
         );
-    }
-
-    /// Times, durations and counters are emitted as exact JSON integers
-    /// (i64 nanoseconds / counts), including values beyond 2^53 that would not
-    /// survive an f64 representation.
-    #[test]
-    fn integer_fields_are_exact_i64() {
-        let (output, _tmp) = with_algo_analysis_layer(emit_test_record);
-        let record = parse_single_record(&output);
-        let body = &record["theta_calculation"];
+        // Durations are exact JSON integers (nanoseconds).
         assert_eq!(body["theta_ns"], Value::from(-1_348_i64));
-        assert_eq!(body["clock_error_bound_ns"], Value::from(27_528_i64));
-        assert_eq!(
-            body["uncorrected_k_ns"],
-            Value::from(1_766_707_502_857_115_074_i64)
-        );
-        assert_eq!(body["time_ns"], Value::from(1_766_965_370_641_132_697_i64));
-        assert_eq!(
-            body["counter_midpoint"],
-            Value::from(270_765_653_528_298_i64)
-        );
+        assert_eq!(body["delay_bound_ns"], Value::from(4_112_i64));
     }
 
-    /// Periods are emitted as f64 and survive the serialize -> layer parse ->
-    /// re-serialize round trip bit-identically (shortest round-trip formatting).
+    /// Outside any span the record has no `seq`: the layer stamps what the span says, nothing else.
     #[test]
-    fn period_fields_round_trip_bit_identically() {
-        let (output, _tmp) = with_algo_analysis_layer(emit_test_record);
+    fn record_outside_a_span_has_no_seq() {
+        let (output, _tmp) = with_layer(StructuredLog::AlgoAnalysis, TEST_VERSION, emit_theta);
         let record = parse_single_record(&output);
-        let body = &record["theta_calculation"];
-        let period = body["period"].as_f64().unwrap();
-        assert_eq!(period.to_bits(), 9.523_683_333_064_784e-10_f64.to_bits());
-        let error = body["local_period_error"].as_f64().unwrap();
-        assert_eq!(error.to_bits(), 9.065_418_261_058_853e-14_f64.to_bits());
+        assert!(!record.contains_key("seq"));
     }
 
-    /// Without a subscriber interested in the target, emission is a silent no-op.
     #[test]
-    fn emission_without_subscriber_is_a_no_op() {
-        emit_test_record();
+    fn local_period_record() {
+        let (output, _tmp) = with_layer(StructuredLog::AlgoAnalysis, TEST_VERSION, || {
+            algo_trace!(TraceLocalPeriod {
+                period_local: Period::from_seconds(4.166e-10),
+                period_local_error: Period::from_seconds(1e-16),
+                samples: 512,
+            });
+        });
+        let record = parse_single_record(&output);
+        assert_eq!(record["event"], "local_period");
+        assert_eq!(record["local_period"]["samples"], Value::from(512_u64));
     }
 }

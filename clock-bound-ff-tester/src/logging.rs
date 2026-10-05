@@ -99,14 +99,18 @@ pub fn init_for_synchronization_replay(
     // output must be identical across runs and hosts. Although the daemon stamps every log line
     // with the wall clock, this is meaningless for a replay. Hence the logging layer is initialized
     // with a timestamp fixed at the epoch, so that the same replay yields the same output.
+    // The algo_analysis records are joined to the feed on `seq` and carry no timestamp at all.
     let mut structured_layers = Vec::new();
-    let data_streams = [StructuredLog::AlgoAnalysis, StructuredLog::FFEvents];
-    for stream in data_streams {
+    let data_streams = [
+        (StructuredLog::AlgoAnalysis, TimestampSource::None),
+        (StructuredLog::FFEvents, TimestampSource::Fixed),
+    ];
+    for (stream, timestamp_source) in data_streams {
         let (layer, _handle) = StructuredLogLayer::for_stream(
             &log_directory,
             stream,
             static_version,
-            TimestampSource::Fixed,
+            timestamp_source,
         );
         structured_layers.push(layer);
     }

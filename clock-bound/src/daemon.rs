@@ -3,6 +3,9 @@
 #[cfg(feature = "algorithm")]
 pub mod algo_analysis;
 
+mod algo_trace;
+pub(crate) use algo_trace::algo_trace;
+
 pub mod clock_parameters;
 
 pub mod clock_sync_algorithm;
