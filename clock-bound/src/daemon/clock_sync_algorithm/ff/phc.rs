@@ -393,6 +393,10 @@ impl Phc {
 
         let local_period_and_error = old.calculate_period_with_error(new);
 
+        // `local_period` tracepoint metrics, in source time: the estimate baseline and its age
+        // relative to the sample being processed (the head of the buffer).
+        let head = local.as_ref().head().unwrap();
+
         tracing::debug!(
             ?old,
             ?new,
@@ -403,6 +407,8 @@ impl Phc {
             period_local: local_period_and_error.period_local,
             period_local_error: local_period_and_error.error,
             samples: local.as_ref().len() - start,
+            baseline_ns: new.data().time - old.data().time,
+            age_ns: head.data().time - new.data().time,
         });
         Some(local_period_and_error)
     }

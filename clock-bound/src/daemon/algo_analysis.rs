@@ -59,6 +59,11 @@ pub(crate) struct TraceLocalPeriod {
     pub period_local_error: Period,
     /// Samples of the period window the estimate was made from.
     pub samples: usize,
+    /// The duration between the two samples the estimate is built from.
+    pub baseline_ns: Duration,
+    /// The age of the most recent sample the estimate is built from, relative to the sample being
+    /// processed.
+    pub age_ns: Duration,
 }
 
 impl LogEvent for TraceLocalPeriod {
@@ -156,10 +161,20 @@ mod tests {
                 period_local: Period::from_seconds(4.166e-10),
                 period_local_error: Period::from_seconds(1e-16),
                 samples: 512,
+                baseline_ns: Duration::from_secs(45),
+                age_ns: Duration::from_secs(3),
             });
         });
         let record = parse_single_record(&output);
         assert_eq!(record["event"], "local_period");
         assert_eq!(record["local_period"]["samples"], Value::from(512_u64));
+        assert_eq!(
+            record["local_period"]["baseline_ns"],
+            Value::from(45_000_000_000_i64)
+        );
+        assert_eq!(
+            record["local_period"]["age_ns"],
+            Value::from(3_000_000_000_i64)
+        );
     }
 }

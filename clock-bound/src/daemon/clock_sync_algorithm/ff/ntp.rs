@@ -384,6 +384,22 @@ impl Ntp {
 
         let local_period_and_error = old.calculate_period_with_error(new);
 
+        // `local_period` tracepoint metrics, in source time: the estimate baseline and its age
+        // relative to the sample being processed (the head of the buffer).
+        let head = local.as_ref().head().unwrap();
+        let old_midpoint = old
+            .data()
+            .server_recv_time
+            .midpoint(old.data().server_send_time);
+        let new_midpoint = new
+            .data()
+            .server_recv_time
+            .midpoint(new.data().server_send_time);
+        let head_midpoint = head
+            .data()
+            .server_recv_time
+            .midpoint(head.data().server_send_time);
+
         tracing::debug!(
             ?old,
             ?new,
@@ -394,6 +410,8 @@ impl Ntp {
             period_local: local_period_and_error.period_local,
             period_local_error: local_period_and_error.error,
             samples: local.as_ref().len() - start,
+            baseline_ns: new_midpoint - old_midpoint,
+            age_ns: head_midpoint - new_midpoint,
         });
         Some(local_period_and_error)
     }
