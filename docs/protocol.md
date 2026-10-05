@@ -99,7 +99,7 @@ Upon rolling over, the generation is not set to 0 but it is set to 2.
 
 **As-Of TSC**: (u64)
 
-the TSC counter value used to create the as_of timestamp.
+The TSC counter value used to create the as_of timestamp.
 
 This value can be read by either calling `rdtsc` on x86 architectures, or `cntvct_el0` on aarch64 architectures. 
 
@@ -117,15 +117,21 @@ The two signed 64-bit integers correspond to a libc::timespec's `tv_sec` and `tv
 
 **Period**: (u64)
 
-The fractional part of the scaled period of the TSC
+The fractional part of the estimated period of the TSC.
 
-resolution is 1/2^(64 + p_shift), expressed in ppb
+The estimated period of the TSC, in units of seconds per tick, can be calculated using Period and Period Shift:
+
+`Period / 2^(64 + Period Shift)` seconds per tick
 
 **Period Error**: (u64)
 
-the fractional part of the period error of the Period estimation
+The fractional part of the relative error of the period estimate.
 
-resolution is 1/2^(64 + p_err_shift), expressed in ppb
+The relative error of the period estimate is a dimensionless ratio, and can be calculated using Period Error and Period Error Shift:
+
+`Period Error / 2^(64 + Period Error Shift)`
+
+See "Computing the clock error bound at read time" below.
 
 **Bound**: (i64)
 
@@ -170,6 +176,31 @@ See the above Period section on how to use this field.
 The value used to scale the period error.
 
 See the above Period Error section on how to use this field.
+
+## Computing the clock error bound at read time
+
+A reader can read the current time and associated Clock Error Bound using the shared memory segment (version 3 and
+after). Reading the TSC (`rdtsc` / `cntvct_el0`) gives `now_tsc`. With the two scaled fractions from the fields
+above,
+
+```text
+period     = Period / 2^(64 + Period Shift)                    seconds per tick
+period_err = Period Error / 2^(64 + Period Error Shift)        dimensionless
+elapsed    = (now_tsc − As-Of TSC) × period × 1e9              nanoseconds
+```
+
+the current time and its bound, both in nanoseconds, are:
+
+```text
+now      = As-Of Timestamp + elapsed
+bound    = Bound + elapsed × (Max Drift × 1e-9 + period_err)
+earliest = now − bound
+latest   = now + bound
+```
+
+When calculating the `bound`, both growth terms are rates applied to the elapsed time. These are the oscillator's
+worst-case drift (Max Drift, in parts per billion) and the relative error of the period estimate.
+The result is only meaningful before the Void-After Timestamp and while the Clock Status permits.
 
 # ClockBound Shared Memory Protocol Version 2
 

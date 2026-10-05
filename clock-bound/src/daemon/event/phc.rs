@@ -104,7 +104,7 @@ impl Phc {
             (other, self)
         };
 
-        // Unit-less error values
+        // Unit-less error values (the result below, `error`, is a period: seconds per tick)
         let period_error_from_ceb = (old.data.clock_error_bound + new.data.clock_error_bound)
             .as_seconds_f64()
             / (new.data.time - old.data.time).as_seconds_f64();
@@ -122,6 +122,7 @@ impl Phc {
             period.get() * ((1.0 + period_error_from_ceb) / (1.0 - period_error_from_rtt));
 
         // Error is the difference of the two slopes
+        // FIXME: the error result should be expressed as a unit-less error value
         let error = (period.get() - period_shrink).abs();
         let error = Period::from_seconds(error);
 

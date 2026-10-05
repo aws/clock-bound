@@ -148,6 +148,7 @@ impl Ntp {
             period.get() * ((1.0 + period_error_from_ceb) / (1.0 - period_error_from_rtt));
 
         // Error is the difference of the two slopes
+        // FIXME: the error result should be expressed as a unit-less error value
         let error = (period.get() - period_shrink).abs();
         let error = Period::from_seconds(error);
 

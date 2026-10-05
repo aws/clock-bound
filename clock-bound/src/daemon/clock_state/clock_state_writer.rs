@@ -226,6 +226,23 @@ impl<T: ShmWrite> ClockStateWriter<T> {
         let as_of = TimeSpec::from(clock_parameters.time);
         let void_after = as_of + TimeSpec::new(1000, 0);
 
+        // The layout carries the error of the period estimate as a dimensionless ratio (the
+        // relative error, `period_max_error / period`). This is similar to what V2 folds into
+        // `max_drift_ppb`: clients grow the bound by `elapsed × (max_drift + period_err)`.
+        // The fractional encoding holds values in [0, 1) only; a relative error of 1 or more means
+        // the period estimate is garbage (an error as large as the period itself) and is not
+        // written.
+        let period_err =
+            Skew::from_period_and_error(clock_parameters.period, clock_parameters.period_max_error)
+                .get();
+        if !(0.0..1.0).contains(&period_err) {
+            tracing::error!(
+                period_err,
+                "Relative period error is not in [0, 1). Skipping writing to SHM."
+            );
+            return;
+        }
+
         #[allow(clippy::cast_possible_truncation)]
         #[allow(clippy::cast_sign_loss)]
         let ceb = ClockErrorBoundGeneric::builder()
@@ -234,7 +251,7 @@ impl<T: ShmWrite> ClockStateWriter<T> {
             .void_after(void_after)
             .bound_nsec(bound_nsec)
             .period(clock_parameters.period.get())
-            .period_err(clock_parameters.period_max_error.get())
+            .period_err(period_err)
             .disruption_marker(self.disruption_marker)
             .max_drift_ppb(self.max_drift_ppb)
             .clock_status(clock_status)
@@ -313,7 +330,15 @@ mod tests {
             .as_of(TimeSpec::try_from(as_of).unwrap())
             .void_after(TimeSpec::try_from(as_of + Duration::from_secs(1000)).unwrap())
             .period(1e-9)
-            .period_err(1e-11)
+            // The same 1 % as V2's 10_000_000 ppb, as the ratio the writer computes (1e-11 / 1e-9
+            // is not exactly 0.01 in floating point).
+            .period_err(
+                Skew::from_period_and_error(
+                    Period::from_seconds(1e-9),
+                    Period::from_seconds(1e-11),
+                )
+                .get(),
+            )
             .bound_nsec(500)
             .disruption_marker(disruption_marker)
             .max_drift_ppb(max_drift_ppb)
@@ -336,6 +361,29 @@ mod tests {
             .build();
         clock_state_writer.write_shm0(&clock_parameters, clock_status);
         clock_state_writer.write_shm1(&clock_parameters, clock_status);
+    }
+
+    /// A relative period error of 1 or more cannot be encoded and means the estimate is garbage:
+    /// the V3 segment is left as it was.
+    #[test]
+    fn write_shm1_skips_a_relative_period_error_of_one_or_more() {
+        let mut clock_parameters = create_test_clock_parameters()
+            .tsc_count(1_000_000)
+            .clock_error_bound_nanos(500)
+            .time_nanos(3_000_000_000)
+            .call();
+        clock_parameters.period_max_error = Period::from_seconds(1e-9); // equal to the period
+
+        let mut shm_writer_1 = MockShmWriter::new();
+        shm_writer_1.expect_write().times(0);
+        let mut clock_state_writer = ClockStateWriter::builder()
+            .clock_disruption_support_enabled(true)
+            .shm_writer_0(MockShmWriter::new())
+            .shm_writer_1(shm_writer_1)
+            .max_drift_ppb(15_000)
+            .disruption_marker(0)
+            .build();
+        clock_state_writer.write_shm1(&clock_parameters, ClockStatus::Synchronized);
     }
 
     #[test]

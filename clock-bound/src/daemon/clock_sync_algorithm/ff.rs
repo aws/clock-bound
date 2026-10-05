@@ -18,9 +18,9 @@ use crate::daemon::time::{Duration, tsc::Period};
 /// Used as the output for `calculate_local_period_and_error` methods
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalPeriodAndError {
-    /// period calculation
+    /// The period estimate, in seconds per tick
     pub period_local: Period,
-    /// period error
+    /// Its error: an absolute error, in seconds per tick
     pub error: Period,
 }
 

@@ -24,7 +24,7 @@ pub struct ClockParameters {
     pub clock_error_bound: Duration,
     /// The period of the TSC clock at `tsc_count`
     pub period: Period,
-    /// The max error of the `period` at `tsc_count`
+    /// The max error of the `period` at `tsc_count`: an absolute error, in seconds per tick
     pub period_max_error: Period,
     /// The `CLOCK_MONOTONIC_COARSE` time just before these parameters are calculated.
     /// FIXME: remove when ClockBound 2.0 clients are not supported anymore.

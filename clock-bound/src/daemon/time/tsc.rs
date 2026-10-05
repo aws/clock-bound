@@ -258,7 +258,7 @@ impl MulAssign<f64> for Frequency {
     }
 }
 
-/// A convenience type to denoting skew
+/// A skew: a dimensionless ratio of two rates (a relative error)
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Serialize, Deserialize)]
 pub struct Skew(f64);
 
@@ -396,7 +396,7 @@ impl std::str::FromStr for Skew {
     }
 }
 
-/// A representation of a TSC clock period in seconds
+/// A representation of a TSC clock period, in seconds per tick
 ///
 /// Logically, this value is the mathematical inverse of [`Frequency`]. In other words,
 /// `[Period] = 1 / [Frequency]`

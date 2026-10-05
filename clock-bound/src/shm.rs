@@ -141,9 +141,11 @@ pub struct ClockErrorBoundGeneric {
     #[builder(default)]
     bound_nsec: i64,
 
+    /// V3 only: the period in seconds per tick.
     #[builder(default)]
     period: f64,
 
+    /// V3 only: the relative error of the period, a dimensionless ratio in `[0, 1)`.
     #[builder(default)]
     period_err: f64,
 
@@ -605,13 +607,18 @@ pub struct ClockErrorBoundV3 {
 
     /// Oscillator period estimate.
     ///
-    /// The period of the oscillator, represented as a fractional part of a second.
+    /// The period of the oscillator in seconds per tick as a scaled fraction:
+    /// `period = period_frac / 2^(64 + period_shift)`.
     period_frac: u64,
 
     /// Oscillator period estimate error.
     ///
-    /// The error on the estimate of the period of the oscillator, in ppb, represented as a
-    /// fractional part of a second.
+    /// The error on the period estimate as a dimensionless ratio.
+    /// The relative error `period_max_error / period` is similar to what the V2 layout folds into
+    /// `max_drift_ppb`, but as a scaled fraction:
+    /// `period_err = period_err_frac / 2^(64 + period_err_shift)`.
+    /// A client grows the bound by `elapsed × period_err`, exactly as it does with `max_drift_ppb`.
+    /// The value is always within [0, 1), or not written.
     period_err_frac: u64,
 
     /// Clock Error Bound
@@ -648,14 +655,14 @@ pub struct ClockErrorBoundV3 {
 
     /// Period shift
     ///
-    /// This is a scaling parameter to convert the `period` into a fractional representation with
-    /// significant digits.
+    /// The scaling of `period_frac`: the number of extra bits, beyond 64, the fraction is shifted
+    /// by so that a small period keeps its significant digits (see `PeriodFrac`).
     period_shift: u8,
 
     /// Period error shift
     ///
-    /// This is a scaling parameter to convert the `period_err` into a fractional representation with
-    /// significant digits.
+    /// The scaling of `period_err_frac`: the number of extra bits, beyond 64, the fraction is shifted
+    /// by so that a small value keeps its significant digits (see `PeriodFrac`).
     period_err_shift: u8,
 
     /// Padding.
@@ -748,7 +755,7 @@ impl ClockErrorBoundV3 {
         // possible rate) in between consecutive clock adjustments.
         let oscillator_err_nsec = duration * f64::from(self.max_drift_ppb);
         // And take into account the fact that the ff-sync period is an estimate (polluted by
-        // measurement noise).
+        // measurement noise): `period_err` is its relative error.
         let p_estimate_err_nsec = duration_nsec * self.period_err();
 
         let updated_bound = TimeSpec::nanoseconds(
@@ -809,6 +816,8 @@ impl ClockBoundSnapshot for ClockErrorBoundV3 {
     }
 }
 
+/// A value in `[0, 1)` — a period in seconds per tick, or a relative error — as a scaled fraction
+/// `frac / 2^(64 + shift)`, the shift chosen so that a small value keeps its significant digits.
 struct PeriodFrac {
     frac: u64,
     shift: u8,
@@ -1088,6 +1097,38 @@ mod t_lib {
 
         // Status should still be Synchronized (within grace period)
         assert_eq!(result.clock_status, ClockStatus::Synchronized);
+    }
+
+    /// The V3 bound grows by both rates, to the nanosecond: the oscillator's worst-case drift
+    /// (`max_drift_ppb`) and the period estimate's relative error (`period_err`), each times the
+    /// elapsed time.
+    #[test]
+    fn test_ceb_v3_bound_grows_with_drift_and_period_error() {
+        let ceb = ClockErrorBoundV3::new(
+            0,                     // as_of_tsc
+            TimeSpec::new(1, 0),   // as_of
+            TimeSpec::new(100, 0), // void_after
+            1e-9,                  // period = 1 ns (1 GHz clock)
+            1e-6,                  // period_err = 1 ppm, relative
+            10_000,                // bound_nsec = 10 µs
+            0,                     // disruption_marker
+            2_000,                 // max_drift_ppb = 2 ppm
+            ClockStatus::Synchronized,
+            true,
+        );
+
+        // 2 s later (2 billion ticks): drift 2 ppm × 2 s = 4 µs; period error 1 ppm × 2 s = 2 µs.
+        let result = ceb
+            .compute_bound_at_tsc(2_000_000_000)
+            .expect("Should succeed");
+        assert_eq!(
+            result.earliest,
+            TimeSpec::new(3, 0) - TimeSpec::nanoseconds(16_000)
+        );
+        assert_eq!(
+            result.latest,
+            TimeSpec::new(3, 0) + TimeSpec::nanoseconds(16_000)
+        );
     }
 
     // Assert that typical TSC periods (1Hz to 10 GHz range) are converted into scaled integers
