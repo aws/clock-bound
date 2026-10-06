@@ -47,6 +47,18 @@ impl NtpAdjTimeExt for NoopClockAdjuster {
     ) -> Result<Timex, NtpAdjTimeError> {
         Ok(Timex::retrieve())
     }
+
+    fn apply_phase_correction_smooth(
+        &self,
+        _phase_correction: Duration,
+        _error_bound: Duration,
+    ) -> Result<Timex, NtpAdjTimeError> {
+        Ok(Timex::retrieve())
+    }
+
+    fn read_adjtime(&self) -> Result<Timex, NtpAdjTimeError> {
+        Ok(Timex::retrieve())
+    }
 }
 
 /// Lightweight trait around `ntp_adjtime` function (formerly `adjtimex`).

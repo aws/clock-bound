@@ -111,7 +111,6 @@ impl Running {
         let result = ntp_adjtime
             .apply_phase_correction_smooth(offset, clock_params.clock_error_bound)
             .expect("failed to smooth-apply phase correction");
-        debug!("Clock smooth-slewed by {offset:?}.");
         debug!(
             "ntp_adjtime apply_phase_correction_smooth returned kernel state: {:?}.",
             result
