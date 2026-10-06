@@ -83,7 +83,7 @@ impl Initializing {
             }
         } else {
             ntp_adjtime
-                .apply_phase_correction_smooth(offset)
+                .apply_phase_correction_smooth(offset, clock_params.clock_error_bound)
                 .expect("failed to smooth-apply phase correction on startup");
             info!("Clock smooth-slewed by {} nanoseconds.", offset.as_nanos());
             ClockCorrection::Smooth {
@@ -109,7 +109,7 @@ impl Running {
         let clockbound = ClockBound::new(clock_params.clone(), ReadTscImpl);
         let offset = clockbound.get_offset_and_rtt(&RealTime).offset();
         let result = ntp_adjtime
-            .apply_phase_correction_smooth(offset)
+            .apply_phase_correction_smooth(offset, clock_params.clock_error_bound)
             .expect("failed to smooth-apply phase correction");
         debug!("Clock smooth-slewed by {offset:?}.");
         debug!(
@@ -158,7 +158,7 @@ mod test {
         let mut mock = MockNtpAdjTimeExt::new();
         mock.expect_apply_phase_correction_smooth()
             .once()
-            .returning(|_| Ok(crate::daemon::time::timex::Timex::retrieve()));
+            .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
         let (state, correction) =
             Initializing.to_running(&mock, &clock_params_with_offset(Duration::from_millis(100)));
@@ -190,7 +190,7 @@ mod test {
         let mut mock = MockNtpAdjTimeExt::new();
         mock.expect_apply_phase_correction_smooth()
             .once()
-            .returning(|_| Ok(crate::daemon::time::timex::Timex::retrieve()));
+            .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
         let running = Running;
         let (next, correction) =

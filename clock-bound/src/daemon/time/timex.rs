@@ -4,7 +4,8 @@ use bon::bon;
 #[cfg(not(target_os = "macos"))]
 use libc::timeval;
 use libc::{
-    ADJ_SETOFFSET, MOD_NANO, MOD_OFFSET, MOD_STATUS, MOD_TIMECONST, STA_NANO, STA_PLL, timex,
+    ADJ_SETOFFSET, MOD_ESTERROR, MOD_MAXERROR, MOD_NANO, MOD_OFFSET, MOD_STATUS, MOD_TIMECONST,
+    STA_NANO, STA_PLL, timex,
 };
 use tracing::warn;
 
@@ -61,11 +62,18 @@ impl Timex {
         Skew::from_timex_freq(self.0.freq)
     }
 
+    /// Construct a [`Timex`] struct to be passed into `ntp_adjtime`
+    ///
+    /// A couple notes on how it constructs
+    /// - the `STA_UNSYNC` status will never be set. We only apply correction when the app is synchronized.
+    /// - `maxerror` set to the clock error bound. Without setting, kernel will mark unsynced
+    /// - `esterror` set to the clock error bound.
+    // TODO: name sounds like a mutating operation, but it isn't... will be cleaned
     #[allow(
         clippy::cast_possible_truncation,
         reason = "offset is clamped then converted so no truncation"
     )]
-    pub fn apply_phase_correction(mut offset: Duration) -> Self {
+    pub fn apply_phase_correction(mut offset: Duration, error_bound: Duration) -> Self {
         if offset > Self::MAX_PHASE_OFFSET || offset < -Self::MAX_PHASE_OFFSET {
             warn!(
                 "Offset of {}ns is outside of bounds +/-{}ns. Clamping the value.",
@@ -74,13 +82,18 @@ impl Timex {
             );
             offset = offset.clamp(-Self::MAX_PHASE_OFFSET, Self::MAX_PHASE_OFFSET);
         }
+
+        // note, this does NOT have STA_UNSYNC set. It will mark as synchronized within the kernel,
+        // assuming the clock error bound is < 16 seconds (`NTP_PHASE_LIMIT` in the kernel)
+        let status = STA_PLL;
+
         Self(timex {
-            modes: MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS,
+            modes: MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS | MOD_MAXERROR | MOD_ESTERROR,
             offset: offset.as_nanos_trunc(),
             freq: 0,
-            maxerror: 0,
-            esterror: 0,
-            status: STA_PLL,
+            maxerror: error_bound.as_micros(),
+            esterror: error_bound.as_micros(),
+            status,
             constant: 0,
             precision: 0,
             tolerance: 0,
@@ -309,7 +322,7 @@ impl AsRef<timex> for Timex {
 
 #[cfg(test)]
 mod test {
-    use libc::{STA_NANO, timeval};
+    use libc::{STA_NANO, STA_UNSYNC, timeval};
     use rstest::rstest;
 
     use super::*;
@@ -421,5 +434,21 @@ mod test {
         let result = timex.time();
         let expected = Instant::from_secs(-10) + Duration::from_micros(500_000);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn apply_phase_correction_clears_unsync_and_writes_error_bound() {
+        let error_bound = Duration::from_millis(5);
+        let tx = Timex::apply_phase_correction(Duration::from_micros(100), error_bound);
+        let inner = tx.as_ref();
+
+        assert_eq!(
+            inner.modes,
+            MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS | MOD_MAXERROR | MOD_ESTERROR
+        );
+        assert_eq!(inner.status & STA_UNSYNC, 0, "STA_UNSYNC should be cleared");
+        assert_ne!(inner.status & STA_PLL, 0, "STA_PLL should stay set");
+        assert_eq!(inner.maxerror, error_bound.as_micros());
+        assert_eq!(inner.esterror, error_bound.as_micros());
     }
 }

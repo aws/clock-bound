@@ -81,11 +81,7 @@
 //! phase correction and skew correction parameters as we expect to via calls to that API, and seeing
 //! the `CLOCK_REALTIME` adjustment is steered precisely to where we would expect it to be.
 #![allow(clippy::doc_comment_double_space_linebreaks, reason = "hooray ascii")]
-use clock_bound::daemon::{
-    clock_state::clock_adjust::{KAPIClockAdjuster, NtpAdjTimeError, NtpAdjTimeExt},
-    time::{Duration, Instant, tsc::Skew},
-};
-use tracing::info;
+use clock_bound::daemon::time::{Duration, Instant, tsc::Skew};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -237,20 +233,6 @@ impl ClockAdjustTestParameters {
         let time_in_nanos_adjusted_for_skew = time_in_nanos as f64 * self.skew.get();
         Duration::from_nanos(time_in_nanos_adjusted_for_skew as i64)
     }
-}
-
-/// Reset the system clock, by clearing any `skew` and `phase_correction` running in the kernel.
-/// Give some buffer time by sleeping after this too.
-#[allow(dead_code)]
-async fn reset_clock() -> Result<(), NtpAdjTimeError> {
-    info!("Resetting clock parameters..");
-    let clock_adjuster = KAPIClockAdjuster;
-    // Reset the kernel NTP parameters.
-    let phase_correction = Duration::from_millis(0);
-    clock_adjuster.apply_phase_correction_smooth(phase_correction)?;
-    // Ensure any ongoing slews are done
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    Ok(())
 }
 
 #[cfg(test)]

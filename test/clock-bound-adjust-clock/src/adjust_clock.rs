@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
 
     let clock_adjuster = KAPIClockAdjuster;
     clock_adjuster
-        .apply_phase_correction_smooth(phase_correction)
+        .apply_phase_correction_smooth(phase_correction, Duration::from_micros(20))
         .map_err(|e| anyhow::anyhow!(e))?;
     println!(
         "Applied {:+} second phase correction to kernel PLL (smooth slew).",

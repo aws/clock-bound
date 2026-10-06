@@ -66,7 +66,7 @@ mod mock_ntp_adj_time_ext {
     mockall::mock! {
         pub NtpAdjTimeExt {}
         impl NtpAdjTimeExt for NtpAdjTimeExt {
-            fn apply_phase_correction_smooth(&self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError>;
+            fn apply_phase_correction_smooth(&self, phase_correction: Duration, error_bound: Duration) -> Result<Timex, NtpAdjTimeError>;
             fn apply_phase_correction_step(&self, phase_correction: Duration) -> Result<Timex, NtpAdjTimeError>;
             fn read_adjtime(&self) -> Result<Timex, NtpAdjTimeError>;
         }
@@ -95,9 +95,14 @@ pub trait NtpAdjTimeExt: NtpAdjTime {
     fn apply_phase_correction_smooth(
         &self,
         phase_correction: Duration,
+        error_bound: Duration,
     ) -> Result<Timex, NtpAdjTimeError> {
-        let mut tx = Timex::apply_phase_correction(phase_correction);
-        debug!("Calling ntp_adjtime to smooth-apply phase correction {phase_correction:?}.");
+        let mut tx = Timex::apply_phase_correction(phase_correction, error_bound);
+        debug!(
+            ?phase_correction,
+            ?error_bound,
+            "Calling ntp_adjtime to smooth-apply phase correction."
+        );
         match self.ntp_adjtime(&mut tx) {
             TIME_OK => Ok(tx),
             cs @ (TIME_ERROR | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
@@ -163,7 +168,7 @@ mod test {
     fn apply_phase_correction_smooth_happy_path(#[case] phase_correction: Duration) {
         let mut mock = MockNtpAdjTime::new();
         mock.expect_ntp_adjtime().times(1).return_const(TIME_OK);
-        mock.apply_phase_correction_smooth(phase_correction)
+        mock.apply_phase_correction_smooth(phase_correction, Duration::from_millis(1))
             .unwrap();
     }
 
@@ -172,7 +177,7 @@ mod test {
         let mut mock = MockNtpAdjTime::new();
         mock.expect_ntp_adjtime().times(1).return_const(-1);
         assert!(matches!(
-            mock.apply_phase_correction_smooth(Duration::from_nanos(500))
+            mock.apply_phase_correction_smooth(Duration::from_nanos(500), Duration::from_millis(1))
                 .unwrap_err(),
             NtpAdjTimeError::Failure(_)
         ));

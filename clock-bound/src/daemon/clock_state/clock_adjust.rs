@@ -106,7 +106,7 @@ mod test {
         let mut mock = MockNtpAdjTimeExt::new();
         mock.expect_apply_phase_correction_smooth()
             .once()
-            .returning(|_| Ok(crate::daemon::time::timex::Timex::retrieve()));
+            .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
         let mut adjuster = ClockAdjuster::new(mock);
         assert!(matches!(adjuster.state, State::Initializing(_)));
@@ -119,7 +119,7 @@ mod test {
         let mut mock = MockNtpAdjTimeExt::new();
         mock.expect_apply_phase_correction_smooth()
             .times(3)
-            .returning(|_| Ok(crate::daemon::time::timex::Timex::retrieve()));
+            .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
         let mut adjuster = ClockAdjuster::new(mock);
         adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
