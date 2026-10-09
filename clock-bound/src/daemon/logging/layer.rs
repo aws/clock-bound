@@ -17,7 +17,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use serde_json::{Map, Value};
+use serde_json::value::RawValue;
 use tracing::{
     Event, Subscriber,
     field::{Field, Visit},
@@ -260,18 +260,37 @@ where
             return;
         };
 
-        // Deserialize the entry JSON into a map so we can inject fields
+        // The entry is one JSON object, serialised by the emitting code (`serde_json::to_string` on a
+        // typed record). The line written is that object with three fields added around and inside
+        // it: `{"timestamp":…,"event":…,"seq":…,<the entry's other members>,"version":…}`. Nothing in
+        // the entry's *values* is needed to do this — only the member boundaries and the keys — so the
+        // values are not parsed into `serde_json::Value`s and re-serialised; they are passed through
+        // as the text they arrived as.
         //
-        // This deserialization -> reserialization is the price we pay for the convenience
-        // of continuing to use `tracing` for these structured logs.
-        // May be worth revisiting in the future.
-        let Ok(entry_map) = serde_json::from_str::<Map<String, Value>>(&entry_json) else {
+        // `RawValue` is serde_json's type for exactly that: the unparsed text of one JSON value,
+        // borrowed from the input. `parse_json_members` still runs serde_json's parser over the whole
+        // entry, so a malformed entry or a non-object is rejected here as before (the parse fails and
+        // the record is dropped); what it does not do is allocate a tree of owned strings and numbers
+        // per member, or serialise that tree a second time. On a replay that round trip was most of
+        // the time per record.
+        //
+        // Member order is the entry's, as `preserve_order` gave it before. A value's text is written
+        // as received rather than re-serialised, and for floats that is a correction, not only a
+        // saving: serde_json's default `from_str` does not round floats correctly (its exact mode is
+        // the `float_roundtrip` feature, not enabled here), so the old parse-then-print read the
+        // emitter's shortest spelling of an f64 — `3.846153617588737e-10` — as the f64 one ULP
+        // below it and printed that: `3.8461536175887366e-10`. About half the float fields in every
+        // structured log (`p_estimate`, `period_local`, `period_s`, …) were off by one ULP from the
+        // value the algorithm held. Passing the emitter's text through writes the value it
+        // computed. (A hand-written entry with, say, `1e2` now also keeps `1e2` where it was
+        // rewritten as `100.0`; the daemon emits no such entries.)
+        let Ok(members) = parse_json_members(&entry_json) else {
             return;
         };
 
         // A record that carries no `seq` of its own takes the nearest enclosing span's, if that
         // span was remembered by `on_new_span`.
-        let span_seq = if entry_map.contains_key("seq") {
+        let span_seq = if members.iter().any(|(key, _)| *key == "seq") {
             None
         } else {
             ctx.event_span(event).and_then(|span| {
@@ -280,28 +299,115 @@ where
             })
         };
 
-        // Build output with desired field ordering: [timestamp], event, [seq], body, version
-        let mut output = Map::new();
-        if let Some(now) = self.timestamp_source.now() {
-            output.insert("timestamp".into(), Value::String(format_log_timestamp(now)));
+        // The line is formatted into a buffer of its own, outside the lock, and written in one call
+        // under it. The daemon has several threads writing one stream, so a line must reach the file
+        // whole: holding the lock only for the `write_all` keeps lines from interleaving while
+        // keeping the hold as short as before (the old code also built the whole line first). The
+        // buffer is one allocation per line; the round trip it replaces made about twenty.
+        // `Write` errors are dropped, as before: these streams are best-effort data, not a
+        // transactional log.
+        let mut line = Vec::with_capacity(entry_json.len() + 128);
+        if write_json_line(
+            &mut line,
+            self.timestamp_source.now(),
+            &members,
+            span_seq,
+            self.version,
+        )
+        .is_err()
+        {
+            return;
         }
-        for (key, value) in entry_map {
-            let is_event = key == "event";
-            output.insert(key, value);
-            if is_event && let Some(seq) = span_seq {
-                output.insert("seq".into(), Value::from(seq));
-            }
-        }
-        output.insert("version".into(), Value::String(self.version.into()));
-
-        // Write as a single JSON line
-        if let Ok(line) = serde_json::to_string(&output)
-            && let Ok(mut guard) = self.writer.lock()
+        if let Ok(mut guard) = self.writer.lock()
             && let Some(ref mut w) = *guard
         {
-            let _ = writeln!(w, "{line}");
+            let _ = w.write_all(&line);
         }
     }
+}
+
+/// Parse a JSON object into its members, each value left as the text it was written as.
+///
+/// `serde_json` deserialises a JSON object into a `Vec` of pairs only through its map visitor, which
+/// is what this does by hand: the key as a borrowed `&str`, the value as a borrowed [`RawValue`]. A
+/// non-object (an array, a bare string) is an error, so a record that is not an object is dropped by
+/// the caller exactly as the previous `Map<String, Value>` parse dropped it.
+fn parse_json_members(entry_json: &str) -> Result<Vec<(&str, &RawValue)>, serde_json::Error> {
+    use serde::de::{Deserializer, MapAccess, Visitor};
+
+    struct Members;
+    impl<'de> Visitor<'de> for Members {
+        type Value = Vec<(&'de str, &'de RawValue)>;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a JSON object")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut members = Vec::with_capacity(map.size_hint().unwrap_or(8));
+            while let Some(member) = map.next_entry::<&'de str, &'de RawValue>()? {
+                members.push(member);
+            }
+            Ok(members)
+        }
+    }
+    // serde's model: a Deserializer walks the input and reports what it finds to a Visitor. The
+    // serde_json Deserializer is asked for one map (`deserialize_map`), and the visitor accepts
+    // only that (`visit_map`), so an array or a bare value fails as "expected a JSON object". Each
+    // entry is read as (&str key, &RawValue value): both borrow from the input, the RawValue being
+    // the span of text of the value, which serde_json has checked is well-formed JSON but has not
+    // turned into numbers or strings.
+    let mut de = serde_json::Deserializer::from_str(entry_json);
+    let members = de.deserialize_map(Members)?;
+    de.end()?; // nothing may follow the object: `{"a":1} x` is an error, as it is for `from_str`
+    Ok(members)
+}
+
+/// Write one log line: `{"timestamp":…,"event":…,"seq":…,<members>,"version":…}` and a newline.
+///
+/// Field order, from the outside in: `timestamp` first when the stream has one; then the entry's
+/// members in their own order, with `seq` inserted right after the `event` member when the span
+/// supplies it; `version` last. Keys are written with `serde_json` so that they are escaped as JSON
+/// strings; values are written as their raw text (see `on_event`).
+fn write_json_line<W: Write>(
+    w: &mut W,
+    timestamp: Option<DateTime<Utc>>,
+    members: &[(&str, &RawValue)],
+    span_seq: Option<u64>,
+    version: &str,
+) -> std::io::Result<()> {
+    // The line is assembled in one pass, in this order:
+    //   {"timestamp":…, <the entry's members, with "seq":N inserted after "event">, "version":…}\n
+    // `sep` writes the comma between fields: nothing before the first, a comma before each next.
+    w.write_all(b"{")?;
+    let mut first = true;
+    let mut sep = |w: &mut W| -> std::io::Result<()> {
+        if first {
+            first = false;
+            Ok(())
+        } else {
+            w.write_all(b",")
+        }
+    };
+    if let Some(now) = timestamp {
+        sep(w)?;
+        write!(w, "\"timestamp\":\"{}\"", format_log_timestamp(now))?;
+    }
+    for (key, value) in members {
+        sep(w)?;
+        // The key goes through serde_json so it is quoted and escaped as a JSON string; the value
+        // is the text the emitter wrote, copied as is (see `on_event`).
+        serde_json::to_writer(&mut *w, key)?;
+        w.write_all(b":")?;
+        w.write_all(value.get().as_bytes())?;
+        if *key == "event"
+            && let Some(seq) = span_seq
+        {
+            write!(w, ",\"seq\":{seq}")?;
+        }
+    }
+    sep(w)?;
+    w.write_all(b"\"version\":")?;
+    serde_json::to_writer(&mut *w, version)?;
+    w.write_all(b"}\n")
 }
 
 /// A span's `seq` field, kept in the span's extensions for the records emitted inside it.
@@ -344,6 +450,7 @@ impl Visit for EntryVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Map, Value};
     use std::io::Read;
     use tempfile::TempDir;
     use tracing_subscriber::layer::SubscriberExt;
@@ -572,6 +679,50 @@ mod tests {
         assert_eq!(
             read(&path).trim_end(),
             r#"{"event":"after","version":"1.2.3"}"#
+        );
+    }
+
+    /// Values are written as the text they arrived as: a string holding an escaped quote and a brace,
+    /// a nested object, a number, a null, all pass through byte for byte, with the keys in their order.
+    #[test]
+    fn values_pass_through_as_written() {
+        let entry = r#"{"event":"x","s":"a \"quoted\" } brace","n":{"a":[1,2.5,null]},"z":-3}"#;
+        let output = with_layer(TimestampSource::None, || {
+            tracing::info!(target: TEST_TARGET, entry = entry);
+        });
+        assert_eq!(
+            output.trim_end(),
+            r#"{"event":"x","s":"a \"quoted\" } brace","n":{"a":[1,2.5,null]},"z":-3,"version":"1.2.3"}"#
+        );
+    }
+
+    /// A float is written as the emitter spelled it. serde_json's default `from_str` is not correctly
+    /// rounded: `3.846153617588737e-10` (the shortest spelling of f64 bits 0x3dfa6e399992ee38) parses
+    /// to the neighbour 0x3dfa6e399992ee37, which prints as `3.8461536175887366e-10`. The previous
+    /// parse-then-print path wrote that neighbour; this pins that the spelling now passes through.
+    #[test]
+    fn floats_keep_the_emitters_spelling_not_a_neighbour() {
+        let emitted = 3.846153617588737e-10_f64;
+        let spelled = serde_json::to_string(&emitted).unwrap();
+        assert_eq!(spelled, "3.846153617588737e-10");
+        // The defect this guards against, shown rather than assumed: the round trip lands one ULP off.
+        let reparsed: f64 = serde_json::from_str(&spelled).unwrap();
+        assert_ne!(
+            reparsed.to_bits(),
+            emitted.to_bits(),
+            "serde_json's parse has become exact; this test and the comment in on_event can go"
+        );
+        assert_eq!(
+            serde_json::to_string(&reparsed).unwrap(),
+            "3.8461536175887366e-10"
+        );
+
+        let output = with_layer(TimestampSource::None, || {
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"x","x":{"p":3.846153617588737e-10}}"#);
+        });
+        assert_eq!(
+            output.trim_end(),
+            r#"{"event":"x","x":{"p":3.846153617588737e-10},"version":"1.2.3"}"#
         );
     }
 
