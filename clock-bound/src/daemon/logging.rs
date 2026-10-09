@@ -42,6 +42,21 @@ impl LogHandles {
             handle.reopen();
         }
     }
+
+    /// Flush all active log files.
+    ///
+    /// Call this when the process is done writing: the layers live in the global subscriber and
+    /// are never dropped, so nothing else writes out the last buffered lines.
+    pub fn flush_all(&self) {
+        for handle in &self.handles {
+            handle.flush();
+        }
+    }
+
+    /// Handles for the given streams' layers.
+    pub fn new(handles: Vec<LogHandle>) -> Self {
+        Self { handles }
+    }
 }
 
 /// Identifies a structured log stream, binding its tracing target and on-disk
@@ -304,7 +319,7 @@ pub(crate) mod test_support {
         f: impl FnOnce(),
     ) -> (String, TempDir) {
         let tmp_dir = TempDir::new().unwrap();
-        let (layer, _handle) = StructuredLogLayer::for_stream(
+        let (layer, handle) = StructuredLogLayer::for_stream(
             tmp_dir.path(),
             stream,
             version,
@@ -313,6 +328,9 @@ pub(crate) mod test_support {
 
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, f);
+        // The lines are buffered until the process flushes them, as the daemon and the replay do
+        // when done writing; the subscriber is still referenced here, so nothing flushes on drop.
+        handle.flush();
 
         let mut contents = String::new();
         File::open(tmp_dir.path().join(stream.file_name()))

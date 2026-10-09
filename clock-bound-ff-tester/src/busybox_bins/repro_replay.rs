@@ -101,7 +101,8 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
     // respective log files. Non-default parameters mark the version string, and the effective
     // parameters are the first record of both streams.
     let version_suffix = ffsync_params::version_suffix(&ff_sync_params);
-    logging::init_for_synchronization_replay(args.output_dir, version_suffix.as_deref());
+    let log_handles =
+        logging::init_for_synchronization_replay(args.output_dir, version_suffix.as_deref());
     ffsync_params::log_effective(&ff_sync_params);
 
     let mut repro_events = repro::repro_events_from_log_file(&args.logfile)?;
@@ -146,6 +147,8 @@ pub fn main(args: Cli) -> anyhow::Result<()> {
         ordering = %repro_events.order_summary(),
         "replay complete"
     );
+    // The last lines of both streams are still in their buffers; the subscriber is never dropped.
+    log_handles.flush_all();
 
     Ok(())
 }

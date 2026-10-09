@@ -11,7 +11,7 @@
 use std::{
     fmt,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -28,18 +28,48 @@ use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
 use super::{StructuredLog, format_log_timestamp};
 
+/// The log file behind a buffer.
+///
+/// Lines are buffered (`BufWriter`'s default, 8 KiB) and reach the file in blocks: one `write(2)`
+/// per block instead of one per line. On the daemon's streams that is at most a few seconds of
+/// lines in memory. On a trace replay, with millions of lines, buffering the output cuts down
+/// execution time.
+///
+/// The buffer is flushed before the file is swapped on [`LogHandle::reopen`], and by
+/// [`LogHandle::flush`] when the process is done writing. Lines still buffered when the process
+/// aborts are lost. Similar contract with unbuffered writer, which would loose the last logs.
+type LogWriter = BufWriter<File>;
+
 /// A handle to a structured log file that supports reopening.
 ///
 /// Used to implement lossless log rotation: an external tool (e.g., logrotate)
 /// renames the current file, then sends SIGHUP to trigger [`LogHandle::reopen`],
-/// which closes the old fd and opens a new file at the original path.
+/// which flushes and closes the old fd and opens a new file at the original path.
 pub struct LogHandle {
-    writer: Arc<Mutex<Option<File>>>,
+    writer: Arc<Mutex<Option<LogWriter>>>,
     path: PathBuf,
 }
 
 impl LogHandle {
+    /// Write out the lines still in the buffer.
+    ///
+    /// The layers are owned by the global subscriber, which is never dropped, so the buffer is not
+    /// flushed by going out of scope: call this when the process is done writing (the end of a
+    /// replay, the daemon's shutdown). A flush error is reported, as in `reopen`.
+    pub(super) fn flush(&self) {
+        if let Ok(mut guard) = self.writer.lock()
+            && let Some(ref mut w) = *guard
+            && let Err(e) = w.flush()
+        {
+            warn!("Failed to flush log file {}: {e}", self.path.display());
+        }
+    }
+
     /// Close and reopen the log file at its original path.
+    ///
+    /// The old writer is taken out from under the lock and the new one put in its place; the old
+    /// one is then flushed and synced outside the lock. A line written between logrotate's rename
+    /// and the signal is still in the old buffer and lands in the renamed file, where it belongs.
     ///
     /// On failure, logs an error to stderr and drops the writer so the old fd
     /// is closed (freeing disk space). A subsequent successful `reopen` call
@@ -50,7 +80,7 @@ impl LogHandle {
             .append(true)
             .open(&self.path)
         {
-            Ok(file) => Some(file),
+            Ok(file) => Some(BufWriter::new(file)),
             Err(e) => {
                 warn!(
                     "Failed to reopen log file {}: {e}. Suspending output to this log.",
@@ -61,18 +91,28 @@ impl LogHandle {
         };
 
         let mut guard = self.writer.lock().unwrap();
-        let old_log_file = guard.take();
+        let old_writer = guard.take();
 
         *guard = new_writer;
         drop(guard);
 
-        if let Some(old_log_file) = old_log_file
-            && let Err(e) = old_log_file.sync_all()
-        {
-            warn!(
-                "Failed to flush log file {} before reopen: {e}",
-                self.path.display()
-            );
+        if let Some(old_writer) = old_writer {
+            // `into_inner` flushes the buffer and hands back the file; a flush error is reported
+            // rather than swallowed, and the file is closed either way when it goes out of scope.
+            match old_writer.into_inner() {
+                Ok(old_log_file) => {
+                    if let Err(e) = old_log_file.sync_all() {
+                        warn!(
+                            "Failed to sync log file {} before reopen: {e}",
+                            self.path.display()
+                        );
+                    }
+                }
+                Err(e) => warn!(
+                    "Failed to flush log file {} before reopen: {e}",
+                    self.path.display()
+                ),
+            }
         }
     }
 }
@@ -117,7 +157,7 @@ impl TimestampSource {
 /// This layer/target is not intended to be called into directly by the main app,
 /// but via strongly-typed helper libraries.
 pub struct StructuredLogLayer {
-    writer: Arc<Mutex<Option<File>>>,
+    writer: Arc<Mutex<Option<LogWriter>>>,
     target_prefix: &'static str,
     version: &'static str,
     timestamp_source: TimestampSource,
@@ -155,7 +195,7 @@ impl StructuredLogLayer {
             .open(&path)
             .unwrap_or_else(|e| panic!("Failed to open log file {}: {}", path.display(), e));
 
-        let writer = Arc::new(Mutex::new(Some(file)));
+        let writer = Arc::new(Mutex::new(Some(BufWriter::new(file))));
 
         let layer = Self {
             writer: Arc::clone(&writer),
@@ -315,7 +355,7 @@ mod tests {
     /// the subscriber active. Returns the file contents after the closure completes.
     fn with_layer(source: TimestampSource, f: impl FnOnce()) -> String {
         let tmp_dir = TempDir::new().unwrap();
-        let (layer, _handle) = StructuredLogLayer::new(
+        let (layer, handle) = StructuredLogLayer::new(
             tmp_dir.path(),
             "test.log",
             TEST_TARGET,
@@ -325,6 +365,7 @@ mod tests {
 
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, f);
+        handle.flush(); // buffered until flushed, as in production; see `LogHandle::flush`
 
         let mut contents = String::new();
         File::open(tmp_dir.path().join("test.log"))
@@ -499,6 +540,41 @@ mod tests {
             lines[2]
         ); // its own seq wins
     }
+    /// Rotation: a line written before `reopen` is flushed into the file that was renamed away,
+    /// and a line written after goes to the new file at the original path. Nothing stays in a buffer.
+    #[test]
+    fn reopen_flushes_the_old_file_and_starts_the_new_one() {
+        let tmp_dir = TempDir::new().unwrap();
+        let path = tmp_dir.path().join("test.log");
+        let rotated = tmp_dir.path().join("test.log.1");
+        let (layer, handle) = StructuredLogLayer::new(
+            tmp_dir.path(),
+            "test.log",
+            TEST_TARGET,
+            TEST_VERSION,
+            TimestampSource::None,
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"before"}"#);
+            // The line is in the buffer, not yet in the file.
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+            std::fs::rename(&path, &rotated).unwrap(); // what logrotate does
+            handle.reopen(); // what SIGHUP triggers
+            tracing::info!(target: TEST_TARGET, entry = r#"{"event":"after"}"#);
+        });
+        handle.flush();
+        let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+        assert_eq!(
+            read(&rotated).trim_end(),
+            r#"{"event":"before","version":"1.2.3"}"#
+        );
+        assert_eq!(
+            read(&path).trim_end(),
+            r#"{"event":"after","version":"1.2.3"}"#
+        );
+    }
+
     /// `TimestampSource::None` writes no `timestamp` field at all; the line starts at `event`.
     #[test]
     fn no_timestamp_source_omits_the_field() {

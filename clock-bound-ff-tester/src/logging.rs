@@ -15,7 +15,7 @@ use tracing_subscriber::{
 };
 
 use clock_bound::daemon::logging::{
-    StructuredLog, is_structured_target,
+    LogHandles, StructuredLog, is_structured_target,
     layer::{StructuredLogLayer, TimestampSource},
 };
 
@@ -65,10 +65,13 @@ fn create_log_directory(log_directory: impl AsRef<Path>) {
 /// passes `+params-<hash>` when it runs with non-default algorithm parameters (see
 /// [`crate::ffsync_params`]), and nothing when it runs with the defaults, so that a default
 /// replay carries exactly the version string the daemon carries.
+///
+/// Returns the handles to the two streams; the caller flushes them when the replay is done
+/// ([`LogHandles::flush_all`]): the layers live in the global subscriber and are never dropped.
 pub fn init_for_synchronization_replay(
     log_directory: impl AsRef<Path>,
     version_suffix: Option<&str>,
-) {
+) -> LogHandles {
     // The StructuredLogLayer attempts to create directory, so need to assert whether the directory
     // already exists
     // create a *new* directory where to write log files to
@@ -101,18 +104,20 @@ pub fn init_for_synchronization_replay(
     // with a timestamp fixed at the epoch, so that the same replay yields the same output.
     // The algo_analysis records are joined to the feed on `seq` and carry no timestamp at all.
     let mut structured_layers = Vec::new();
+    let mut handles = Vec::new();
     let data_streams = [
         (StructuredLog::AlgoAnalysis, TimestampSource::None),
         (StructuredLog::FFEvents, TimestampSource::Fixed),
     ];
     for (stream, timestamp_source) in data_streams {
-        let (layer, _handle) = StructuredLogLayer::for_stream(
+        let (layer, handle) = StructuredLogLayer::for_stream(
             &log_directory,
             stream,
             static_version,
             timestamp_source,
         );
         structured_layers.push(layer);
+        handles.push(handle);
     }
 
     // Logging layer for regular log events (progress, warnings) being pushed to stdout.
@@ -135,4 +140,5 @@ pub fn init_for_synchronization_replay(
         .init();
 
     tracing::info!("Initialized tracing subscriber");
+    LogHandles::new(handles)
 }

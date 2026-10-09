@@ -110,6 +110,7 @@ async fn main() {
             }
         }
     }
+    log_handles.flush_all();
 }
 
 fn log_configuration(
