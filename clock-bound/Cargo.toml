@@ -29,7 +29,7 @@ nom = { version = "8", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0.145", features = [
   "preserve_order",
-  "raw_value",   # the structured log layer passes each record's values through unparsed
+  "raw_value",      # the structured log layer passes each record's values through unparsed
 ], optional = true }
 thiserror = { version = "2.0", optional = true }
 toml = { version = "1.1", default-features = false, features = [

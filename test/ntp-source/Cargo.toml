@@ -22,7 +22,14 @@ path = "src/pool.rs"
 
 [dependencies]
 clock-bound = { path = "../../clock-bound", features = ["daemon"] }
+clap = { version = "4.5.50", features = ["derive"] }
 md5 = "0.8.0"
 rand = "0.9.2"
-tokio = { version = "1.47.1", features = ["macros", "rt", "time", "sync"] }
+tokio = { version = "1.47.1", features = [
+  "macros",
+  "net",
+  "rt",
+  "time",
+  "sync",
+] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }

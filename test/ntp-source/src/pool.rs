@@ -42,16 +42,21 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock_bound::daemon::async_ring_buffer;
 use clock_bound::daemon::clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector};
-use clock_bound::daemon::io::SourceIO;
+use clock_bound::daemon::event;
+use clock_bound::daemon::io::dns::ntp_source::NtpSource;
+use clock_bound::daemon::io::dns::resolver;
 use clock_bound::daemon::io::ntp::DaemonInfo;
+use clock_bound::daemon::io::{ClockDisruptionEvent, ControlRequest, SourceIO};
 use clock_bound::daemon::message::Dns as DnsMessage;
 use clock_bound::daemon::receiver_stream::{ReceiverStream, RoutableEvent};
 use clock_bound::daemon::selected_clock::SelectedClockSource;
 use clock_bound::daemon::source_mutator::SourceMutator;
 
+use clap::Parser;
 use rand::{RngCore, rng};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
 
 /// Pool domain to test against — same as the daemon uses in production.
@@ -72,14 +77,31 @@ const EXPECTED_SINGLE_HOST_SOURCES: usize = 1;
 /// before declaring the test successful.
 const MIN_RESPONSES_PER_SOURCE: usize = 2;
 
+/// Command-line options for the pool test binary.
+#[derive(Debug, Parser)]
+struct Args {
+    /// Run the IPv6 source test.
+    ///
+    /// Use on hosts with working IPv6 connectivity
+    #[clap(long)]
+    run_ipv6_tests: bool,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let args = Args::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
     test_pool_source_creation_lifecycle().await;
     test_single_host_lifecycle().await;
+    if args.run_ipv6_tests {
+        test_ipv6_source_sends_events().await;
+    } else {
+        println!("Skipping IPv6 tests (no --run-ipv6-tests flag)");
+    }
 }
 
 /// Components needed by the test run loop.
@@ -392,6 +414,160 @@ fn handle_event(
         }
         None => {
             println!("  ReceiverStream returned None (no streams available yet)");
+        }
+    }
+}
+
+/// Number of NTP events to require from the IPv6 source before the test passes.
+const IPV6_REQUIRED_EVENTS: usize = 2;
+
+/// Directly exercise a DNS NTP source pointed at a resolved **IPv6** address.
+///
+/// Unlike the other tests in this file, this one bypasses the resolver/`SourceIO`
+/// machinery and drives a single [`NtpSource`] itself. Its purpose is narrow: prove
+/// that when a pool domain resolves to an IPv6 address, an `NtpSource` constructed for
+/// that `SocketAddr::V6` actually binds an IPv6 socket, sends NTP requests, and streams
+/// responses back out through the ring buffer. This guards the family-aware bind in
+/// `Ntp::sample`: with an IPv4-only bind, every send to a v6 destination would fail and
+/// no events would ever arrive here.
+///
+/// This test runs on a runner that is expected to have working IPv6, so a missing AAAA
+/// answer or absent IPv6 egress is a hard failure rather than a skip. It resolves
+/// `time.aws.com`, picks the first IPv6 answer, verifies the host can actually route to it,
+/// and then requires NTP events to flow. Failing loudly on these preconditions ensures the
+/// v6 send path is genuinely exercised and a regression cannot hide behind a silent skip.
+async fn test_ipv6_source_sends_events() {
+    println!("Testing IPv6 DNS NTP source with domain: {POOL_DOMAIN}");
+
+    let ipv6_addr = resolve_first_ipv6(POOL_DOMAIN).await.unwrap_or_else(|| {
+        panic!("{POOL_DOMAIN} did not resolve to any IPv6 address; IPv6 is required here");
+    });
+
+    let server_address = SocketAddr::new(ipv6_addr.into(), 123);
+    assert!(server_address.is_ipv6(), "expected an IPv6 socket address");
+    println!("  resolved IPv6 source: {server_address}");
+
+    // A AAAA record does not imply the host can route to it. Probe real IPv6 egress and
+    // fail if there is none: this runner is expected to have working IPv6, so an
+    // unreachable v6 destination is a genuine failure, not an environment quirk to skip.
+    assert!(
+        ipv6_reachable(ipv6_addr).await,
+        "host has no working IPv6 route to {server_address}; \
+         IPv6 egress is required to exercise the IPv6 send path"
+    );
+    println!("  verified IPv6 egress to {server_address}");
+
+    // Build the same channels `SourceIO` would wire up for a DNS NTP source, but keep the
+    // handles here so we can drive the source directly.
+    let (event_sender, event_receiver) = async_ring_buffer::create::<event::Ntp>(16);
+    let (_ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
+    let (_disruption_sender, disruption_receiver) =
+        watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
+    // The source registers/notifies the resolver over this channel. We stand in for the
+    // resolver by draining it so the source's sends never block.
+    let (resolver_tx, mut resolver_rx) = mpsc::channel::<resolver::Message>(16);
+
+    let selected_clock = Arc::new(SelectedClockSource::default());
+    let daemon_info = DaemonInfo {
+        major_version: 2,
+        minor_version: 200,
+        startup_id: rng().next_u64(),
+    };
+
+    let mut source = NtpSource::construct(
+        POOL_DOMAIN.to_string(),
+        server_address,
+        event_sender,
+        ctrl_receiver,
+        disruption_receiver,
+        selected_clock,
+        daemon_info,
+        resolver_tx,
+    );
+
+    // Spawn the resolver-side drain so `register_with_resolver` and any later
+    // notifications from the source never fill the channel and stall `run`.
+    let resolver_drain = tokio::spawn(async move {
+        while let Some(msg) = resolver_rx.recv().await {
+            println!("  resolver received: {msg:?}");
+        }
+    });
+
+    // Run the source itself. `run` loops until shutdown; the test only needs it alive
+    // long enough to produce events, so it is aborted once enough events arrive.
+    let source_task = tokio::spawn(async move {
+        if let Err(error) = source.run().await {
+            println!("  source run exited with error: {error:?}");
+        }
+    });
+
+    // Collect events from the ring buffer, requiring more than one so we know the source
+    // sustains the send/receive cycle over IPv6 rather than getting a single lucky reply.
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    let mut events_received = 0usize;
+    while events_received < IPV6_REQUIRED_EVENTS {
+        tokio::select! {
+            result = event_receiver.recv() => {
+                match result {
+                    Ok(ntp) => {
+                        events_received += 1;
+                        println!(
+                            "  IPv6 NTP event {events_received}/{IPV6_REQUIRED_EVENTS} \
+                             from {server_address}: {ntp:?}"
+                        );
+                    }
+                    Err(error) => {
+                        panic!("ring buffer closed before enough IPv6 events: {error:?}");
+                    }
+                }
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                panic!(
+                    "TIMEOUT after {TIMEOUT:?} waiting for IPv6 NTP events from {server_address}. \
+                     received {events_received}/{IPV6_REQUIRED_EVENTS}"
+                );
+            }
+        }
+    }
+
+    source_task.abort();
+    resolver_drain.abort();
+
+    println!("IPv6 DNS NTP source test PASSED");
+    println!("  IPv6 source {server_address} produced {events_received} events");
+}
+
+/// Resolve `domain:123` and return the first IPv6 address in the answer, if any.
+async fn resolve_first_ipv6(domain: &str) -> Option<std::net::Ipv6Addr> {
+    let mut addrs = tokio::net::lookup_host((domain, 123))
+        .await
+        .unwrap_or_else(|error| panic!("DNS resolution of {domain} failed: {error:?}"));
+
+    addrs.find_map(|addr| match addr {
+        SocketAddr::V6(v6) => Some(*v6.ip()),
+        SocketAddr::V4(_) => None,
+    })
+}
+
+/// Probe whether this host can actually route to the given IPv6 address.
+///
+/// Mirrors the daemon's own `verify_ipv6` check: bind a local IPv6 wildcard socket and
+/// `connect` it to the destination. For UDP this performs no network round trip; it only
+/// sets the peer and lets the kernel confirm a usable route exists, so it fails fast on a
+/// host with no global IPv6 address or default route.
+async fn ipv6_reachable(server_addr: std::net::Ipv6Addr) -> bool {
+    let socket = match tokio::net::UdpSocket::bind((std::net::Ipv6Addr::UNSPECIFIED, 0)).await {
+        Ok(socket) => socket,
+        Err(error) => {
+            println!("  IPv6 bind failed during reachability probe: {error:?}");
+            return false;
+        }
+    };
+    match socket.connect((server_addr, 123)).await {
+        Ok(()) => true,
+        Err(error) => {
+            println!("  IPv6 connect failed during reachability probe: {error:?}");
+            false
         }
     }
 }

@@ -1,8 +1,8 @@
 //! Ntp IO Source constants and base struct
 
 use std::{
-    io,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    io::{self, ErrorKind},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     num::Wrapping,
     sync::Arc,
 };
@@ -12,19 +12,16 @@ use tokio::{
     sync::{mpsc, watch},
     time::{self, Duration, Instant, Interval, MissedTickBehavior, interval_at},
 };
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 pub mod packet;
 pub use packet::{ExtensionField, Fec2V1Value as DaemonInfo, Packet};
-
-pub mod socket_ext;
 
 use crate::daemon::{
     async_ring_buffer::{self, BufferClosedError, SendError},
     event::{self, NtpData},
     io::{
         ClockDisruptionEvent, ControlRequest,
-        ntp::socket_ext::SocketExt,
         tsc::{read_timestamp_counter_begin, read_timestamp_counter_end},
     },
     selected_clock::SelectedClockSource,
@@ -32,8 +29,6 @@ use crate::daemon::{
 };
 
 use packet::Timestamp;
-
-pub const UNSPECIFIED_SOCKET_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 
 /// Unified error type for all NTP IO sources.
 #[derive(Debug, Error)]
@@ -46,8 +41,76 @@ pub enum NtpIoError {
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
     TscOrder { pre: u64, post: u64 },
-    #[error("IO failure on socket clear")]
-    SocketClear(#[source] io::Error),
+}
+
+impl NtpIoError {
+    /// Returns `true` if this error indicates the remote NTP source is unreachable
+    /// and should be retired so a replacement can be selected.
+    ///
+    /// Indicates errors to the `bind(2)`, `send_to(2)`, and `recv_from(2)` mean that
+    /// the source is unreachable and should be replaced.
+    ///
+    /// This gates reselection on more than timeouts. A host's network stack can change
+    /// underneath us: an IPv6 route can disappear, IPv6 can be disabled entirely, or an
+    /// address can stop being locally available. When that happens the local `bind` or the
+    /// `send_to`/`recv_from` fails with a routing or address-family error rather than timing
+    /// out. Treating those as "unreachable" lets the DNS resolver quarantine the dead address
+    /// and reselect a reachable one, so the daemon stays resilient across network-stack changes
+    /// instead of pinning a permanently-broken source.
+    ///
+    /// Everything else is treated as a transient local failure: it is retried on the next tick
+    /// and never retires the source, so a transient kernel hiccup cannot thrash the whole pool.
+    pub fn indicates_unreachable_source(&self) -> bool {
+        match self {
+            NtpIoError::Timeout(_) => true,
+            NtpIoError::Bind(e) | NtpIoError::SampleIo(e) => is_unreachable_io_error(e),
+            NtpIoError::TscOrder { .. } => false,
+        }
+    }
+}
+
+/// Classifies an [`io::Error`] from `bind`/`send_to`/`recv_from` as a routing or
+/// address-family failure that means this destination is unreachable on the current host.
+///
+/// returning true here means that the remote endpoint is unreachable and should
+/// eventually be re-resolved
+fn is_unreachable_io_error(error: &io::Error) -> bool {
+    // Routing / addressing failures that carry a stable `ErrorKind`.
+    //
+    // NetworkUnreachable: Local route unreachable. Could happen if an IPv6 route disappears.
+    // HostUnreachable: Local route exists but the host is down.
+    // AddrNotAvailable: Local address is not available (e.g. interface down).
+    if matches!(
+        error.kind(),
+        ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable | ErrorKind::AddrNotAvailable
+    ) {
+        return true;
+    }
+
+    // Address-family mismatches have no stable `ErrorKind`, so match the raw errno.
+    // EAFNOSUPPORT: address family not supported (e.g. an IPv6 dest on an IPv4-only stack).
+    // EINVAL: the kernel rejected the send as invalid for this socket's family.
+    #[cfg(unix)]
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::EAFNOSUPPORT | libc::EINVAL)
+    ) {
+        return true;
+    }
+
+    false
+}
+
+/// Returns the address-family-matched wildcard bind address for a destination.
+///
+/// Some systems enable `IPV6_V6ONLY` by default, so a single unspecified socket
+/// cannot serve both families. Bind the wildcard address matching the destination's
+/// family instead.
+fn wildcard_bind_addr(destination: SocketAddr) -> SocketAddr {
+    match destination {
+        SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
+        SocketAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),
+    }
 }
 
 /// Base NTP IO struct holding common components shared by all NTP-based IO sources.
@@ -189,7 +252,9 @@ impl Ntp {
             .build();
         packet.emit_bytes(&mut self.buffer);
 
-        let socket = UdpSocket::bind(UNSPECIFIED_SOCKET_ADDRESS)
+        let bind_address = wildcard_bind_addr(self.socket_address);
+
+        let socket = UdpSocket::bind(bind_address)
             .await
             .map_err(NtpIoError::Bind)?;
 
@@ -200,7 +265,15 @@ impl Ntp {
             self.timeout,
             counter,
         )
-        .await?;
+        .await
+        .inspect_err(|error| {
+            if let NtpIoError::TscOrder { .. } = error {
+                warn!(
+                    ?error,
+                    "TSC event order mismatch detected. Dropping sample."
+                );
+            }
+        })?;
         debug!(?ntp_event, "Received packet.");
         Ok(ntp_event)
     }
@@ -358,7 +431,6 @@ async fn sample_packet(
     timeout: std::time::Duration,
     expected_counter: u64,
 ) -> Result<event::Ntp, NtpIoError> {
-    socket.clear().map_err(NtpIoError::SocketClear)?;
     let fut = tokio::time::timeout(
         timeout,
         inner_timeout(socket, addr, send_recv_buffer, expected_counter),
@@ -449,4 +521,122 @@ enum InnerSamplePacketError {
     PacketParsing(String),
     #[error("Mismatched origin. Expected {expected}, got {received}")]
     OriginMismatch { expected: u64, received: u64 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    // Routing/addressing failures are unreachable; transient and unrelated kinds are not.
+    #[rstest]
+    #[case::network_unreachable(ErrorKind::NetworkUnreachable, true)]
+    #[case::host_unreachable(ErrorKind::HostUnreachable, true)]
+    #[case::addr_not_available(ErrorKind::AddrNotAvailable, true)]
+    #[case::connection_refused(ErrorKind::ConnectionRefused, false)]
+    #[case::would_block(ErrorKind::WouldBlock, false)]
+    #[case::permission_denied(ErrorKind::PermissionDenied, false)]
+    #[case::other(ErrorKind::Other, false)]
+    fn is_unreachable_io_error_classifies_error_kinds(
+        #[case] kind: ErrorKind,
+        #[case] expected: bool,
+    ) {
+        let error = io::Error::from(kind);
+        assert_eq!(
+            is_unreachable_io_error(&error),
+            expected,
+            "ErrorKind {kind:?} classified wrong"
+        );
+    }
+
+    // Address-family mismatches surface as raw errnos with no stable `ErrorKind`.
+    #[cfg(unix)]
+    #[rstest]
+    #[case::af_not_supported(libc::EAFNOSUPPORT)]
+    #[case::invalid(libc::EINVAL)]
+    fn is_unreachable_io_error_classifies_errnos(#[case] errno: i32) {
+        let error = io::Error::from_raw_os_error(errno);
+        assert!(
+            is_unreachable_io_error(&error),
+            "errno {errno} should be classified as unreachable"
+        );
+    }
+
+    #[test]
+    fn indicates_unreachable_source_for_bind_errors() {
+        let unreachable = NtpIoError::Bind(io::Error::from(ErrorKind::NetworkUnreachable));
+        assert!(
+            unreachable.indicates_unreachable_source(),
+            "Bind with NetworkUnreachable should indicate an unreachable source"
+        );
+
+        let transient = NtpIoError::Bind(io::Error::from(ErrorKind::ConnectionRefused));
+        assert!(
+            !transient.indicates_unreachable_source(),
+            "Bind with ConnectionRefused should not indicate an unreachable source"
+        );
+    }
+
+    #[test]
+    fn indicates_unreachable_source_for_sample_io_errors() {
+        let unreachable = NtpIoError::SampleIo(io::Error::from(ErrorKind::NetworkUnreachable));
+        assert!(
+            unreachable.indicates_unreachable_source(),
+            "SampleIo with NetworkUnreachable should indicate an unreachable source"
+        );
+
+        let transient = NtpIoError::SampleIo(io::Error::from(ErrorKind::ConnectionRefused));
+        assert!(
+            !transient.indicates_unreachable_source(),
+            "SampleIo with ConnectionRefused should not indicate an unreachable source"
+        );
+    }
+
+    #[test]
+    fn indicates_unreachable_source_for_tsc_order() {
+        let error = NtpIoError::TscOrder { pre: 2, post: 1 };
+        assert!(
+            !error.indicates_unreachable_source(),
+            "TscOrder is a local failure and should not indicate an unreachable source"
+        );
+    }
+
+    #[tokio::test]
+    async fn indicates_unreachable_source_for_timeout() {
+        // `time::error::Elapsed` has a private constructor, so obtain one by
+        // actually timing out a pending future.
+        let elapsed =
+            tokio::time::timeout(Duration::from_nanos(1), futures::future::pending::<()>())
+                .await
+                .unwrap_err();
+        let error = NtpIoError::Timeout(elapsed);
+        assert!(
+            error.indicates_unreachable_source(),
+            "Timeout should indicate an unreachable source"
+        );
+    }
+
+    #[test]
+    fn wildcard_bind_addr_matches_v4_destination() {
+        let dest: SocketAddr = "1.2.3.4:123".parse().unwrap();
+        let addr = wildcard_bind_addr(dest);
+        assert_eq!(
+            addr,
+            SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+            "V4 destination should produce the IPv4 wildcard address"
+        );
+        assert!(addr.is_ipv4(), "V4 destination should bind an IPv4 address");
+    }
+
+    #[test]
+    fn wildcard_bind_addr_matches_v6_destination() {
+        let dest: SocketAddr = "[2001:db8::1]:123".parse().unwrap();
+        let addr = wildcard_bind_addr(dest);
+        assert_eq!(
+            addr,
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
+            "V6 destination should produce the IPv6 wildcard address"
+        );
+        assert!(addr.is_ipv6(), "V6 destination should bind an IPv6 address");
+    }
 }

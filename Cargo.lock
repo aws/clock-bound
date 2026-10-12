@@ -1057,6 +1057,7 @@ dependencies = [
 name = "ntp-source"
 version = "3.0.0-beta.0"
 dependencies = [
+ "clap",
  "clock-bound",
  "md5",
  "rand 0.9.5",
