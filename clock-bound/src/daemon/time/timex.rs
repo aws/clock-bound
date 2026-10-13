@@ -68,12 +68,11 @@ impl Timex {
     /// - the `STA_UNSYNC` status will never be set. We only apply correction when the app is synchronized.
     /// - `maxerror` set to the clock error bound. Without setting, kernel will mark unsynced
     /// - `esterror` set to the clock error bound.
-    // TODO: name sounds like a mutating operation, but it isn't... will be cleaned
     #[allow(
         clippy::cast_possible_truncation,
         reason = "offset is clamped then converted so no truncation"
     )]
-    pub fn apply_phase_correction(mut offset: Duration, error_bound: Duration) -> Self {
+    pub fn from_phase_correction(mut offset: Duration, error_bound: Duration) -> Self {
         if offset > Self::MAX_PHASE_OFFSET || offset < -Self::MAX_PHASE_OFFSET {
             warn!(
                 "Offset of {}ns is outside of bounds +/-{}ns. Clamping the value.",
@@ -439,7 +438,7 @@ mod test {
     #[test]
     fn apply_phase_correction_clears_unsync_and_writes_error_bound() {
         let error_bound = Duration::from_millis(5);
-        let tx = Timex::apply_phase_correction(Duration::from_micros(100), error_bound);
+        let tx = Timex::from_phase_correction(Duration::from_micros(100), error_bound);
         let inner = tx.as_ref();
 
         assert_eq!(

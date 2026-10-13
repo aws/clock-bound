@@ -44,10 +44,14 @@ use super::ntp_adjtime::NtpAdjTimeExt;
 // ─── State types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, PartialEq)]
-pub(super) struct Initializing;
+pub(super) struct Initializing {
+    sealed: Sealed,
+}
 
 #[derive(Debug, PartialEq)]
-pub(super) struct Running;
+pub(super) struct Running {
+    _sealed: Sealed,
+}
 
 #[derive(Debug, PartialEq)]
 pub(super) enum State {
@@ -55,19 +59,49 @@ pub(super) enum State {
     Running(Running),
 }
 
+impl From<Running> for State {
+    fn from(running: Running) -> Self {
+        State::Running(running)
+    }
+}
+
+impl State {
+    #[must_use]
+    pub(super) fn initializing() -> Self {
+        State::Initializing(Initializing::new())
+    }
+
+    // allow tests to break the transition rules
+    #[cfg(test)]
+    pub(super) fn running() -> Self {
+        State::Running(Running::new())
+    }
+}
+
+/// ZST to prevent mis-construction
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct Sealed;
+
 // ─── Transitions ─────────────────────────────────────────────────────────────
 
 impl Initializing {
+    /// Constructor
+    pub(super) fn new() -> Self {
+        Self { sealed: Sealed }
+    }
+
     /// On the first tick, measure the phase offset and either step or smooth-slew
     /// `CLOCK_REALTIME` into alignment, then move to `Running`.
     ///
     /// Returns how the clock was corrected ([`ClockCorrection::Step`] when the
     /// offset exceeded the step threshold, otherwise [`ClockCorrection::Smooth`]).
+    //
+    // TODO: this to_running function does a lot more than "transition to running"
+    // It also makes it harder to test as this function mixes system IO with
     #[must_use]
-    #[allow(clippy::unused_self)]
     pub(super) fn to_running(
         &self,
-        ntp_adjtime: &impl NtpAdjTimeExt,
+        ntp_adjtime: &dyn NtpAdjTimeExt,
         clock_params: &ClockParameters,
     ) -> (Running, ClockCorrection) {
         let clockbound = ClockBound::new(clock_params.clone(), ReadTscImpl);
@@ -91,21 +125,32 @@ impl Initializing {
             }
         };
         debug!("Initializing now transitioning to Running.");
-        (Running, correction)
+        (
+            Running {
+                _sealed: self.sealed,
+            },
+            correction,
+        )
     }
 }
 
 impl Running {
+    /// Test-only constructor
+    #[cfg(test)]
+    pub(super) fn new() -> Self {
+        Self { _sealed: Sealed }
+    }
+
     /// On every subsequent tick, measure the offset and feed it into the kernel PLL.
     ///
     /// Always returns [`ClockCorrection::Smooth`] (the `Running` state never steps).
     #[must_use]
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self)]
     pub(super) fn apply_offset(
         &self,
-        ntp_adjtime: &impl NtpAdjTimeExt,
+        ntp_adjtime: &dyn NtpAdjTimeExt,
         clock_params: &ClockParameters,
-    ) -> (Running, ClockCorrection) {
+    ) -> ClockCorrection {
         let clockbound = ClockBound::new(clock_params.clone(), ReadTscImpl);
         let offset = clockbound.get_offset_and_rtt(&RealTime).offset();
         let result = ntp_adjtime
@@ -115,19 +160,16 @@ impl Running {
             "ntp_adjtime apply_phase_correction_smooth returned kernel state: {:?}.",
             result
         );
-        (
-            Running,
-            ClockCorrection::Smooth {
-                correction_ns: offset.as_nanos(),
-            },
-        )
+        ClockCorrection::Smooth {
+            correction_ns: offset.as_nanos(),
+        }
     }
 }
 
 #[cfg(test)]
 mod test {
     use crate::daemon::{
-        clock_state::clock_adjust::ntp_adjtime::MockNtpAdjTimeExt,
+        clock_state::system_clock_discipliner::ntp_adjtime::MockNtpAdjTimeExt,
         time::{
             Clock, Duration, TscCount,
             tsc::{Frequency, Period},
@@ -159,9 +201,10 @@ mod test {
             .once()
             .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
-        let (state, correction) =
-            Initializing.to_running(&mock, &clock_params_with_offset(Duration::from_millis(100)));
-        assert!(matches!(state, Running));
+        let (state, correction) = Initializing::new()
+            .to_running(&mock, &clock_params_with_offset(Duration::from_millis(100)));
+        let state = State::from(state);
+        assert!(matches!(state, State::Running(..)));
         assert!(
             matches!(correction, ClockCorrection::Smooth { .. }),
             "a small offset is smooth-slewed, so a smooth correction should be reported"
@@ -175,9 +218,10 @@ mod test {
             .once()
             .returning(|_| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
-        let (state, correction) =
-            Initializing.to_running(&mock, &clock_params_with_offset(Duration::from_secs(1)));
-        assert!(matches!(state, Running));
+        let (state, correction) = Initializing::new()
+            .to_running(&mock, &clock_params_with_offset(Duration::from_secs(1)));
+        let state = State::from(state);
+        assert!(matches!(state, State::Running(..)));
         assert!(
             matches!(correction, ClockCorrection::Step { .. }),
             "a large offset is stepped, not smooth-slewed"
@@ -191,10 +235,10 @@ mod test {
             .once()
             .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
-        let running = Running;
-        let (next, correction) =
+        let running = Running::new();
+        let correction =
             running.apply_offset(&mock, &clock_params_with_offset(Duration::from_millis(50)));
-        assert!(matches!(next, Running));
+
         assert!(
             matches!(correction, ClockCorrection::Smooth { .. }),
             "Running always smooth-slews"

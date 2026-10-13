@@ -93,7 +93,7 @@ mod mock_ntp_adj_time_ext {
 #[cfg(test)]
 pub use mock_ntp_adj_time_ext::MockNtpAdjTimeExt;
 
-pub trait NtpAdjTimeExt: NtpAdjTime {
+pub trait NtpAdjTimeExt: NtpAdjTime + Send + Sync {
     /// Feeds a measured phase offset into the kernel PLL, causing `CLOCK_REALTIME` to
     /// slew toward the reference over time (smooth correction). The kernel also
     /// applies a dampened frequency correction. Calling this repeatedly with the phase
@@ -109,7 +109,7 @@ pub trait NtpAdjTimeExt: NtpAdjTime {
         phase_correction: Duration,
         error_bound: Duration,
     ) -> Result<Timex, NtpAdjTimeError> {
-        let mut tx = Timex::apply_phase_correction(phase_correction, error_bound);
+        let mut tx = Timex::from_phase_correction(phase_correction, error_bound);
         debug!(
             ?phase_correction,
             ?error_bound,

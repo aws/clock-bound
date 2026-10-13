@@ -2,63 +2,73 @@
 //!
 //! See [`state_machine`] for the full description of the state machine logic.
 
-use crate::{daemon::clock_parameters::ClockParameters, shm::ClockStatus};
-
 mod ntp_adjtime;
 mod state_machine;
+
 pub use ntp_adjtime::KAPIClockAdjuster;
-#[cfg(feature = "test-side-by-side")]
-pub use ntp_adjtime::NoopClockAdjuster;
 pub use ntp_adjtime::{NtpAdjTimeError, NtpAdjTimeExt};
 
-use state_machine::{Initializing, State};
+use crate::{daemon::clock_parameters::ClockParameters, shm::ClockStatus};
+use state_machine::State;
 
-/// Method and magnitude of a `CLOCK_REALTIME` correction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClockCorrection {
-    Step { step_ns: i64 },
-    Smooth { correction_ns: i64 },
-}
+#[cfg(test)]
+pub(crate) use ntp_adjtime::MockNtpAdjTimeExt;
 
-#[cfg_attr(test, mockall::automock)]
-pub(crate) trait ClockAdjust: Send + Sync {
-    fn handle_clock_parameters(&mut self, clock_parameters: &ClockParameters) -> ClockCorrection;
-    fn handle_disruption(&mut self, new_disruption_marker: u64);
-    /// Returns `Unknown` until the first successful adjustment, `Synchronized` thereafter.
-    fn get_clock_realtime_status(&self) -> ClockStatus;
-}
-
-pub struct ClockAdjuster<T> {
+/// Component which adjusts the system clock
+///
+/// The system clock is known as the `CLOCK_REALTIME` on Unix systems
+pub(crate) struct SystemClockDiscipliner {
+    /// Holds the current known state of this component
     state: State,
-    ntp_adjtime: T,
+    /// The system-specific interface to read and adjust the system clock
+    ntp_adjtime: Box<dyn NtpAdjTimeExt>,
 }
 
-impl<T: NtpAdjTimeExt> ClockAdjuster<T> {
-    pub fn new(ntp_adjtime: T) -> Self {
+impl SystemClockDiscipliner {
+    pub(crate) fn new(ntp_adjtime: Box<dyn NtpAdjTimeExt>) -> Self {
         Self {
-            state: State::Initializing(Initializing),
+            state: State::initializing(),
             ntp_adjtime,
         }
     }
-}
 
-impl<T: NtpAdjTimeExt + Send + Sync> ClockAdjust for ClockAdjuster<T> {
-    fn handle_clock_parameters(&mut self, clock_parameters: &ClockParameters) -> ClockCorrection {
-        let (new_state, correction) = match &self.state {
-            State::Initializing(inner) => {
-                let (running, correction) = inner.to_running(&self.ntp_adjtime, clock_parameters);
-                (State::Running(running), correction)
-            }
-            State::Running(inner) => {
-                let (running, correction) = inner.apply_offset(&self.ntp_adjtime, clock_parameters);
-                (State::Running(running), correction)
-            }
-        };
-        self.state = new_state;
-        correction
+    /// Convenience constructor with a `ntp_adjtime` interface for adjusting the system clock
+    #[cfg(not(feature = "test-side-by-side"))]
+    pub(crate) fn with_kernel_clock_adjuster() -> Self {
+        Self::new(Box::new(KAPIClockAdjuster))
     }
 
-    fn handle_disruption(&mut self, _new_disruption_marker: u64) {
+    /// Convenience constructor with a `ntp_adjtime` interface that does nothing
+    #[cfg(feature = "test-side-by-side")]
+    pub(crate) fn with_noop_clock_adjuster() -> Self {
+        Self::new(Box::new(ntp_adjtime::NoopClockAdjuster))
+    }
+}
+
+impl SystemClockDiscipliner {
+    /// Apply a correction based off of the new `ClockParameters`
+    pub(crate) fn handle_clock_parameters(
+        &mut self,
+        clock_parameters: &ClockParameters,
+    ) -> ClockCorrection {
+        match &self.state {
+            State::Initializing(initializing) => {
+                let (running, correction) =
+                    initializing.to_running(self.ntp_adjtime.as_ref(), clock_parameters);
+                self.state = running.into();
+                correction
+            }
+            State::Running(running) => {
+                running.apply_offset(self.ntp_adjtime.as_ref(), clock_parameters)
+            }
+        }
+    }
+
+    /// Cleanup during a disruption event
+    pub(crate) fn handle_disruption(&mut self, _new_disruption_marker: u64) {
+        // TODO: should probably stop active corrections. Clock is unknown, so
+        // we could be "correcting" in the wrong direction
+
         // No action taken on disruption - continue to use the PLL for corrections.
         // Clock will converge over time.
         let Self {
@@ -67,7 +77,8 @@ impl<T: NtpAdjTimeExt + Send + Sync> ClockAdjust for ClockAdjuster<T> {
         } = self;
     }
 
-    fn get_clock_realtime_status(&self) -> ClockStatus {
+    /// The synchronization status of the REALTIME clock
+    pub(crate) fn get_clock_realtime_status(&self) -> ClockStatus {
         match self.state {
             State::Initializing(_) => ClockStatus::Unknown,
             State::Running(_) => ClockStatus::Synchronized,
@@ -75,11 +86,17 @@ impl<T: NtpAdjTimeExt + Send + Sync> ClockAdjust for ClockAdjuster<T> {
     }
 }
 
+/// Method and magnitude of a `CLOCK_REALTIME` correction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClockCorrection {
+    Step { step_ns: i64 },
+    Smooth { correction_ns: i64 },
+}
+
 #[cfg(test)]
 mod test {
     use crate::daemon::{
-        clock_state::clock_adjust::ntp_adjtime::MockNtpAdjTimeExt,
-        clock_state::clock_adjust::state_machine::Running,
+        clock_state::system_clock_discipliner::ntp_adjtime::MockNtpAdjTimeExt,
         time::{
             Clock, Duration, TscCount,
             tsc::{Frequency, Period},
@@ -108,7 +125,7 @@ mod test {
             .once()
             .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
-        let mut adjuster = ClockAdjuster::new(mock);
+        let mut adjuster = SystemClockDiscipliner::new(Box::new(mock));
         assert!(matches!(adjuster.state, State::Initializing(_)));
         adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
         assert!(matches!(adjuster.state, State::Running(_)));
@@ -121,7 +138,7 @@ mod test {
             .times(3)
             .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
-        let mut adjuster = ClockAdjuster::new(mock);
+        let mut adjuster = SystemClockDiscipliner::new(Box::new(mock));
         adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
         adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
         adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
@@ -131,13 +148,13 @@ mod test {
     #[test]
     fn status_unknown_when_initializing_synchronized_when_running() {
         let mock = MockNtpAdjTimeExt::new();
-        let adjuster = ClockAdjuster::new(mock);
+        let adjuster = SystemClockDiscipliner::new(Box::new(mock));
         assert_eq!(adjuster.get_clock_realtime_status(), ClockStatus::Unknown);
 
         let mock2 = MockNtpAdjTimeExt::new();
-        let adjuster2 = ClockAdjuster {
-            state: State::Running(Running),
-            ntp_adjtime: mock2,
+        let adjuster2 = SystemClockDiscipliner {
+            state: State::running(),
+            ntp_adjtime: Box::new(mock2),
         };
         assert_eq!(
             adjuster2.get_clock_realtime_status(),

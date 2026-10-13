@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use clock_bound::daemon::{
-    clock_state::clock_adjust::{KAPIClockAdjuster, NtpAdjTimeExt},
+    clock_state::system_clock_discipliner::{KAPIClockAdjuster, NtpAdjTimeExt},
     time::Duration,
 };
 
