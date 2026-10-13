@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "amazon-time-sync"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "clock-bound",
  "rand 0.9.5",
@@ -250,7 +250,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clock-bound"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "approx",
  "bon",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-adjust-clock"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-adjust-clock-test"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "clock-bound",
  "rstest 0.26.1",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-client-generic"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-configuration-test"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "clap",
  "clock-bound",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-ff-tester"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "anyhow",
  "approx",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-ffi"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "byteorder",
  "clock-bound",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-now"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "chrono",
  "clap",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-phc-offset"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-vmclock-client-example"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "byteorder",
  "clock-bound",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "clock-bound-vmclock-client-test"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "byteorder",
  "clock-bound",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "ntp-source"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "clap",
  "clock-bound",
@@ -1149,7 +1149,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "phc"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "clock-bound",
  "rand 0.9.5",
@@ -1554,7 +1554,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shmv3-error-bound-validation"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "clap",
  "clock-bound",
@@ -2033,7 +2033,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vmclock"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "clock-bound",
  "rand 0.9.5",
@@ -2043,7 +2043,7 @@ dependencies = [
 
 [[package]]
 name = "vmclock-updater"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 dependencies = [
  "byteorder",
  "clap",

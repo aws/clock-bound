@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0-beta.1] - 2026-10-12
+
+### Fixed
+
+- Fixed NTP socket binding on dual-stack hosts so the socket address family matches the server being polled.
+- Clarified the shared memory protocol (shm1): the oscillator period error is a unit-less relative error. The writer
+  was updated to match.
+
+### Changed
+
+- The `clockbound` daemon now writes `maxerror` and `esterror` (set to the clock error bound) when adjusting the system
+  clock
+- Further tuning of the clock synchronization algorithm
+
+
 ## [3.0.0-beta.0] - 2026-08-24
 
 ### Added

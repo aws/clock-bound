@@ -44,7 +44,7 @@ exclude = []
 keywords = ["aws", "ntp", "ec2", "time"]
 publish = false
 repository = "https://github.com/aws/clock-bound"
-version = "3.0.0-beta.0"
+version = "3.0.0-beta.1"
 
 # Duplicate profile config as clock_bound/Cargo.toml
 # https://github.com/rust-lang/cargo/issues/8264
