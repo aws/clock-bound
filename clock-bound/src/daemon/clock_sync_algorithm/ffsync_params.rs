@@ -77,26 +77,50 @@ pub struct SourceParams {
 }
 
 impl SourceParams {
-    /// Production values for the PHC estimator: period and theta windows of 100 s.
-    /// TODO: revisit the window sizes after calibration.
+    /// Production values for the PHC estimator.
+    ///
+    /// - The RTT based filter is calibrated to filter out data points that are out of expected
+    ///   range. The read latency is flat (p50 to p99 within 0.2 µs on the traces collected); a
+    ///   factor of two sits above p99 and rejects only anomalous reads.
+    /// - The period estimate window is kept at 100 seconds. The calibration read a weak optimum at
+    ///   25 seconds, but not worth moving to trade a noisier rate.
+    /// - The theta window trades some performance optimization for protection against read stall or
+    ///   anomaly (a gap longer than the window makes the next update a one-sample estimate).
+    ///   The calibration otherwise shows monotonic performance improvement down to 2 seconds.
+    ///   Note that until ageing of estimates is implemented, the shorter window effectively does
+    ///   the job of the missing ageing penalty.
     pub const PHC_DEFAULTS: Self = Self {
         period_window: Duration::from_secs(100),
-        theta_window: Duration::from_secs(100),
-        rtt_threshold_multiplier: 5,
-        error_normalization_factor: 5e-7,
+        theta_window: Duration::from_secs(20),
+        rtt_threshold_multiplier: 2,
+        error_normalization_factor: 500e-9,
     };
 
     /// Production values for the EC2 link-local NTP estimator (Amazon Time Sync).
-    /// TODO: revisit the window sizes after calibration.
+    ///
+    /// - The RTT based filter is calibrated to protect against unexpected behavior. The performance
+    ///   calibration lead to similar clock estimate at 2x, 3x and 5x. However, the final clock error
+    ///   bound benefits from reducing the population of admitted samples. The RTT distribution is
+    ///   observed with a long tail, and 3x the minimum RTT sits between p75 and p95.
+    /// - The period estimate window is kept long at 512 seconds, against a calibration optimum at
+    ///   256. A long window keeps a usable rate across minutes long gaps.
+    /// - The theta window trades some performance optimization for protection against read stall or
+    ///   anomaly (a gap longer than the window makes the next update a one-sample estimate). The
+    ///   calibration was monotonic down to 64 seconds, but difference with 128 was small for twice
+    ///   the gap tolerance. Until ageing of estimates is implemented, the shorter window does the
+    ///   job of the missing ageing penalty, while averaging and beat the per-sample noise.
+    /// - The error normalization factor is set to 50 µs: the calibration shows no significant
+    ///   change in the 25 to 100 µs range.
     pub const AMAZON_TIME_SYNC_DEFAULTS: Self = Self {
-        period_window: DEFAULT_SKM_WINDOW,
-        theta_window: DEFAULT_SKM_WINDOW,
-        rtt_threshold_multiplier: 5,
-        error_normalization_factor: 5e-5,
+        period_window: Duration::from_secs(512),
+        theta_window: Duration::from_secs(128),
+        rtt_threshold_multiplier: 3,
+        error_normalization_factor: 50e-6,
     };
 
     /// Production values for the NTP estimator (configured or public servers): period and theta
     /// windows spanning the whole SKM window (`DEFAULT_SKM_WINDOW`).
+    /// TODO: review after calibration
     pub const NTP_DEFAULTS: Self = Self {
         period_window: DEFAULT_SKM_WINDOW,
         theta_window: DEFAULT_SKM_WINDOW,
@@ -254,13 +278,13 @@ mod tests {
         assert_eq!(p.estimate_capacity.get(), 600);
         // One block per source class, so that a class moving on its own shows which.
         assert_eq!(p.phc.period_window, Duration::from_secs(100));
-        assert_eq!(p.phc.theta_window, Duration::from_secs(100));
+        assert_eq!(p.phc.theta_window, Duration::from_secs(20));
         assert_eq!(p.phc.local_window(), Duration::from_secs(100));
-        assert_eq!(p.phc.rtt_threshold_multiplier, 5);
+        assert_eq!(p.phc.rtt_threshold_multiplier, 2);
         assert_eq!(p.phc.error_normalization_factor, 5e-7);
-        assert_eq!(p.amazon_time_sync.period_window, Duration::from_secs(1024));
-        assert_eq!(p.amazon_time_sync.theta_window, Duration::from_secs(1024));
-        assert_eq!(p.amazon_time_sync.rtt_threshold_multiplier, 5);
+        assert_eq!(p.amazon_time_sync.period_window, Duration::from_secs(512));
+        assert_eq!(p.amazon_time_sync.theta_window, Duration::from_secs(128));
+        assert_eq!(p.amazon_time_sync.rtt_threshold_multiplier, 3);
         assert_eq!(p.amazon_time_sync.error_normalization_factor, 5e-5);
         assert_eq!(p.ntp.period_window, Duration::from_secs(1024));
         assert_eq!(p.ntp.theta_window, Duration::from_secs(1024));

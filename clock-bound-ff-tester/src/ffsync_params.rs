@@ -295,6 +295,16 @@ mod tests {
         toml::to_string(&FfSyncParamsFile::from(&FfSyncParams::default())).unwrap()
     }
 
+    /// The default file with one key of one source table set to `value`, whatever the default is.
+    /// The tests below must not encode the production values: those move with the calibration.
+    fn default_toml_with(table: &str, key: &str, value: &str) -> String {
+        let text = default_toml();
+        let table_start = text.find(&format!("[{table}]")).unwrap();
+        let key_start = table_start + text[table_start..].find(&format!("{key} = ")).unwrap();
+        let line_end = key_start + text[key_start..].find('\n').unwrap();
+        format!("{}{key} = {value}{}", &text[..key_start], &text[line_end..])
+    }
+
     #[test]
     fn the_default_file_round_trips_to_the_defaults_with_no_suffix() {
         let file: FfSyncParamsFile = toml::from_str(&default_file()).unwrap();
@@ -332,10 +342,14 @@ mod tests {
 
     #[test]
     fn a_changed_value_changes_the_hash_and_adds_a_suffix() {
-        let text = default_toml().replace("theta_window_s = 100", "theta_window_s = 50");
+        let text = default_toml_with("phc", "theta_window_s", "50");
         let file: FfSyncParamsFile = toml::from_str(&text).unwrap();
         let params = FfSyncParams::try_from(&file).unwrap();
         assert_eq!(params.phc.theta_window, Duration::from_secs(50));
+        assert_ne!(
+            FfSyncParams::default().phc.theta_window,
+            Duration::from_secs(50)
+        );
         assert_ne!(params, FfSyncParams::default());
         assert_ne!(hash(&params), hash(&FfSyncParams::default()));
         let suffix = version_suffix(&params).unwrap();
@@ -393,11 +407,7 @@ mod tests {
     fn invalid_combinations_are_refused_by_validate() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.toml");
-        std::fs::write(
-            &path,
-            default_toml().replacen("theta_window_s = 100", "theta_window_s = 2048", 1),
-        )
-        .unwrap();
+        std::fs::write(&path, default_toml_with("phc", "theta_window_s", "2048")).unwrap();
         let err = load(&path).unwrap_err();
         assert!(format!("{err:#}").contains("exceeds skm_window"), "{err:#}");
         std::fs::write(
@@ -412,17 +422,16 @@ mod tests {
     fn load_reads_a_real_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.toml");
-        let text = default_toml()
-            .replace("max_dispersion_ppb = 15000", "max_dispersion_ppb = 20000")
-            .replace(
-                "rtt_threshold_multiplier = 5\n",
-                "rtt_threshold_multiplier = 3\n",
-            );
+        let text = default_toml_with("ntp", "rtt_threshold_multiplier", "7")
+            .replace("max_dispersion_ppb = 15000", "max_dispersion_ppb = 20000");
         std::fs::write(&path, text).unwrap();
         let params = load(&path).unwrap();
         assert_eq!(params.max_dispersion, Skew::from_ppb(20_000.0));
-        assert_eq!(params.ntp.rtt_threshold_multiplier, 3);
-        assert_eq!(params.phc.rtt_threshold_multiplier, 3);
+        assert_eq!(params.ntp.rtt_threshold_multiplier, 7);
+        assert_eq!(
+            params.phc.rtt_threshold_multiplier,
+            FfSyncParams::default().phc.rtt_threshold_multiplier
+        );
         assert_eq!(
             params.phc.period_window,
             FfSyncParams::default().phc.period_window
