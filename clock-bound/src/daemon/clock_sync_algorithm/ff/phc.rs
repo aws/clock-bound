@@ -442,8 +442,9 @@ impl Phc {
     /// Eᵢ = RTTᵢ − min(RTT)
     /// ```
     ///
-    /// Returns `None` if no sample of `local` falls within the last `theta_window` (the source is
-    /// starving); the caller keeps the previous clock parameters.
+    /// Returns `None` if no sample of `local` falls within the last `theta_window`, or if every
+    /// sample in it is rejected by the RTT filter (the source is starving); the caller keeps the
+    /// previous clock parameters.
     #[expect(
         clippy::cast_precision_loss,
         reason = "exp and weight require floats. Values are small enough to not lose precision"
@@ -517,6 +518,18 @@ impl Phc {
             denominator += weight;
         }
 
+        // Every sample in the window rejected: `numerator / denominator` would be `0 / 0`. This is
+        // starvation as much as an empty window is, and the previous clock parameters stand.
+        // The scenario would be a sample received after a gap longer than `theta_window`; the
+        // window holds the one sample that ended the gap; and a slow read is rejected against the
+        // buffer's minimum RTT.
+        if samples_used == 0 {
+            tracing::trace!(
+                samples_rejected,
+                "every sample in the theta window rejected"
+            );
+            return None;
+        }
         let theta_nsec = numerator / denominator;
         let theta = Duration::from_seconds_f64(theta_nsec / 1e9);
         tracing::debug!(?theta, ?uncorrected_clock, %period_local, "Calculated theta");
@@ -957,6 +970,26 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn theta_window_of_only_rejected_samples_is_starvation_not_nan() {
+        // Ten reads at RTT 1 000 ticks, then one at 5 000: the head. A theta window shorter than
+        // the gap to the previous sample holds the head alone, and with a threshold of 2x the
+        // buffer's minimum RTT the head is rejected. The weighted mean would be 0/0; the estimator
+        // must report starvation instead.
+        let mut local = Local::new(NonZeroUsize::new(16).unwrap())
+            .with_window(Duration::from_secs(100))
+            .with_rtt_threshold_multiplier(2);
+        for t in 10..=19_i64 {
+            local.feed(phc_read(t, Duration::ZERO, 1_000)).unwrap();
+        }
+        local.feed(phc_read(50, Duration::ZERO, 5_000)).unwrap();
+        let uc = uncorrected_1ghz();
+        let period = Period::from_seconds(1e-9);
+        assert!(Phc::calculate_theta(&local, Duration::from_secs(3), period, uc, 1e5).is_none());
+        let wide = Phc::calculate_theta(&local, Duration::from_secs(100), period, uc, 1e5).unwrap();
+        assert!(wide.theta.as_seconds_f64().is_finite());
     }
 
     #[test]
