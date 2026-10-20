@@ -86,9 +86,17 @@ impl SourceParams {
         error_normalization_factor: 5e-7,
     };
 
-    /// Production values for the NTP estimator: period and theta windows spanning the whole SKM
-    /// window (`DEFAULT_SKM_WINDOW`).
-    /// TODO: this is currently used by both the EC2 Link local, and any NTP source. To revisit.
+    /// Production values for the EC2 link-local NTP estimator (Amazon Time Sync).
+    /// TODO: revisit the window sizes after calibration.
+    pub const AMAZON_TIME_SYNC_DEFAULTS: Self = Self {
+        period_window: DEFAULT_SKM_WINDOW,
+        theta_window: DEFAULT_SKM_WINDOW,
+        rtt_threshold_multiplier: 5,
+        error_normalization_factor: 5e-5,
+    };
+
+    /// Production values for the NTP estimator (configured or public servers): period and theta
+    /// windows spanning the whole SKM window (`DEFAULT_SKM_WINDOW`).
     pub const NTP_DEFAULTS: Self = Self {
         period_window: DEFAULT_SKM_WINDOW,
         theta_window: DEFAULT_SKM_WINDOW,
@@ -109,7 +117,7 @@ impl Default for FfSyncParams {
             skm_window: DEFAULT_SKM_WINDOW,
             estimate_capacity: DEFAULT_ESTIMATE_CAPACITY,
             phc: SourceParams::PHC_DEFAULTS,
-            amazon_time_sync: SourceParams::NTP_DEFAULTS,
+            amazon_time_sync: SourceParams::AMAZON_TIME_SYNC_DEFAULTS,
             ntp: SourceParams::NTP_DEFAULTS,
         }
     }
@@ -244,13 +252,19 @@ mod tests {
         assert_eq!(p.max_dispersion, Skew::from_ppb(15_000.0));
         assert_eq!(p.skm_window, Duration::from_secs(1024));
         assert_eq!(p.estimate_capacity.get(), 600);
-        assert_eq!(p.ntp.period_window, Duration::from_secs(1024));
-        assert_eq!(p.amazon_time_sync.theta_window, Duration::from_secs(1024));
+        // One block per source class, so that a class moving on its own shows which.
         assert_eq!(p.phc.period_window, Duration::from_secs(100));
         assert_eq!(p.phc.theta_window, Duration::from_secs(100));
         assert_eq!(p.phc.local_window(), Duration::from_secs(100));
-        assert_eq!(p.ntp.rtt_threshold_multiplier, 5);
+        assert_eq!(p.phc.rtt_threshold_multiplier, 5);
         assert_eq!(p.phc.error_normalization_factor, 5e-7);
+        assert_eq!(p.amazon_time_sync.period_window, Duration::from_secs(1024));
+        assert_eq!(p.amazon_time_sync.theta_window, Duration::from_secs(1024));
+        assert_eq!(p.amazon_time_sync.rtt_threshold_multiplier, 5);
+        assert_eq!(p.amazon_time_sync.error_normalization_factor, 5e-5);
+        assert_eq!(p.ntp.period_window, Duration::from_secs(1024));
+        assert_eq!(p.ntp.theta_window, Duration::from_secs(1024));
+        assert_eq!(p.ntp.rtt_threshold_multiplier, 5);
         assert_eq!(p.ntp.error_normalization_factor, 5e-5);
     }
 
