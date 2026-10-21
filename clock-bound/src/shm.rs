@@ -705,16 +705,21 @@ impl ClockErrorBoundV3 {
         }
     }
 
+    /// Get the counter value identifying this clock update, the same instant as `as_of`.
+    pub(crate) fn as_of_counter(&self) -> u64 {
+        self.as_of_tsc
+    }
+
     /// Get the oscillator period as a floating point value in seconds.
-    fn period(&self) -> f64 {
+    pub(crate) fn period(&self) -> f64 {
         f64::from(PeriodFrac {
             frac: self.period_frac,
             shift: self.period_shift,
         })
     }
 
-    /// Get the oscillator period error as a floating point value.
-    fn period_err(&self) -> f64 {
+    /// Get the oscillator period error as a floating point value, a dimensionless ratio.
+    pub(crate) fn period_err(&self) -> f64 {
         f64::from(PeriodFrac {
             frac: self.period_err_frac,
             shift: self.period_err_shift,
@@ -1097,6 +1102,19 @@ mod t_lib {
 
         // Status should still be Synchronized (within grace period)
         assert_eq!(result.clock_status, ClockStatus::Synchronized);
+    }
+
+    /// Assert that `as_of_counter()` returns the counter value a V3 layout was built with.
+    #[test]
+    fn test_ceb_v3_as_of_counter() {
+        let ClockErrorBound::V3(ceb) = ClockErrorBoundGeneric::builder()
+            .as_of_tsc(3_847_592_014_882)
+            .build(ClockErrorBoundLayoutVersion::V3)
+        else {
+            panic!("expected a V3 layout");
+        };
+
+        assert_eq!(ceb.as_of_counter(), 3_847_592_014_882);
     }
 
     /// The V3 bound grows by both rates, to the nanosecond: the oscillator's worst-case drift
