@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 fn main() {
-    let mut clockbound = match ClockBoundClient::new_with_paths(
+    let clockbound = match ClockBoundClient::new_with_paths(
         CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH,
         VMCLOCK_SHM_DEFAULT_PATH,
     ) {

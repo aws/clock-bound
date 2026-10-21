@@ -127,10 +127,6 @@ impl Drop for MmapGuard {
 /// `seq_count` field before and after each read, and verify that they obtain the same, even,
 /// value. Otherwise, the read was dirty and must be retried.
 pub struct VMClockShmReader {
-    // Explicitly make the VMClockShmReader be !Send and !Sync, since it is not thread safe. A bit ugly to
-    // use a phantom raw pointer, but effective and free at runtime.
-    _marker: std::marker::PhantomData<*const ()>,
-
     // Drop guard to unmap the shared memory segment
     _guard: MmapGuard,
 
@@ -150,16 +146,15 @@ pub struct VMClockShmReader {
     // that the structured reference by this pointer may not be consistent, and reading it requires
     // to assert the seq_count value.
     vmclock_shm_body_ptr: *const VMClockShmBody,
-
-    // The last snapshot of VMClockShmBody taken. This acts as a cache to avoid waiting for the
-    // writer to complete an update and allow to share a reference to this memory location
-    // (avoiding some memory copy). Keeping a state here and sharing it with the caller makes the
-    // VMClockShmReader not thread safe.
-    vmclock_shm_body_snapshot: VMClockShmBody,
-
-    // The value of seq_count when the VMClockShmBody snapshot was taken.
-    seq_count_snapshot: u32,
 }
+
+// SAFETY: The raw pointers point into a private, read-only (`PROT_READ`), `MAP_SHARED` mapping
+// owned by the reader, which stays mapped until the reader is dropped. All accesses through them
+// are atomic loads or volatile reads validated against the writer sequence count, none of which
+// require exclusive access, and the reader holds no other state. Nothing ties the mapping to the
+// thread that created it, so it can be used and unmapped from any thread.
+unsafe impl Send for VMClockShmReader {}
+unsafe impl Sync for VMClockShmReader {}
 
 impl VMClockShmReader {
     /// Open a VMClock shared memory segment for reading.
@@ -233,13 +228,10 @@ impl VMClockShmReader {
         let vmclock_shm_body_ptr = ptr::addr_of!(*cursor.cast::<VMClockShmBody>());
 
         Ok(VMClockShmReader {
-            _marker: std::marker::PhantomData,
             _guard: mmap_guard,
             version_ptr,
             seq_count_ptr,
             vmclock_shm_body_ptr,
-            vmclock_shm_body_snapshot: VMClockShmBody::default(),
-            seq_count_snapshot: 0,
         })
     }
 
@@ -249,13 +241,10 @@ impl VMClockShmReader {
     /// number in the header has not changed (which would indicate an update from the writer
     /// occurred while reading). If an update is detected, the read is retried.
     ///
-    /// This function returns a reference to the `VMClockShmBody` snapshot stored by the reader, and
-    /// not an owned value. This make the `VMClockShmReader` NOT thread-safe: the data pointed to could be
-    /// updated without one of the thread knowing, leading to a incorrect clock error bond. The
-    /// advantage are in terms of performance: less data copied, but also no locking, yielding or
-    /// excessive retries.
+    /// The snapshot is returned by value: the `VMClockShmBody` data is small, and copying it out
+    /// of the segment is what lets a single `VMClockShmReader` be shared across threads.
     #[expect(clippy::missing_errors_doc, reason = "todo")]
-    pub fn snapshot(&mut self) -> Result<&VMClockShmBody, ShmError> {
+    pub fn snapshot(&self) -> Result<VMClockShmBody, ShmError> {
         // Atomically read the current version in the shared memory segment
         // SAFETY: `self.version` has been validated when creating the reader
         let version = unsafe { &*self.version_ptr };
@@ -278,25 +267,8 @@ impl VMClockShmReader {
         let seq_count = unsafe { &*self.seq_count_ptr };
         let mut seq_count_first = seq_count.load(atomic::Ordering::Acquire);
 
-        // Quick optimization, if the seq_count number matches the last one recorded, the shared
-        // memory segment has not been updated since last read. No need to read more of the memory
-        // segment, instead return the reference to the snapshot. This is useful in cases where the
-        // rate of clockbound read is much higher than the rate of write to the shared memory
-        // segment.
-        //
-        // Although the seq_count number could theoretically roll over, it is unlikely to do so
-        // over the lifespan of the instance running.
-        // Assuming an update on every jiffy with the largest Linux HZ value of 1000,
-        // updates would occur every 1 millisecond.  Therefore a roll-over would occur
-        // approximately after: 1 millisecond * ((2 ^ 64) - 1) = 584542046.0906265 years.
-        //
-        if seq_count_first == self.seq_count_snapshot {
-            return Ok(&self.vmclock_shm_body_snapshot);
-        }
-
-        // The seq_count number has changed since the last snapshot. Loop
-        // until we obtain a consistent read of the clock error bound data. This relies on reading
-        // the seq_count value twice, making sure they are identical and an even number.
+        // Loop until we obtain a consistent read of the clock error bound data. This relies on
+        // reading the seq_count value twice, making sure they are identical and an even number.
         //
         // The writer of the VMClock in the production environment is expected to be the
         // Hypervisor.  It is not expected to die, but we do cap the number of retries in case
@@ -313,9 +285,7 @@ impl VMClockShmReader {
             // Only track complete updates indicated by an even seq_count number.
             if seq_count_second & 0x0001 == 0 {
                 if seq_count_first == seq_count_second {
-                    self.seq_count_snapshot = seq_count_first;
-                    self.vmclock_shm_body_snapshot = snapshot;
-                    return Ok(&self.vmclock_shm_body_snapshot);
+                    return Ok(snapshot);
                 }
                 seq_count_first = seq_count_second;
             }
