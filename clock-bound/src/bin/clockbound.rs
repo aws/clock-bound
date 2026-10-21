@@ -17,6 +17,7 @@ use tracing::{Level, debug, error, info, warn};
 const CONFIG_ERROR_EXIT: u8 = 2;
 
 #[derive(Debug, Parser)]
+#[command(version)]
 struct Args {
     /// Path to the configuration file. Without one the daemon runs on defaults
     #[clap(short, long)]
