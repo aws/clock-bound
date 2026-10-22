@@ -89,17 +89,21 @@ impl SourceParams {
     ///   factor of two sits above p99 and rejects only anomalous reads.
     /// - The period estimate window is kept at 100 seconds. The calibration read a weak optimum at
     ///   25 seconds, but not worth moving to trade a noisier rate.
-    /// - The theta window trades some performance optimization for protection against read stall or
-    ///   anomaly (a gap longer than the window makes the next update a one-sample estimate).
-    ///   The calibration otherwise shows monotonic performance improvement down to 2 seconds.
-    ///   Note that until ageing of estimates is implemented, the shorter window effectively does
-    ///   the job of the missing ageing penalty.
+    /// - The theta window defines the span of samples kept as candidates, whereas the age factor
+    ///   deciding which of them weigh. It is the SKM window, the longest span the oscillator is
+    ///   modelled as linear over, so that a gap in the source up to that length still leaves samples
+    ///   to estimate from.
+    /// - The age factor heavily penalizes samples older than about twice its value. The clock's
+    ///   rate changes within a window, so a rate fitted at the update is off by more the further
+    ///   back it is applied; the factor limits how far back. 5 seconds is about ten samples at a
+    ///   0.5 second polling period. Although less samples could be used for very high quality time
+    ///   source, ten samples are kept to make the estimate more robust.
     pub const PHC_DEFAULTS: Self = Self {
         period_window: Duration::from_secs(100),
-        theta_window: Duration::from_secs(20),
+        theta_window: DEFAULT_SKM_WINDOW,
         rtt_threshold_multiplier: 2,
         error_normalization_factor: 500e-9,
-        age_normalization_factor: 1e6,
+        age_normalization_factor: 5.0,
     };
 
     /// Production values for the EC2 link-local NTP estimator (Amazon Time Sync).
@@ -110,23 +114,28 @@ impl SourceParams {
     ///   observed with a long tail, and 3x the minimum RTT sits between p75 and p95.
     /// - The period estimate window is kept long at 512 seconds, against a calibration optimum at
     ///   256. A long window keeps a usable rate across minutes long gaps.
-    /// - The theta window trades some performance optimization for protection against read stall or
-    ///   anomaly (a gap longer than the window makes the next update a one-sample estimate). The
-    ///   calibration was monotonic down to 64 seconds, but difference with 128 was small for twice
-    ///   the gap tolerance. Until ageing of estimates is implemented, the shorter window does the
-    ///   job of the missing ageing penalty, while averaging and beat the per-sample noise.
+    /// - The theta window defines the span of samples kept as candidates, whereas the age factor
+    ///   deciding which of them weigh. It is the SKM window, the longest span the oscillator is
+    ///   modelled as linear over, so that a gap in the source up to that length still leaves samples
+    ///   to estimate from.
+    /// - The age factor heavily penalizes samples older than about twice its value. The clock's
+    ///   rate changes within a window, so a rate fitted at the update is off by more the further
+    ///   back it is applied; the factor limits how far back. 40 seconds is about a minute of
+    ///   samples at a 2 second polling period. The calibration's floor for the age factor is
+    ///   between 20 and 50, but picked 40 for robustness against a delayed exchange.
     /// - The error normalization factor is set to 50 µs: the calibration shows no significant
     ///   change in the 25 to 100 µs range.
     pub const AMAZON_TIME_SYNC_DEFAULTS: Self = Self {
         period_window: Duration::from_secs(512),
-        theta_window: Duration::from_secs(128),
+        theta_window: DEFAULT_SKM_WINDOW,
         rtt_threshold_multiplier: 3,
         error_normalization_factor: 50e-6,
-        age_normalization_factor: 1e6,
+        age_normalization_factor: 40.0,
     };
 
     /// Production values for the NTP estimator (configured or public servers): period and theta
-    /// windows spanning the whole SKM window (`DEFAULT_SKM_WINDOW`).
+    /// windows spanning the whole SKM window (`DEFAULT_SKM_WINDOW`); the age factor large enough to
+    /// weigh every sample equally, as before the factor existed. This class has not been calibrated.
     /// TODO: review after calibration
     pub const NTP_DEFAULTS: Self = Self {
         period_window: DEFAULT_SKM_WINDOW,
@@ -295,16 +304,16 @@ mod tests {
         assert_eq!(p.estimate_capacity.get(), 600);
         // One block per source class, so that a class moving on its own shows which.
         assert_eq!(p.phc.period_window, Duration::from_secs(100));
-        assert_eq!(p.phc.theta_window, Duration::from_secs(20));
-        assert_eq!(p.phc.local_window(), Duration::from_secs(100));
+        assert_eq!(p.phc.theta_window, Duration::from_secs(1024));
+        assert_eq!(p.phc.local_window(), Duration::from_secs(1024));
         assert_eq!(p.phc.rtt_threshold_multiplier, 2);
         assert_eq!(p.phc.error_normalization_factor, 5e-7);
-        assert_eq!(p.phc.age_normalization_factor, 1e6);
+        assert_eq!(p.phc.age_normalization_factor, 5.0);
         assert_eq!(p.amazon_time_sync.period_window, Duration::from_secs(512));
-        assert_eq!(p.amazon_time_sync.theta_window, Duration::from_secs(128));
+        assert_eq!(p.amazon_time_sync.theta_window, Duration::from_secs(1024));
         assert_eq!(p.amazon_time_sync.rtt_threshold_multiplier, 3);
         assert_eq!(p.amazon_time_sync.error_normalization_factor, 5e-5);
-        assert_eq!(p.amazon_time_sync.age_normalization_factor, 1e6);
+        assert_eq!(p.amazon_time_sync.age_normalization_factor, 40.0);
         assert_eq!(p.ntp.period_window, Duration::from_secs(1024));
         assert_eq!(p.ntp.theta_window, Duration::from_secs(1024));
         assert_eq!(p.ntp.rtt_threshold_multiplier, 5);
