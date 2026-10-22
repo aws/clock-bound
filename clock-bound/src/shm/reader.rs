@@ -15,6 +15,16 @@ use crate::{
     syserror,
 };
 
+/// Typed pointer to the inner `#[repr(C)]` payload stored in the shared
+/// memory segment. The segment holds the raw payload struct (never the
+/// `ClockErrorBound` enum, which has no stable layout), so the reader must
+/// decode through the variant matching the segment's layout version.
+#[derive(Debug)]
+enum LayoutPtr {
+    V2(*const ClockErrorBoundV2),
+    V3(*const ClockErrorBoundV3),
+}
+
 /// A guard tracking an open file descriptor.
 ///
 /// Creating the `FdGuard` opens the file with read-only permission.
@@ -141,10 +151,11 @@ pub struct ShmReader {
     // been initialized.
     generation: *const atomic::AtomicU16,
 
-    // A raw pointer into the shared memory segment, pointing to the ClockErrorBound section. Note
-    // that the structured reference by this pointer may not be consistent, and reading it requires
-    // to assert the generation value.
-    ceb_shm: *const ClockErrorBound,
+    // A typed pointer into the shared memory segment, pointing to the inner `#[repr(C)]` payload
+    // selected by the segment's layout version (never the layout-unstable `ClockErrorBound`
+    // enum). Note that the structure referenced by this pointer may not be consistent, and
+    // reading it requires to assert the generation value.
+    ceb_shm: LayoutPtr,
 
     // The last snapshot of ClockErrorBound taken. This acts as a cache to avoid waiting for the
     // writer to complete an update and allow to share a reference to this memory location
@@ -238,15 +249,7 @@ impl ShmReader {
     /// Returns `ShmError` if the path is not found, the file cannot be open or sanity checks fail.
     fn map_segment(
         path: &CStr,
-    ) -> Result<
-        (
-            MmapGuard,
-            *const AtomicU16,
-            *const AtomicU16,
-            *const ClockErrorBound,
-        ),
-        ShmError,
-    > {
+    ) -> Result<(MmapGuard, *const AtomicU16, *const AtomicU16, LayoutPtr), ShmError> {
         let fdguard = FdGuard::new(path)?;
         let mmap_guard = MmapGuard::new(&fdguard)?;
 
@@ -285,9 +288,15 @@ impl ShmReader {
             return Err(ShmError::SegmentMalformed(msg));
         }
 
-        // SAFETY: segment size has been checked to ensure `cursor` move leads to a valid cast
+        // SAFETY: the segment-size check above guarantees `layout_size` bytes are mapped past the
+        // header, so advancing `cursor` by the header size leaves it in-bounds. The cast target is
+        // the concrete `#[repr(C)]` payload type selected by the validated layout version (never
+        // the layout-unstable `ClockErrorBound` enum); the byte offset is unchanged.
         cursor = unsafe { cursor.add(size_of::<ShmHeader>()) };
-        let ceb_shm = ptr::addr_of!(*cursor.cast::<ClockErrorBound>());
+        let ceb_shm = match shm_version {
+            ClockErrorBoundLayoutVersion::V2 => LayoutPtr::V2(cursor.cast::<ClockErrorBoundV2>()),
+            ClockErrorBoundLayoutVersion::V3 => LayoutPtr::V3(cursor.cast::<ClockErrorBoundV3>()),
+        };
 
         Ok((mmap_guard, version, generation, ceb_shm))
     }
@@ -386,8 +395,16 @@ impl ShmReader {
         let mut retries = 1_000_000;
         while retries > 0 {
             // Read the ClockErrorBound data from the shared memory
-            // SAFETY: `ceb_at` has been checked to be valid while creating the ShmReader
-            let snapshot = unsafe { self.ceb_shm.read_volatile() };
+            // SAFETY: `ceb_shm` was built in `map_segment` from the validated layout version,
+            // points `layout_size` bytes inside the mapped segment, and is aligned for the
+            // concrete `#[repr(C)]` payload. `read_volatile` copies the payload out; the
+            // generation check below confirms the read was not torn.
+            let snapshot = unsafe {
+                match self.ceb_shm {
+                    LayoutPtr::V2(p) => ClockErrorBound::V2(p.read_volatile()),
+                    LayoutPtr::V3(p) => ClockErrorBound::V3(p.read_volatile()),
+                }
+            };
 
             // Confirm no update occurred during the read
             let second_gen = generation.load(atomic::Ordering::Acquire);
@@ -414,7 +431,9 @@ impl ShmReader {
 mod t_reader {
     use super::*;
     use crate::shm::ClockStatus;
+    use crate::shm::shm_header::SHM_MAGIC;
     use byteorder::{NativeEndian, WriteBytesExt};
+    use bytes::BufMut;
     use nix::sys::time::TimeSpec;
     use std::ffi::CString;
     use std::fs::OpenOptions;
@@ -480,7 +499,7 @@ mod t_reader {
 
     /// Assert that the reader can map a file.
     #[test]
-    fn test_reader_new_shm_v2() {
+    fn reader_new_shm_v2() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
@@ -509,43 +528,58 @@ mod t_reader {
 
     /// Assert that the reader can map a file.
     #[test]
-    fn test_reader_new_shm_v3() {
+    fn reader_new_shm_v3() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
-        let mut clockbound_shm_file = OpenOptions::new()
-            .write(true)
-            .open(clockbound_shm_path)
-            .expect("open clockbound file failed");
-        write_memory_segment!(
-            clockbound_shm_file,
-            0x414D5A4E,
-            0x43420200,
-            400,
-            0x0303,
-            10,
-            (0, 0),
-            (0, 0),
-            123,
-            0
-        );
+
+        // The segment header advertises version 0x0303 (V3), so the data region must be a V3
+        // payload. Lay the V3 layout down field by field (the same approach as
+        // `reader_decodes_v3_protocol_layout`) with a `bound_nsec` of 123 so the reader decodes a
+        // self-consistent V3 segment.
+        let mut body: Vec<u8> = Vec::new();
+        body.put_u16_ne(0x0303); // Version word: min=3, max=3.
+        body.put_u16_ne(10); // Generation.
+        // --- Data region: Protocol Version 3 layout ---
+        body.put_u64_ne(0); // As-Of TSC
+        body.put_i64_ne(0); // As-Of Timestamp tv_sec
+        body.put_i64_ne(0); // As-Of Timestamp tv_nsec
+        body.put_i64_ne(0); // Void-After tv_sec
+        body.put_i64_ne(0); // Void-After tv_nsec
+        body.put_u64_ne(0); // Period
+        body.put_u64_ne(0); // Period Error
+        body.put_i64_ne(123); // Bound
+        body.put_u64_ne(0); // Disruption Marker
+        body.put_u32_ne(0); // Max Drift
+        body.put_i32_ne(ClockStatus::Synchronized as i32); // Clock Status
+        body.put_u8(1); // Clock Disruption Support
+        body.put_u8(0); // Period Shift
+        body.put_u8(0); // Period Error Shift
+
+        // size_of::<ShmHeader>() (16) + size_of::<ClockErrorBoundV3>() (88) == 104.
+        write_segment_bytes(clockbound_shm_path, 104, &body);
 
         let path = CString::new(clockbound_shm_path).expect("CString failed");
         let reader = ShmReader::new(&path).expect("Failed to create ShmReader");
 
         let version = unsafe { &*reader.version };
         let generation = unsafe { &*reader.generation };
-        let ceb = unsafe { *reader.ceb_shm };
+        let ceb = if let LayoutPtr::V3(p) = reader.ceb_shm {
+            // SAFETY: the segment was written as a V3 layout, so the V3 payload pointer is valid.
+            unsafe { *p }
+        } else {
+            panic!("expected a V3 layout pointer");
+        };
 
         assert_eq!(version.load(atomic::Ordering::Relaxed), 0x0303);
         assert_eq!(generation.load(atomic::Ordering::Relaxed), 10);
-        assert_eq!(ceb.bound_nsec(), 123);
+        assert_eq!(ceb.bound_nsec, 123);
     }
 
     /// Assert that creating a reader when the
     /// shared memory segment has an unsupported version causes an Err result.
     #[test]
-    fn test_reader_new_of_unsupported_shm_version() {
+    fn reader_new_of_unsupported_shm_version() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
@@ -580,7 +614,7 @@ mod t_reader {
     /// Assert that creating a reader and taking a snapshot when the
     /// shared memory segment has an unsupported version causes an Err result.
     #[test]
-    fn test_reader_snapshot_of_unsupported_shm_version() {
+    fn reader_snapshot_of_unsupported_shm_version() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
@@ -636,5 +670,103 @@ mod t_reader {
         assert!(
             matches!(result.unwrap_err(), ShmError::SegmentVersionNotSupported(msg) if msg.starts_with("Clockbound shared memory segment supports versions"))
         );
+    }
+
+    /// Lay out a raw segment by hand, byte by byte, and write it to `path`.
+    ///
+    /// The bytes are produced in the exact field order documented in `docs/protocol.md`,
+    /// using native-endian (`_ne`) puts to match the protocol's "native endian of the CPU" contract.
+    ///
+    /// We are testing the wire protocol: nothing here goes through the
+    /// `ClockErrorBound` enum. If the reader decodes the data region at anything other than the
+    /// documented offsets (for example because it expects an enum discriminant before the payload),
+    /// the snapshot it returns will not match these hand-placed values and the test fails.
+    fn write_segment_bytes(path: &str, segsize: usize, body: &[u8]) {
+        let mut buf = Vec::with_capacity(segsize);
+        // ShmHeader (repr(C, align(8))) first three fields: magic (two u32 words) and segsize.
+        // These are the only header bytes this helper owns; `body` supplies everything from the
+        // version word onward (version, generation, then the data region).
+        buf.put_u32_ne(SHM_MAGIC[0]);
+        buf.put_u32_ne(SHM_MAGIC[1]);
+        buf.put_u32_ne(u32::try_from(segsize).expect("segsize fits in u32"));
+        buf.extend_from_slice(body);
+        assert!(
+            buf.len() <= segsize,
+            "segment body ({}) exceeds segsize ({segsize})",
+            buf.len()
+        );
+        buf.resize(segsize, 0); // zero-fill trailing padding up to segsize
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open clockbound file failed");
+        file.write_all(&buf).expect("write segment failed");
+        file.sync_all().expect("sync_all failed");
+    }
+
+    #[test]
+    fn reader_decodes_v3_protocol_layout() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+
+        // Deterministic, bitwise-unique field values.
+        let as_of_tsc: u64 = 0x0102_0304_0506_0708;
+        let as_of = TimeSpec::new(0x1111_1111, 0x2222_2222);
+        let void_after = TimeSpec::new(0x3333_3333, 0x4444_4444);
+        let period_frac: u64 = 0x0A0B_0C0D_0E0F_1011;
+        let period_err_frac: u64 = 0x1213_1415_1617_1819;
+        let bound_nsec: i64 = 0x5555_5555_5555_5555;
+        let disruption_marker: u64 = 0x6666_6666_6666_6666;
+        let max_drift_ppb: u32 = 0x0777_7777; // < 1_000_000_000
+        let clock_status = ClockStatus::Disrupted; // == 3
+        let period_shift: u8 = 0x2A;
+        let period_err_shift: u8 = 0x3B;
+
+        let mut body: Vec<u8> = Vec::new();
+        // Version word: V3 uses min=3, max=3 => 0x0303.
+        body.put_u16_ne(0x0303);
+        // Generation: even and non-zero.
+        body.put_u16_ne(2);
+        // --- Data region: Protocol Version 3 layout ---
+        body.put_u64_ne(as_of_tsc); // As-Of TSC
+        body.put_i64_ne(as_of.tv_sec()); // As-Of Timestamp tv_sec
+        body.put_i64_ne(as_of.tv_nsec()); // As-Of Timestamp tv_nsec
+        body.put_i64_ne(void_after.tv_sec()); // Void-After tv_sec
+        body.put_i64_ne(void_after.tv_nsec()); // Void-After tv_nsec
+        body.put_u64_ne(period_frac); // Period
+        body.put_u64_ne(period_err_frac); // Period Error
+        body.put_i64_ne(bound_nsec); // Bound
+        body.put_u64_ne(disruption_marker); // Disruption Marker
+        body.put_u32_ne(max_drift_ppb); // Max Drift
+        body.put_i32_ne(clock_status as i32); // Clock Status
+        body.put_u8(1); // Clock Disruption Support
+        body.put_u8(period_shift); // Period Shift
+        body.put_u8(period_err_shift); // Period Error Shift
+        // Remaining bytes are padding, zero-filled by write_segment_bytes up to segsize.
+
+        // size_of::<ShmHeader>() (16) + size_of::<ClockErrorBoundV3>() (88) == 104.
+        write_segment_bytes(clockbound_shm_path, 104, &body);
+
+        let path = CString::new(clockbound_shm_path).expect("CString failed");
+        let mut reader = ShmReader::new(&path).expect("Failed to create ShmReader");
+        let snapshot = *reader.snapshot().expect("snapshot failed");
+
+        let ClockErrorBound::V3(ceb) = snapshot else {
+            panic!("expected V3");
+        };
+        assert_eq!(ceb.as_of_counter(), as_of_tsc);
+        assert_eq!(snapshot.as_of(), as_of);
+        assert_eq!(snapshot.void_after(), void_after);
+        assert_eq!(ceb.period_frac, period_frac);
+        assert_eq!(ceb.period_err_frac, period_err_frac);
+        assert_eq!(snapshot.bound_nsec(), bound_nsec);
+        assert_eq!(snapshot.disruption_marker(), disruption_marker,);
+        assert_eq!(snapshot.max_drift_ppb(), max_drift_ppb);
+        assert_eq!(snapshot.clock_status(), clock_status);
+        assert!(snapshot.clock_disruption_support_enabled(),);
+        assert_eq!(ceb.period_shift, period_shift);
+        assert_eq!(ceb.period_err_shift, period_err_shift);
     }
 }

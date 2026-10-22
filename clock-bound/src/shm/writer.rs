@@ -18,6 +18,16 @@ use crate::shm::{
     ClockErrorBound, ClockErrorBoundLayoutVersion, ClockErrorBoundV2, ClockErrorBoundV3, ShmError,
 };
 
+/// Typed pointer to the inner `#[repr(C)]` payload stored in the shared
+/// memory segment. The segment holds the raw payload struct (never the
+/// `ClockErrorBound` enum, which has no stable layout), so the writer must
+/// serialize through the variant matching the segment's layout version.
+#[derive(Debug)]
+enum LayoutPtr {
+    V2(*mut ClockErrorBoundV2),
+    V3(*mut ClockErrorBoundV3),
+}
+
 /// Trait that a writer to the shared memory segment has to implement.
 pub trait ShmWrite {
     /// Update the shared memory segment with updated clock error bound data.
@@ -47,9 +57,11 @@ pub struct ShmWriter {
     /// number is updated by the writer before and after updating the content mapped in memory.
     generation: *mut atomic::AtomicU16,
 
-    /// A raw pointer to the `ClockBoundError` data mapped in memory. This structure follows the
-    /// `ShmHeader` and contains the information required to compute a bound on clock error.
-    ceb: *mut ClockErrorBound,
+    /// A typed pointer to the inner `#[repr(C)]` payload mapped in memory. The payload follows the
+    /// `ShmHeader` and contains the information required to compute a bound on clock error. The
+    /// variant is selected by the segment's layout version so the writer never serializes the
+    /// layout-unstable `ClockErrorBound` enum into the segment.
+    ceb: LayoutPtr,
 }
 
 impl ShmWriter {
@@ -89,12 +101,23 @@ impl ShmWriter {
 
         // Obtain raw pointers to relevant members in the memory map segment and create a new
         // writer.
-        // SAFETY: segment has been validated to be usable, can map pointers.
+        // SAFETY: the segment has been validated to be usable, so these pointers are in-bounds.
+        // The payload pointer casts to the concrete `#[repr(C)]` payload type selected by
+        // `current_version` (never the layout-unstable `ClockErrorBound` enum). Its byte offset,
+        // immediately after the 16-byte `ShmHeader`, is unchanged and correctly aligned for the
+        // payload struct.
         let (generation, version, ceb) = unsafe {
             let cursor: *mut u8 = addr.cast();
             let generation = ptr::addr_of_mut!((*cursor.cast::<ShmHeader>()).generation);
             let version = ptr::addr_of_mut!((*cursor.cast::<ShmHeader>()).version);
-            let ceb: *mut ClockErrorBound = addr.add(size_of::<ShmHeader>()).cast();
+            let ceb = match current_version {
+                ClockErrorBoundLayoutVersion::V2 => {
+                    LayoutPtr::V2(addr.add(size_of::<ShmHeader>()).cast::<ClockErrorBoundV2>())
+                }
+                ClockErrorBoundLayoutVersion::V3 => {
+                    LayoutPtr::V3(addr.add(size_of::<ShmHeader>()).cast::<ClockErrorBoundV3>())
+                }
+            };
             (generation, version, ceb)
         };
 
@@ -274,7 +297,9 @@ impl ShmWrite for ShmWriter {
     /// Note that the generation number rolls over, but is never set back to 0, as it would
     /// otherwise signal the readers that the segment is not initialized.
     fn write(&mut self, ceb: &ClockErrorBound) {
-        // SAFETY: pointers to fields in the memory segment have been validated on init.
+        // SAFETY: pointers to fields in the memory segment have been validated on init. The
+        // payload pointer is valid for and aligned to the concrete `#[repr(C)]` payload struct,
+        // and only the active layout variant is ever written.
         unsafe {
             // Start by reading the generation value stored in the memory segment.
             let generation = &*self.generation;
@@ -293,7 +318,17 @@ impl ShmWrite for ShmWriter {
             };
             generation.store(g, atomic::Ordering::Release);
 
-            self.ceb.write(*ceb);
+            match (&self.ceb, ceb) {
+                (LayoutPtr::V2(p), ClockErrorBound::V2(v)) => ptr::write(*p, *v),
+                (LayoutPtr::V3(p), ClockErrorBound::V3(v)) => ptr::write(*p, *v),
+                // The LayoutPtr variant is fixed at construction from the segment's layout
+                // version; a mismatch here means the caller handed us a different-version
+                // ClockErrorBound than the segment was created for, which is a programming
+                // error, never a runtime condition.
+                _ => unreachable!(
+                    "ShmWriter layout/version mismatch: segment pointer variant does not match the ClockErrorBound being written"
+                ),
+            }
 
             // Mark the end of the update into the memory segment by incrementing the generation
             // number. Note that we skip writing a generation equals to 0 when the counter rolls
@@ -330,18 +365,23 @@ impl Drop for ShmWriter {
 mod t_writer {
     use super::*;
     use byteorder::{NativeEndian, ReadBytesExt};
+    use bytes::Buf;
     use nix::sys::time::TimeSpec;
     use std::fs::OpenOptions;
+    use std::io::Read;
     use std::path::Path;
     /// We make use of tempfile::NamedTempFile to ensure that
     /// local files that are created during a test get removed
     /// afterwards.
     use tempfile::NamedTempFile;
 
-    use crate::shm::{ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockStatus};
+    use crate::shm::shm_header::SHM_MAGIC;
+    use crate::shm::{
+        ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockStatus,
+    };
 
     macro_rules! clockerrorbound {
-        () => {
+        ($version:expr) => {
             ClockErrorBoundGeneric::builder()
                 .as_of(TimeSpec::new(1, 2))
                 .void_after(TimeSpec::new(3, 4))
@@ -350,7 +390,7 @@ mod t_writer {
                 .max_drift_ppb(100)
                 .clock_status(ClockStatus::Synchronized)
                 .clock_disruption_support_enabled(true)
-                .build(ClockErrorBoundLayoutVersion::V2)
+                .build($version)
         };
     }
 
@@ -367,14 +407,14 @@ mod t_writer {
 
     /// Assert that a new memory mapped segment is created it does not exist.
     #[test]
-    fn test_writer_create_new_if_not_exist() {
+    fn writer_create_new_if_not_exist() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
         remove_path_if_exists(clockbound_shm_path);
 
         // Create and wipe the memory segment
-        let ceb = clockerrorbound!();
+        let ceb = clockerrorbound!(ClockErrorBoundLayoutVersion::V3);
         let mut writer = ShmWriter::new(
             Path::new(clockbound_shm_path),
             ClockErrorBoundLayoutVersion::V3,
@@ -395,7 +435,7 @@ mod t_writer {
 
     /// Assert that an existing memory mapped segment is wiped clean if dirty.
     #[test]
-    fn test_writer_wipe_clean_on_new() {
+    fn writer_wipe_clean_on_new() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
@@ -409,7 +449,7 @@ mod t_writer {
         let _ = clockbound_shm_file.sync_all();
 
         // Create and wipe the memory segment
-        let ceb = clockerrorbound!();
+        let ceb = clockerrorbound!(ClockErrorBoundLayoutVersion::V3);
         let mut writer = ShmWriter::new(
             Path::new(clockbound_shm_path),
             ClockErrorBoundLayoutVersion::V3,
@@ -430,14 +470,14 @@ mod t_writer {
 
     /// Assert that an existing and valid segment is reused and updated.
     #[test]
-    fn test_writer_update_existing() {
+    fn writer_update_existing() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
         remove_path_if_exists(clockbound_shm_path);
 
         // Create a clean memory segment
-        let ceb = clockerrorbound!();
+        let ceb = clockerrorbound!(ClockErrorBoundLayoutVersion::V2);
         let mut writer = ShmWriter::new(
             Path::new(clockbound_shm_path),
             ClockErrorBoundLayoutVersion::V2,
@@ -464,5 +504,195 @@ mod t_writer {
             .read_u16::<NativeEndian>()
             .expect("Failed to read generation from file");
         assert_eq!(g, 4);
+    }
+
+    /// Flush the writer's mapped segment to its backing file and read the whole file back.
+    ///
+    /// Uses `msync(MS_SYNC)` so the mapped bytes are guaranteed to be on the backing file before
+    /// we re-open and read it. Reading through a fresh `File` (rather than the mapping) is what
+    /// lets us confirm the wire-protocol matches
+    fn msync_and_read(writer: &ShmWriter, path: &str) -> Vec<u8> {
+        // SAFETY: `addr`/`segsize` describe the live mapping owned by `writer`, and MS_SYNC on a
+        // shared mapping is always safe. Pointers are valid for the lifetime of the borrow.
+        unsafe {
+            nix::sys::mman::msync(
+                writer.addr,
+                writer.segsize,
+                nix::sys::mman::MsFlags::MS_SYNC,
+            )
+            .expect("msync failed");
+        }
+
+        let mut buf = Vec::new();
+        std::fs::File::open(path)
+            .expect("open backing file failed")
+            .read_to_end(&mut buf)
+            .expect("read backing file failed");
+        buf
+    }
+
+    /// Assert the V2 segment written by `ShmWriter` matches the Protocol Version 2 layout
+    /// byte-for-byte, field by field, in the order documented in `docs/protocol.md`.
+    #[test]
+    fn writer_v2_matches_protocol_layout() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        remove_path_if_exists(clockbound_shm_path);
+
+        // Deterministic, bitwise-unique values for every field so a shifted layout cannot
+        // coincidentally match.
+        let as_of = TimeSpec::new(0x1111_1111, 0x2222_2222);
+        let void_after = TimeSpec::new(0x3333_3333, 0x4444_4444);
+        let bound_nsec: i64 = 0x5555_5555_5555_5555;
+        let disruption_marker: u64 = 0x6666_6666_6666_6666;
+        let max_drift_ppb: u32 = 0x0777_7777; // < 1_000_000_000 so it is not rejected
+        let clock_status = ClockStatus::FreeRunning; // == 2, distinct from the padding bytes
+
+        let ceb = ClockErrorBoundGeneric::builder()
+            .as_of(as_of)
+            .void_after(void_after)
+            .bound_nsec(bound_nsec)
+            .disruption_marker(disruption_marker)
+            .max_drift_ppb(max_drift_ppb)
+            .clock_status(clock_status)
+            .clock_disruption_support_enabled(true)
+            .build(ClockErrorBoundLayoutVersion::V2);
+        assert!(
+            matches!(ceb, ClockErrorBound::V2(_)),
+            "expected a V2 layout"
+        );
+
+        let mut writer = ShmWriter::new(
+            Path::new(clockbound_shm_path),
+            ClockErrorBoundLayoutVersion::V2,
+            ClockErrorBoundLayoutVersion::V2,
+        )
+        .expect("Failed to create a writer");
+        writer.write(&ceb);
+
+        let raw = msync_and_read(&writer, clockbound_shm_path);
+        // `&[u8]` implements `bytes::Buf`; each read advances the cursor from the front.
+        let mut buf: &[u8] = &raw;
+
+        // --- Header (ShmHeader, repr(C, align(8)), 16 bytes) ---------------------------------
+        // Magic Number (u64): two u32 words, native endian, must be untouched.
+        assert_eq!(buf.get_u32_ne(), SHM_MAGIC[0]);
+        assert_eq!(buf.get_u32_ne(), SHM_MAGIC[1]);
+        // Segment Size (u32): matches what the writer sized the segment to.
+        assert_eq!(buf.get_u32_ne() as usize, writer.segsize);
+        // Min Version | Max Version (u8 | u8) packed into a u16 field. The low byte is the max
+        // version, the high byte the min version. V2 sets min=0, max=2 (see ShmWriter::new).
+        assert_eq!(buf.get_u8(), 2);
+        assert_eq!(buf.get_u8(), 0);
+        // Generation (u16): a single successful write leaves an even, non-zero generation.
+        assert_eq!(buf.get_u16_ne(), 2);
+
+        // --- Data region: Protocol Version 2 layout, immediately follows the 16-byte header --
+        // As-Of Timestamp (i64, i64)
+        assert_eq!(buf.get_i64_ne(), as_of.tv_sec());
+        assert_eq!(buf.get_i64_ne(), as_of.tv_nsec());
+        // Void-After Timestamp (i64, i64)
+        assert_eq!(buf.get_i64_ne(), void_after.tv_sec());
+        assert_eq!(buf.get_i64_ne(), void_after.tv_nsec());
+        // Bound (i64)
+        assert_eq!(buf.get_i64_ne(), bound_nsec);
+        // Disruption Marker (u64)
+        assert_eq!(buf.get_u64_ne(), disruption_marker);
+        // Max Drift (u32)
+        assert_eq!(buf.get_u32_ne(), max_drift_ppb);
+        // Clock Status (i32)
+        assert_eq!(buf.get_i32_ne(), clock_status as i32);
+        // Clock Disruption Support (u8)
+        assert_eq!(buf.get_u8(), 1);
+    }
+
+    /// Assert the V3 segment written by `ShmWriter` matches the Protocol Version 3 layout
+    /// byte-for-byte, field by field, in the order documented in `docs/protocol.md`.
+    #[test]
+    fn writer_v3_matches_protocol_layout() {
+        let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
+        let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
+        remove_path_if_exists(clockbound_shm_path);
+
+        // Deterministic, bitwise-unique values for every field.
+        let as_of_tsc: u64 = 0x0102_0304_0506_0708;
+        let as_of = TimeSpec::new(0x1111_1111, 0x2222_2222);
+        let void_after = TimeSpec::new(0x3333_3333, 0x4444_4444);
+        // Distinct sub-second periods (both < 1s, so PeriodFrac does not panic) that produce
+        // different frac/shift encodings.
+        let period: f64 = 2.5e-9; // ~400 MHz oscillator
+        let period_err: f64 = 1e-11;
+        let bound_nsec: i64 = 0x5555_5555_5555_5555;
+        let disruption_marker: u64 = 0x6666_6666_6666_6666;
+        let max_drift_ppb: u32 = 0x0777_7777; // < 1_000_000_000
+        let clock_status = ClockStatus::Disrupted; // == 3
+
+        let ceb = ClockErrorBoundGeneric::builder()
+            .as_of_tsc(as_of_tsc)
+            .as_of(as_of)
+            .void_after(void_after)
+            .period(period)
+            .period_err(period_err)
+            .bound_nsec(bound_nsec)
+            .disruption_marker(disruption_marker)
+            .max_drift_ppb(max_drift_ppb)
+            .clock_status(clock_status)
+            .clock_disruption_support_enabled(true)
+            .build(ClockErrorBoundLayoutVersion::V3);
+        // Pull the expected scaled-fraction encodings straight from the payload the writer should
+        // be serializing. `t_writer` is a submodule of `shm`, so the private fields are visible.
+        let ClockErrorBound::V3(expected) = ceb else {
+            panic!("expected a V3 layout");
+        };
+
+        let mut writer = ShmWriter::new(
+            Path::new(clockbound_shm_path),
+            ClockErrorBoundLayoutVersion::V3,
+            ClockErrorBoundLayoutVersion::V3,
+        )
+        .expect("Failed to create a writer");
+        writer.write(&ceb);
+
+        let raw = msync_and_read(&writer, clockbound_shm_path);
+        // `&[u8]` implements `bytes::Buf`; each read advances the cursor from the front.
+        let mut buf: &[u8] = &raw;
+
+        // --- Header (ShmHeader, repr(C, align(8)), 16 bytes) ---------------------------------
+        assert_eq!(buf.get_u32_ne(), SHM_MAGIC[0]);
+        assert_eq!(buf.get_u32_ne(), SHM_MAGIC[1]);
+        assert_eq!(buf.get_u32_ne() as usize, writer.segsize);
+        // V3 sets both min and max version to 3 (see ShmWriter::new).
+        assert_eq!(buf.get_u8(), 3);
+        assert_eq!(buf.get_u8(), 3);
+        assert_eq!(buf.get_u16_ne(), 2);
+
+        // --- Data region: Protocol Version 3 layout, immediately follows the 16-byte header --
+        // As-Of TSC (u64)
+        assert_eq!(buf.get_u64_ne(), as_of_tsc);
+        // As-Of Timestamp (i64, i64)
+        assert_eq!(buf.get_i64_ne(), as_of.tv_sec());
+        assert_eq!(buf.get_i64_ne(), as_of.tv_nsec());
+        // Void-After Timestamp (i64, i64)
+        assert_eq!(buf.get_i64_ne(), void_after.tv_sec());
+        assert_eq!(buf.get_i64_ne(), void_after.tv_nsec());
+        // Period (u64)
+        assert_eq!(buf.get_u64_ne(), expected.period_frac);
+        // Period Error (u64)
+        assert_eq!(buf.get_u64_ne(), expected.period_err_frac,);
+        // Bound (i64)
+        assert_eq!(buf.get_i64_ne(), bound_nsec);
+        // Disruption Marker (u64)
+        assert_eq!(buf.get_u64_ne(), disruption_marker);
+        // Max Drift (u32)
+        assert_eq!(buf.get_u32_ne(), max_drift_ppb);
+        // Clock Status (i32)
+        assert_eq!(buf.get_i32_ne(), clock_status as i32);
+        // Clock Disruption Support (u8)
+        assert_eq!(buf.get_u8(), 1);
+        // Period Shift (u8), Period Error Shift (u8)
+        assert_eq!(buf.get_u8(), expected.period_shift);
+        assert_eq!(buf.get_u8(), expected.period_err_shift);
     }
 }
