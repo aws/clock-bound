@@ -169,10 +169,9 @@ impl Phc {
             clock_error_bound,
         }) = Self::calculate_theta(
             &self.local,
-            self.source_params.theta_window,
+            &self.source_params,
             local_period.period_local,
             uncorrected_clock,
-            self.source_params.error_normalization_factor,
         )
         else {
             tracing::warn!(
@@ -451,18 +450,14 @@ impl Phc {
     )]
     fn calculate_theta(
         local: &event_buffer::Local<event::Phc>,
-        theta_window: Duration,
+        params: &SourceParams,
         period_local: Period,
         uncorrected_clock: UncorrectedClock,
-        error_normalization_factor: f64,
     ) -> Option<CalculateThetaOutput> {
-        // `error_normalization_factor` penalises the feed-forward samples that have a slower
-        // reference clock read duration (see `SourceParams::error_normalization_factor`).
-
         // Only the samples within the last `theta_window` take part in the weighted average. The
         // RTT filter below keeps the whole local buffer as its reference: the buffer's window
         // (the larger of the two source windows) is the scope of the filter, not `theta_window`.
-        let start = local.window_start(theta_window, uncorrected_clock.p_estimate);
+        let start = local.window_start(params.theta_window, uncorrected_clock.p_estimate);
         if start >= local.as_ref().len() {
             return None;
         }
@@ -480,8 +475,17 @@ impl Phc {
         // `theta` tracepoint metrics: the current sample's own view. Its naive offset against the
         // time source and its weight contribution to the theta calculation.
         let head_offset = head.calculate_offset(uncorrected_clock);
+
+        // Two Gaussian weights multiply (see `SourceParams`):
+        // - `error_normalization_factor` penalises samples with a slower reference clock read
+        // - `age_normalization_factor` penalises old samples.
         let head_weight =
-            head.calculate_offset_weight(min_rtt, period_local, error_normalization_factor);
+            head.calculate_offset_weight(min_rtt, period_local, params.error_normalization_factor)
+                * head.calculate_age_weight(
+                    now_post,
+                    uncorrected_clock.p_estimate,
+                    params.age_normalization_factor,
+                );
 
         let mut max_ceb = Duration::from_secs(0);
         // `theta` tracepoint metrics: the algorithm local error bound (the largest half delay among
@@ -504,9 +508,16 @@ impl Phc {
 
             let offset = event.calculate_offset(uncorrected_clock);
 
-            // estimate error based off of TSC rtt
-            let weight =
-                event.calculate_offset_weight(min_rtt, period_local, error_normalization_factor);
+            // the sample's weight: penalize both read latency and age
+            let weight = event.calculate_offset_weight(
+                min_rtt,
+                period_local,
+                params.error_normalization_factor,
+            ) * event.calculate_age_weight(
+                now_post,
+                uncorrected_clock.p_estimate,
+                params.age_normalization_factor,
+            );
 
             let offset_nsec = offset.as_seconds_f64() * 1e9;
 
@@ -566,6 +577,17 @@ mod tests {
     /// A window at least as long as any test buffer's own window: the whole buffer.
     fn whole_buffer() -> Duration {
         Local::<event::Phc>::SKM_WINDOW
+    }
+
+    /// Source parameters for a theta test: the window and RTT factor under test, the production
+    /// values otherwise, and an age factor so large that age does not weigh (1e6 s).
+    fn params(theta_window: Duration, error_normalization_factor: f64) -> SourceParams {
+        SourceParams {
+            theta_window,
+            error_normalization_factor,
+            age_normalization_factor: 1e6,
+            ..SourceParams::PHC_DEFAULTS
+        }
     }
 
     /// A 1 GHz counter with an arbitrary epoch, for measuring windows in tests.
@@ -795,8 +817,13 @@ mod tests {
         let CalculateThetaOutput {
             theta,
             clock_error_bound,
-        } = Phc::calculate_theta(&local, whole_buffer(), local_period, uncorrected_clock, 1e5)
-            .unwrap();
+        } = Phc::calculate_theta(
+            &local,
+            &params(whole_buffer(), 1e5),
+            local_period,
+            uncorrected_clock,
+        )
+        .unwrap();
 
         assert_eq!(theta, Duration::from_secs(0));
         assert_eq!(
@@ -844,8 +871,13 @@ mod tests {
         let CalculateThetaOutput {
             theta,
             clock_error_bound,
-        } = Phc::calculate_theta(&local, whole_buffer(), local_period, uncorrected_clock, 1e5)
-            .unwrap();
+        } = Phc::calculate_theta(
+            &local,
+            &params(whole_buffer(), 1e5),
+            local_period,
+            uncorrected_clock,
+        )
+        .unwrap();
 
         assert_eq!(theta, Duration::from_micros(-5));
         assert_eq!(
@@ -939,10 +971,12 @@ mod tests {
         let uc = uncorrected_1ghz();
         let period = Period::from_seconds(1e-9);
 
-        let whole = Phc::calculate_theta(&local, whole_buffer(), period, uc, 1e5).unwrap();
+        let whole = Phc::calculate_theta(&local, &params(whole_buffer(), 1e5), period, uc).unwrap();
         let equal =
-            Phc::calculate_theta(&local, Duration::from_secs(100), period, uc, 1e5).unwrap();
-        let recent = Phc::calculate_theta(&local, Duration::from_secs(3), period, uc, 1e5).unwrap();
+            Phc::calculate_theta(&local, &params(Duration::from_secs(100), 1e5), period, uc)
+                .unwrap();
+        let recent =
+            Phc::calculate_theta(&local, &params(Duration::from_secs(3), 1e5), period, uc).unwrap();
 
         // A window equal to the buffer's own is the whole buffer.
         assert_eq!(equal.theta, whole.theta);
@@ -963,10 +997,9 @@ mod tests {
         assert!(
             Phc::calculate_theta(
                 &local,
-                Duration::from_secs(1),
+                &params(Duration::from_secs(1), 1e5),
                 Period::from_seconds(1e-9),
-                uncorrected_1ghz(),
-                1e5
+                uncorrected_1ghz()
             )
             .is_none()
         );
@@ -987,9 +1020,40 @@ mod tests {
         local.feed(phc_read(50, Duration::ZERO, 5_000)).unwrap();
         let uc = uncorrected_1ghz();
         let period = Period::from_seconds(1e-9);
-        assert!(Phc::calculate_theta(&local, Duration::from_secs(3), period, uc, 1e5).is_none());
-        let wide = Phc::calculate_theta(&local, Duration::from_secs(100), period, uc, 1e5).unwrap();
+        assert!(
+            Phc::calculate_theta(&local, &params(Duration::from_secs(3), 1e5), period, uc)
+                .is_none()
+        );
+        let wide = Phc::calculate_theta(&local, &params(Duration::from_secs(100), 1e5), period, uc)
+            .unwrap();
         assert!(wide.theta.as_seconds_f64().is_finite());
+    }
+
+    #[test]
+    fn age_factor_weights_old_samples_down() {
+        // Ten samples at 1 s spacing whose offset steps from 0 to 1 µs at t = 15 s (stepped_local):
+        // the newest five sit at 1 µs, the oldest five at 0. With age weighing nothing, theta is the
+        // plain mean of the ten (~0.5 µs). With an age factor of 3 s, the five old samples (ages
+        // 5–9 s) weigh exp(-(5/3)^2) = 0.06 and less: theta is pulled to the recent 1 µs.
+        let local = stepped_local();
+        let uc = uncorrected_1ghz();
+        let period = Period::from_seconds(1e-9);
+        let flat = Phc::calculate_theta(&local, &params(whole_buffer(), 1e5), period, uc).unwrap();
+        let aged = Phc::calculate_theta(
+            &local,
+            &SourceParams {
+                age_normalization_factor: 3.0,
+                ..params(whole_buffer(), 1e5)
+            },
+            period,
+            uc,
+        )
+        .unwrap();
+        assert!(flat.theta > Duration::from_nanos(400) && flat.theta < Duration::from_nanos(600));
+        assert!(aged.theta > Duration::from_nanos(900), "{:?}", aged.theta);
+        // The newest sample's own weight (age 0) is unchanged; the bound is the max over the used
+        // samples and does not depend on weights.
+        assert_eq!(aged.clock_error_bound, flat.clock_error_bound);
     }
 
     #[test]

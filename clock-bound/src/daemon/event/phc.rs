@@ -7,7 +7,7 @@ use crate::daemon::{
 
 use super::TscRtt;
 
-/// Contains the PHC and time stamp counter samples to be used by the synchronization algorithm
+/// Contains the PHC and time stamp counter samples to be used by the synchronization algorithm.
 ///
 /// `counter_post` must be greater than `counter_pre`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,8 +169,6 @@ impl Phc {
     ///
     /// Panics if the event's RTT is smaller than `min_rtt`: the caller passes the minimum over a
     /// window this event belongs to.
-    // NOTE/FIXME: is there a world where we take into account either age of the event or the
-    // clock_error_bound?
     pub fn calculate_offset_weight(
         &self,
         min_rtt: TscDiff,
@@ -182,6 +180,26 @@ impl Phc {
 
         let error = sample_error * period_local;
         (-((error.as_seconds_f64() / error_normalization_factor).powi(2))).exp()
+    }
+
+    /// Calculate the weight of this event's offset in the theta weighted average by its age
+    ///
+    /// The weight is `e^(-(age / A)^2)`. The age is the duration from this event's read to the
+    /// newest event's (`now_post`), in seconds at the long-term period `p_estimate`. `A` is the
+    /// source's age normalization factor, in seconds. The weight is in `(0, 1]`, and 1 for the
+    /// newest event.
+    pub fn calculate_age_weight(
+        &self,
+        now_post: TscCount,
+        p_estimate: Period,
+        age_normalization_factor: f64,
+    ) -> f64 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a counter difference within a window, far below 2^53"
+        )]
+        let age_seconds = ((now_post - self.counter_post()).get() as f64) * p_estimate.get();
+        (-((age_seconds / age_normalization_factor).powi(2))).exp()
     }
 }
 

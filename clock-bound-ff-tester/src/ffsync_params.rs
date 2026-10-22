@@ -21,18 +21,21 @@
 //! theta_window_s = 100
 //! rtt_threshold_multiplier = 5
 //! error_normalization_factor_ns = 500
+//! age_normalization_factor_s = 1000000
 //!
 //! [amazon_time_sync]
 //! period_window_s = 1024
 //! theta_window_s = 1024
 //! rtt_threshold_multiplier = 5
 //! error_normalization_factor_ns = 50000
+//! age_normalization_factor_s = 1000000
 //!
 //! [ntp]
 //! period_window_s = 1024
 //! theta_window_s = 1024
 //! rtt_threshold_multiplier = 5
 //! error_normalization_factor_ns = 50000
+//! age_normalization_factor_s = 1000000
 //! ```
 //!
 //! # Identity
@@ -89,6 +92,8 @@ pub struct SourceParamsFile {
     pub rtt_threshold_multiplier: usize,
     /// The naive offset weight normalization, expressed in nanoseconds when passing parameters to replay
     pub error_normalization_factor_ns: u64,
+    /// The sample age weight normalization, in whole seconds (`SourceParams::age_normalization_factor`).
+    pub age_normalization_factor_s: u64,
 }
 
 /// Read a parameter file, validate it, and return the typed parameters.
@@ -126,6 +131,11 @@ impl TryFrom<&FfSyncParamsFile> for FfSyncParams {
                     reason = "factors are small integers (1e5 in production); f64 is exact far beyond them"
                 )]
                 error_normalization_factor: f.error_normalization_factor_ns as f64 / 1e9,
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "whole seconds, small; f64 is exact far beyond them"
+                )]
+                age_normalization_factor: f.age_normalization_factor_s as f64,
             })
         };
         Ok(Self {
@@ -159,6 +169,10 @@ impl From<&FfSyncParams> for FfSyncParamsFile {
             theta_window_s: whole_seconds(s.theta_window, "theta_window"),
             rtt_threshold_multiplier: s.rtt_threshold_multiplier,
             error_normalization_factor_ns: whole_ns(s.error_normalization_factor),
+            age_normalization_factor_s: whole_seconds(
+                Duration::from_seconds_f64(s.age_normalization_factor),
+                "age_normalization_factor",
+            ),
         };
         Self {
             max_dispersion_ppb: params
@@ -239,6 +253,11 @@ pub fn canonical(params: &FfSyncParams) -> String {
             out,
             "{name}.error_normalization_factor_ns={}",
             s.error_normalization_factor_ns
+        );
+        let _ = writeln!(
+            out,
+            "{name}.age_normalization_factor_s={}",
+            s.age_normalization_factor_s
         );
     }
     out
@@ -334,7 +353,7 @@ mod tests {
         assert!(c.starts_with(
             "max_dispersion_ppb=15000\nskm_window_s=1024\nestimate_capacity=600\nphc."
         ));
-        assert_eq!(c.lines().count(), 3 + 3 * 4);
+        assert_eq!(c.lines().count(), 3 + 3 * 5);
         let h = hash(&FfSyncParams::default());
         assert_eq!(h.len(), 8);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));

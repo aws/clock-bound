@@ -74,6 +74,11 @@ pub struct SourceParams {
     /// calibrated to penalise slow read for a class of time source, and is the scale of the
     /// Gaussian weight applied.
     pub error_normalization_factor: f64,
+    /// Weight of a sample in `theta_hat` by its age: `exp(-(age / factor)^2)`, age in seconds from
+    /// the sample to the newest one. The clock's rate changes within a window, so a rate fitted at
+    /// the update is off by more the further back it is applied, and an older sample's offset is
+    /// less reliable. A very large factor weights every sample in the window equally.
+    pub age_normalization_factor: f64,
 }
 
 impl SourceParams {
@@ -94,6 +99,7 @@ impl SourceParams {
         theta_window: Duration::from_secs(20),
         rtt_threshold_multiplier: 2,
         error_normalization_factor: 500e-9,
+        age_normalization_factor: 1e6,
     };
 
     /// Production values for the EC2 link-local NTP estimator (Amazon Time Sync).
@@ -116,6 +122,7 @@ impl SourceParams {
         theta_window: Duration::from_secs(128),
         rtt_threshold_multiplier: 3,
         error_normalization_factor: 50e-6,
+        age_normalization_factor: 1e6,
     };
 
     /// Production values for the NTP estimator (configured or public servers): period and theta
@@ -126,6 +133,7 @@ impl SourceParams {
         theta_window: DEFAULT_SKM_WINDOW,
         rtt_threshold_multiplier: 5,
         error_normalization_factor: 5e-5,
+        age_normalization_factor: 1e6,
     };
 
     /// The window the local buffer must hold: the larger of the two.
@@ -179,9 +187,10 @@ pub enum FfSyncParamsError {
     },
     #[error("{source_type}: rtt_threshold_multiplier must be at least 1")]
     RttMultiplierZero { source_type: &'static str },
-    #[error("{source_type}: error_normalization_factor must be positive and finite, got {value}")]
+    #[error("{source_type}: {field} must be positive and finite, got {value}")]
     NormalizationFactorInvalid {
         source_type: &'static str,
+        field: &'static str,
         value: f64,
     },
 }
@@ -251,12 +260,20 @@ impl FfSyncParams {
             if source.rtt_threshold_multiplier == 0 {
                 return Err(FfSyncParamsError::RttMultiplierZero { source_type: name });
             }
-            let f = source.error_normalization_factor;
-            if !(f.is_finite() && f > 0.0) {
-                return Err(FfSyncParamsError::NormalizationFactorInvalid {
-                    source_type: name,
-                    value: f,
-                });
+            for (field, f) in [
+                (
+                    "error_normalization_factor",
+                    source.error_normalization_factor,
+                ),
+                ("age_normalization_factor", source.age_normalization_factor),
+            ] {
+                if !(f.is_finite() && f > 0.0) {
+                    return Err(FfSyncParamsError::NormalizationFactorInvalid {
+                        source_type: name,
+                        field,
+                        value: f,
+                    });
+                }
             }
         }
         Ok(())
@@ -282,14 +299,17 @@ mod tests {
         assert_eq!(p.phc.local_window(), Duration::from_secs(100));
         assert_eq!(p.phc.rtt_threshold_multiplier, 2);
         assert_eq!(p.phc.error_normalization_factor, 5e-7);
+        assert_eq!(p.phc.age_normalization_factor, 1e6);
         assert_eq!(p.amazon_time_sync.period_window, Duration::from_secs(512));
         assert_eq!(p.amazon_time_sync.theta_window, Duration::from_secs(128));
         assert_eq!(p.amazon_time_sync.rtt_threshold_multiplier, 3);
         assert_eq!(p.amazon_time_sync.error_normalization_factor, 5e-5);
+        assert_eq!(p.amazon_time_sync.age_normalization_factor, 1e6);
         assert_eq!(p.ntp.period_window, Duration::from_secs(1024));
         assert_eq!(p.ntp.theta_window, Duration::from_secs(1024));
         assert_eq!(p.ntp.rtt_threshold_multiplier, 5);
         assert_eq!(p.ntp.error_normalization_factor, 5e-5);
+        assert_eq!(p.ntp.age_normalization_factor, 1e6);
     }
 
     #[test]
@@ -339,6 +359,17 @@ mod tests {
             p.validate(),
             Err(FfSyncParamsError::NormalizationFactorInvalid {
                 source_type: "phc",
+                field: "error_normalization_factor",
+                ..
+            })
+        ));
+        let mut p = FfSyncParams::default();
+        p.ntp.age_normalization_factor = 0.0;
+        assert!(matches!(
+            p.validate(),
+            Err(FfSyncParamsError::NormalizationFactorInvalid {
+                source_type: "ntp",
+                field: "age_normalization_factor",
                 ..
             })
         ));
