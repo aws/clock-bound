@@ -5,7 +5,7 @@
 //! - the **inner timestamp**, assigned at emission by the daemon's tracing layer.
 //!   Monotone in emission order, except across legitimate clock steps (the wall
 //!   clock is the clock under adjustment).
-//! - the **counter** (`tsc_post` / `counter_post`), captured at I/O completion.
+//! - the **counter** (`counter_post`), captured at I/O completion.
 //!   Monotone in completion order, which can legitimately differ from the order
 //!   events were fed to the algorithm when source I/O windows overlap (e.g. a
 //!   fast PHC read completing inside a long NTP exchange).
@@ -24,11 +24,8 @@
 
 use std::fmt;
 
-/// Ordering signals extracted from a raw log line.
-///
-/// Extraction is format-agnostic: it works on both the current ffevents format
-/// (`"counter_pre"` / `"counter_post"`, plain JSON) and the legacy primer format
-/// (`"tsc_pre"` / `"tsc_post"`, nested inside an escaped JSON string).
+/// Ordering signals extracted from a raw log line (ffevents: `"counter_pre"` / `"counter_post"`,
+/// plain JSON).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OrderingSignals {
     /// Inner timestamp (RFC3339 with fixed precision: lexicographic order is
@@ -57,25 +54,16 @@ fn extract_string_value(line: &str, key: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-/// Extract a counter value for the given suffix (`_pre` or `_post`), accepting
-/// both the `counter` (ffevents) and legacy `tsc` (primer) key names, in plain or
-/// escaped-JSON-string form.
+/// Extract a counter value for the given suffix (`_pre` or `_post`) from a line's
+/// `"counter<suffix>":<digits>`.
 fn extract_counter(line: &str, suffix: &str) -> Option<u64> {
-    for name in ["counter", "tsc"] {
-        let key = format!("{name}{suffix}");
-        if let Some(pos) = line.find(&key) {
-            // Skip the escaping/quoting between the key and the number: `":` or `\":`
-            let digits: String = line[pos + key.len()..]
-                .chars()
-                .skip_while(|&c| matches!(c, '\\' | '"' | ':' | ' '))
-                .take_while(char::is_ascii_digit)
-                .collect();
-            if let Ok(value) = digits.parse() {
-                return Some(value);
-            }
-        }
-    }
-    None
+    let key = format!("\"counter{suffix}\":");
+    let pos = line.find(&key)?;
+    let digits: String = line[pos + key.len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
 }
 
 /// Classification of an out-of-order observation. See the module documentation.
@@ -283,10 +271,9 @@ fn timestamp_delta_ns(later: &str, earlier: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
-    // Real lines (truncated payloads) from the two formats
+    // Real lines (truncated payloads)
     const FFEVENTS_LINE: &str = r#"{"timestamp":"2026-07-16T14:33:49.654418Z","version":"3.0.0-alpha.2","event":"feed","feed":{"input":{"type":"ntp","identifier":"169.254.169.123:123","counter_pre":482393264419,"counter_post":482393405301,"data":{}},"output":null}}"#;
-    const PRIMER_LINE: &str = r#"{"timestamp":"2025-12-29T07:59:58.825610Z","level":"INFO","fields":{"message":"feed","event":"{\"Phc\":{\"tsc_pre\":302084682318463,\"tsc_post\":302084682325383,\"data\":{}}}"},"target":"clock_bound::primer"}"#;
-    const NO_COUNTER_LINE: &str = r#"{"timestamp":"2025-12-28T23:42:54.399311Z","level":"INFO","fields":{"message":"Clock Sync Alg started","init":"CSA initialized"}}"#;
+    const NO_COUNTER_LINE: &str = r#"{"timestamp":"2026-09-28T15:41:29.229569Z","event":"init","seq":0,"init":{"message":"Clock Sync Algorithm initialized"},"version":"3.0.0-alpha.2"}"#;
 
     #[test]
     fn extracts_signals_from_ffevents_format() {
@@ -296,16 +283,6 @@ mod tests {
             Some("2026-07-16T14:33:49.654418Z")
         );
         assert_eq!(signals.counter_post, Some(482393405301));
-    }
-
-    #[test]
-    fn extracts_signals_from_primer_format() {
-        let signals = OrderingSignals::extract(PRIMER_LINE);
-        assert_eq!(
-            signals.timestamp.as_deref(),
-            Some("2025-12-29T07:59:58.825610Z")
-        );
-        assert_eq!(signals.counter_post, Some(302084682325383));
     }
 
     #[test]
