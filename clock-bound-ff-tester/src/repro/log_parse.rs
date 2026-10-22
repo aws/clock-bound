@@ -32,11 +32,11 @@ pub fn repro_events_from_log_file(
     Ok(ReproEventReader::new(crate::logs::open_log(file_path)?))
 }
 
-/// Read a full log and return all [`ReproEvent`] items, in file order.
+/// Read a whole in-memory log and return its [`ReproEvent`] items, in file order; an error when
+/// it holds none.
 ///
-/// Eager convenience over [`ReproEventReader`], buffering all events in memory:
-/// intended for tests and small in-memory inputs. Production paths stream a
-/// [`ReproEventReader`] directly.
+/// A test utility: the eager form of [`ReproEventReader`] for fixtures. Production paths stream
+/// the reader.
 ///
 /// # Errors
 /// Returns errors if the logfile is corrupted or contains no events.
@@ -214,10 +214,12 @@ mod tests {
     #[test]
     fn parse_ffevents_log() {
         let log = include_str!("test_ffevents.log");
-        let events = repro_events_from_reader(log.as_bytes()).unwrap();
+        let mut reader = ReproEventReader::new(log.as_bytes());
+        let events: Vec<_> = (&mut reader).collect::<anyhow::Result<_>>().unwrap();
 
-        // 1 init + 5 feeds + 1 disruption + 1 feed = 8 lines total
+        // 1 init + 5 feeds + 1 disruption + 1 feed = 8 lines total, every one consumed
         assert_eq!(events.len(), 8);
+        assert_eq!(reader.lines_read(), log.lines().count());
 
         // First event is init
         assert!(matches!(events[0], ReproEvent::Init));
@@ -360,19 +362,6 @@ mod tests {
             .unwrap();
         assert!(!events.is_empty());
         assert_eq!(format!("{events:?}"), format!("{expected:?}"));
-    }
-
-    #[test]
-    fn streaming_reader_matches_eager_wrapper() {
-        let log = include_str!("test_ffevents.log");
-        let expected = repro_events_from_reader(log.as_bytes()).unwrap();
-
-        let mut reader = ReproEventReader::new(log.as_bytes());
-        let streamed: Vec<_> = (&mut reader).collect::<anyhow::Result<_>>().unwrap();
-
-        assert_eq!(format!("{streamed:?}"), format!("{expected:?}"));
-        assert_eq!(streamed.len(), expected.len());
-        assert_eq!(reader.lines_read(), log.lines().count());
     }
 
     #[test]
