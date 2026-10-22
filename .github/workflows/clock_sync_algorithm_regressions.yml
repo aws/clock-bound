@@ -51,21 +51,26 @@ jobs:
           echo "Changing permissions of the test artifact to be executable."
           chmod +x clock-bound-ff-tester
 
+      # The regression inputs are explicitly named here, not discovered in the bucket.
+      # One name per line.
       - name: Download regression test logs from S3
+        env:
+          REGRESSION_LOGS: |
+            2026-09-28T1541Z_ec2.first-hour.ffevents.log.gz
         run: |
-          echo "Pulling repro logs from S3 into directory regression-logs."
+          echo "Pulling the reproduction replay logs from S3 into directory regression-logs."
           mkdir -p regression-logs
-          aws s3 cp s3://${{ secrets.TESTS_S3_BUCKET }}/input regression-logs/ --recursive
+          for name in $REGRESSION_LOGS; do
+            aws s3 cp "s3://${{ secrets.TESTS_S3_BUCKET }}/input/$name" "regression-logs/$name"
+          done
 
       # TODO: Manage output directory better, one per replay
       - name: Run repro-replay against log files
         run: |
-          echo "Running repro-replay against repro logs."
+          echo "Running repro-replay against reproduction logs."
           for logfile in regression-logs/*; do
-            if [ -f "$logfile" ]; then
-              echo "Processing: $logfile"
-              ./clock-bound-ff-tester repro-replay --logfile "$logfile" --output-dir "./repro-output/$logfile"
-            fi
+            echo "Processing: $logfile"
+            ./clock-bound-ff-tester repro-replay --logfile "$logfile" --output-dir "./repro-output/$logfile"
           done
 
       - name: Upload results to S3

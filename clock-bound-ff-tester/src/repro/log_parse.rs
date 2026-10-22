@@ -1,10 +1,5 @@
-//! Functions and structs related to parsing log files
-//!
-//! Supports two log formats:
-//! - **ffevents**: The current structured NDJSON format (ClockBound 3.x+)
-//! - **primer**: The legacy tracing-subscriber JSON format (ClockBound ≤2.x)
-//!
-//! Format is auto-detected from the structure of the first parseable line.
+//! Functions and structs related to parsing log files: the daemon's `ffevents.log`, structured
+//! NDJSON (ClockBound 3.x).
 
 use anyhow::Context;
 
@@ -13,22 +8,13 @@ use clock_bound::daemon::{
     logging::ffevents::types::{ClockParametersLog, RoutableEventLog},
 };
 
-use super::{ReproEvent, log_format_primer};
+use super::ReproEvent;
 
 use std::{io::BufRead, path::Path};
 
 // Only used by the test-only eager wrapper
 #[cfg(test)]
 use std::io::{BufReader, Read};
-
-/// The detected log format for a given log file
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LogFormat {
-    /// Current ffevents.log format (ClockBound 3.x+)
-    Ffevents,
-    /// Legacy primer.log format (ClockBound ≤2.x)
-    Primer,
-}
 
 /// Open a log file and return a streaming [`ReproEventReader`] over its events.
 ///
@@ -77,16 +63,11 @@ pub(crate) fn repro_events_from_reader(input: impl Read) -> anyhow::Result<Vec<R
 /// `fix-log-order`. Unparseable JSON lines are skipped with a warning.
 ///
 /// The input must be buffered ([`BufRead`]); file access and gzip handling are
-/// provided by [`repro_events_from_log_file`]. The format (ffevents vs primer) is
-/// auto-detected from the structure of the first line.
+/// provided by [`repro_events_from_log_file`].
 pub struct ReproEventReader<R: BufRead> {
     lines: std::io::Lines<R>,
     /// Number of lines consumed from the input so far
     lines_read: usize,
-    /// Log format, detected from the first line
-    detected_format: Option<LogFormat>,
-    /// Primer format only: whether values are in the legacy femtosecond unit
-    primer_femto_mode: Option<bool>,
     /// Ordering anomaly classification across the stream
     order_tracker: crate::logs::order::OrderTracker,
 }
@@ -97,8 +78,6 @@ impl<R: BufRead> ReproEventReader<R> {
         Self {
             lines: input.lines(),
             lines_read: 0,
-            detected_format: None,
-            primer_femto_mode: None,
             order_tracker: crate::logs::order::OrderTracker::new(),
         }
     }
@@ -117,7 +96,7 @@ impl<R: BufRead> ReproEventReader<R> {
     ///
     /// Returns `Ok(None)` for lines to skip (already warned about), `Err` for
     /// structural failures that the caller should see.
-    fn parse_line(&mut self, line: &str, idx: usize) -> anyhow::Result<Option<ReproEvent>> {
+    fn parse_line(line: &str, idx: usize) -> anyhow::Result<Option<ReproEvent>> {
         // Strict input contract: native daemon NDJSON only. A prefixed line means
         // the log came through a delivery pipeline and must be fixed first.
         if !line.starts_with('{') {
@@ -128,20 +107,10 @@ impl<R: BufRead> ReproEventReader<R> {
             );
         }
 
-        // Auto-detect format on the first line
-        let format = *self
-            .detected_format
-            .get_or_insert_with(|| detect_format(line));
-
-        let result = match format {
-            LogFormat::Ffevents => parse_ffevents_line(line, idx).map(Some),
-            LogFormat::Primer => log_format_primer::parse_line(line, &mut self.primer_femto_mode),
-        };
-
-        match result {
+        match parse_ffevents_line(line, idx) {
             // The timestamp is carried per-line for ordering diagnostics but is
             // not part of the yielded event
-            Ok(pair) => Ok(pair.map(|(_timestamp, event)| event)),
+            Ok((_timestamp, event)) => Ok(Some(event)),
             Err(e) => {
                 tracing::warn!("Could not parse line {idx} from log file: {e}");
                 Ok(None)
@@ -181,26 +150,13 @@ impl<R: BufRead> Iterator for ReproEventReader<R> {
                 }
             }
 
-            match self.parse_line(&line, idx) {
+            match Self::parse_line(&line, idx) {
                 Ok(Some(event)) => return Some(Ok(event)),
                 // Skipped line (already warned about): fall through to the next
                 Ok(None) => {}
                 Err(e) => return Some(Err(e)),
             }
         }
-    }
-}
-
-/// Detect log format by examining the JSON structure.
-///
-/// - If the line has a top-level `"fields"` key, it's primer format.
-/// - If the line has a top-level `"event"` key with a string value, it's ffevents.
-fn detect_format(json_str: &str) -> LogFormat {
-    // Quick heuristic: primer format always has "fields" as a top-level key
-    if json_str.contains("\"fields\"") {
-        LogFormat::Primer
-    } else {
-        LogFormat::Ffevents
     }
 }
 
@@ -315,47 +271,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_primer_format_nanos() {
-        let log = include_str!("test_11_06_2025_nanos.log");
-        let events = repro_events_from_reader(log.as_bytes()).unwrap();
-
-        // 3 of the 13 events are the first input for each source (no output yet).
-        // The remaining 10 produce clock parameters.
-        let param_count = events
-            .iter()
-            .filter_map(|event| {
-                let ReproEvent::Feed { output, .. } = event else {
-                    return None;
-                };
-                output.as_ref()
-            })
-            .count();
-        assert_eq!(param_count, 10);
-    }
-
-    #[test]
-    fn parse_primer_format_femtoseconds() {
-        let log = include_str!("test_11_06_2025.log");
-        let events = repro_events_from_reader(log.as_bytes()).unwrap();
-
-        // Same fixture as nanos but with femtosecond values — should produce identical results
-        let param_count = events
-            .iter()
-            .filter_map(|event| {
-                let ReproEvent::Feed { output, .. } = event else {
-                    return None;
-                };
-                output.as_ref()
-            })
-            .count();
-        assert_eq!(param_count, 10);
-    }
-
-    #[test]
     fn cloudwatch_log_replays_after_fix_log_order() {
         use clap::Parser;
 
-        let log = include_str!("cw_tail_12_29_2026.log");
+        let log = include_str!("cw_tail_2026_09_28.log");
 
         // Raw CloudWatch pulls are rejected by the replay path...
         let error = repro_events_from_reader(log.as_bytes()).unwrap_err();
@@ -397,20 +316,8 @@ mod tests {
     }
 
     #[test]
-    fn detect_format_ffevents() {
-        let line = r#"{"timestamp":"2026-07-16T14:30:00Z","version":"3.0.0","event":"init","init":{"message":"test"}}"#;
-        assert_eq!(detect_format(line), LogFormat::Ffevents);
-    }
-
-    #[test]
-    fn detect_format_primer() {
-        let line = r#"{"timestamp":"2025-11-06T17:23:20Z","level":"INFO","fields":{"message":"feed","event":"{}","output":"null"},"target":"clock_bound::primer"}"#;
-        assert_eq!(detect_format(line), LogFormat::Primer);
-    }
-
-    #[test]
     fn plaintext_log_file_parses_same_as_reader() {
-        let example_log = include_str!("test_11_06_2025.log");
+        let example_log = include_str!("test_ffevents.log");
         let expected = repro_events_from_reader(example_log.as_bytes()).unwrap();
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -429,7 +336,7 @@ mod tests {
         use flate2::{Compression, write::GzEncoder};
         use std::io::Write;
 
-        let example_log = include_str!("test_11_06_2025.log");
+        let example_log = include_str!("test_ffevents.log");
         let expected = repro_events_from_reader(example_log.as_bytes()).unwrap();
 
         // Compress as two concatenated gzip members, as produced by e.g.

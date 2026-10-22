@@ -1,6 +1,5 @@
 //! Reproduction utilities
 
-mod log_format_primer;
 mod log_parse;
 #[cfg(test)]
 pub(crate) use log_parse::repro_events_from_reader;
@@ -244,7 +243,7 @@ mod tests {
 
     #[test]
     fn scenario_from_logs() {
-        let example_log = include_str!("repro/test_11_06_2025.log");
+        let example_log = include_str!("repro/test_ffevents.log");
 
         let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
 
@@ -261,28 +260,7 @@ mod tests {
                 params.as_ref()
             })
             .count();
-        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
-    }
-
-    #[test]
-    fn scenario_from_nanos_logs() {
-        let example_log = include_str!("repro/test_11_06_2025_nanos.log");
-
-        let events = repro_events_from_reader(example_log.as_bytes()).unwrap();
-
-        let param_count = events
-            .iter()
-            .filter_map(|event| {
-                let ReproEvent::Feed {
-                    event: _event,
-                    output: params,
-                } = event
-                else {
-                    return None;
-                };
-                params.as_ref()
-            })
-            .count();
-        assert_eq!(param_count, 10); // 3 of the values are the first inputs for sources. So 10 calculate clock parameters
+        // Eight lines: an init, five feeds of which two carry clock parameters, a disruption.
+        assert_eq!(param_count, 2);
     }
 }
