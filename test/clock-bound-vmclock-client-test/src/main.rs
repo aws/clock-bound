@@ -1,22 +1,19 @@
 use clock_bound::client::{
-    CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
-    VMCLOCK_SHM_DEFAULT_PATH,
+    ClockBoundClient, ClockBoundError, ClockStatus, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH,
 };
 use std::process;
 use std::thread;
 use std::time::Duration;
 
 fn main() {
-    let mut clockbound = match ClockBoundClient::new_with_paths(
-        CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH,
-        VMCLOCK_SHM_DEFAULT_PATH,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            print_error("ClockBoundClient::new() failed", &e);
-            process::exit(1);
-        }
-    };
+    let mut clockbound =
+        match ClockBoundClient::new_with_paths(SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH) {
+            Ok(c) => c,
+            Err(e) => {
+                print_error("ClockBoundClient::new() failed", &e);
+                process::exit(1);
+            }
+        };
 
     // Run forever.
     // Type Ctrl-C to send a SIGINT and quit the program.

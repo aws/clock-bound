@@ -64,7 +64,12 @@ impl VMClockShmWriter {
     ///    analog to a cold boot.
     ///
     /// TODO: implement scenario 3 once the readers support a version bump.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
+    ///
+    /// # Errors
+    ///
+    /// Reasons this writer could fail non-exhaustively includes
+    /// - The file cannot be opened/created.
+    /// - The file cannot be mapped into memory.
     pub fn new(path: &Path) -> std::io::Result<VMClockShmWriter> {
         // Determine the size of the segment.
         let segsize = VMClockShmWriter::segment_size();

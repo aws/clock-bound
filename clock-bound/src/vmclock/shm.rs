@@ -4,10 +4,6 @@
 //! over a shared memory segment. This crate is meant to be used by the C and Rust versions
 //! of the ClockBound client library.
 
-// TODO: prevent clippy from checking for dead code. The writer module is only re-exported publicly
-// if the write feature is selected. There may be a better way to do that and re-enable the lint.
-#![allow(dead_code)]
-
 use std::mem::size_of;
 use std::str::FromStr;
 use std::sync::atomic;
@@ -16,7 +12,7 @@ use crate::shm::ShmError;
 use crate::syserror;
 use tracing::{debug, error};
 
-pub const VMCLOCK_SHM_DEFAULT_PATH: &str = "/dev/vmclock0";
+pub const VMCLOCK_DEFAULT_PATH: &str = "/dev/vmclock0";
 
 /// The magic number that identifies a VMClock shared memory segment.
 pub const VMCLOCK_SHM_MAGIC: u32 = 0x4B4C_4356;
@@ -62,8 +58,6 @@ impl VMClockShmHeader {
     /// Initialize a `VMClockShmHeader` from a vector of bytes.
     ///
     /// It is assumed that the vecxtor has already been validated to have enough bytes to hold.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
-    #[expect(clippy::missing_panics_doc, reason = "slices appropriately sized")]
     pub fn read(vector: &Vec<u8>) -> Result<Self, ShmError> {
         if vector.len() < size_of::<VMClockShmHeader>() {
             return syserror!(format!(
@@ -185,7 +179,10 @@ impl FromStr for VMClockClockStatus {
 /// this specific layout.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq)]
-#[expect(clippy::pub_underscore_fields, reason = "C FFI struct")]
+#[cfg_attr(
+    feature = "test-utils",
+    expect(clippy::pub_underscore_fields, reason = "C FFI struct")
+)]
 pub struct VMClockShmBody {
     /// Disruption Marker.
     ///

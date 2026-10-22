@@ -2,7 +2,7 @@
 //!
 //! Defines data structures for capturing and evaluating ClockBound error bound measurements.
 
-use clock_bound::shm::{ClockBoundNowResult, ClockStatus};
+use clock_bound::{ClockBoundNowResult, ClockStatus};
 use nix::sys::time::{TimeSpec, TimeValLike};
 use serde::Serialize;
 

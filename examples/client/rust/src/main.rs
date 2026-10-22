@@ -5,23 +5,20 @@
     clippy::cast_precision_loss
 )]
 use clock_bound::client::{
-    CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
-    VMCLOCK_SHM_DEFAULT_PATH,
+    ClockBoundClient, ClockBoundError, ClockStatus, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH,
 };
 use nix::sys::time::TimeSpec;
 use std::process;
 
 fn main() {
-    let mut clockbound = match ClockBoundClient::new_with_paths(
-        CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH,
-        VMCLOCK_SHM_DEFAULT_PATH,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            print_error("ClockBoundClient::new_with_paths() failed", &e);
-            process::exit(1);
-        }
-    };
+    let mut clockbound =
+        match ClockBoundClient::new_with_paths(SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH) {
+            Ok(c) => c,
+            Err(e) => {
+                print_error("ClockBoundClient::new_with_paths() failed", &e);
+                process::exit(1);
+            }
+        };
 
     let now_result_first = match clockbound.now() {
         Ok(result) => result,

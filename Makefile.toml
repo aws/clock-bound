@@ -59,7 +59,7 @@ args = ["hack", "clippy", "@@split(CARGO_MAKE_CLIPPY_ARGS, )"]
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 CARGO_MAKE_RUN_TOML_FORMAT = true
 CARGO_MAKE_CLIPPY_ARGS = """\
---each-feature --no-deps -- \
+--each-feature --no-deps --keep-going -- \
 -W clippy::cargo \
 -W clippy::all \
 -W clippy::pedantic \

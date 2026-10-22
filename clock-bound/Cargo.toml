@@ -80,8 +80,6 @@ tokio = { version = "1.47.1", features = [
 tracing-test = "0.2.5"
 
 [features]
-client = []
-
 daemon = [
   "dep:clap",
   "dep:serde",
@@ -100,12 +98,16 @@ daemon = [
   "nix/feature",
   "nix/ioctl",
   "nix/time",
-]
+] # Expose function methods necessary to build the clockbound daemon
+# Not part of the stable public API.
 
 env-filter = [
   "tracing-subscriber/env-filter",
 ] # Enable granular logging control via env variables
 # Not enabled by default due to code size
+
+test-utils = [] # Exposes shm writing utilities for testing workflows.
+# Not part of the stable public API.
 
 algorithm = [
   "dep:chrono",
@@ -117,11 +119,11 @@ algorithm = [
 ] # clock sync algorithm for replay and analysis tooling (e.g. ff-tester): compiles
 # the algorithm without daemon I/O or clock adjustment, and enables emission of
 # internal algorithm calculations (algo_analysis module) for analysis
+
 test-side-by-side = [
 ] # run without changing system clock. And compare against system clock
-time-string-parse = ["dep:nom"]
 
-default = ["client"]
+time-string-parse = ["dep:nom"]
 
 [[bin]]
 name = "clockbound"
@@ -130,7 +132,7 @@ required-features = ["daemon"]
 [[bin]]
 name = "cbctl"
 path = "src/bin/cbctl/main.rs"
-required-features = ["client", "daemon"]
+required-features = ["daemon"]
 
 # Duplicate profile config from the workspace root
 # https://github.com/rust-lang/cargo/issues/8264

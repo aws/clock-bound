@@ -1,9 +1,10 @@
 //! Light weight representation of the vmclock shared memory structure
-use clock_bound::vmclock::shm::VMClockClockStatus;
+use clock_bound::test_utils::VMClockClockStatus;
 use std::fs::File;
 use std::io::Write;
 use std::ptr::from_ref;
 
+// TODO: What? don't we already have this implemented somewhere else with less unsafe?
 pub fn write_vmclock_content(file: &mut File, vmclock_content: &VMClockContent) {
     // Convert the VMClockShmBody struct into a slice so we can write it all out, fairly magic.
     // Definitely needs the #[repr(C)] layout.

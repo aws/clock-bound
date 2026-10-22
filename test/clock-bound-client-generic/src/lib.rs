@@ -8,8 +8,8 @@ use clock_bound::daemon::time::Duration;
 use clock_bound::daemon::time::Instant;
 use nix::sys::time::TimeSpec;
 
+use clock_bound::ClockBoundNowResult as ClockBoundNowResultV3;
 use clock_bound::client as clock_bound_client_v3;
-use clock_bound::shm as clockbound_shm_v3;
 use clock_bound_client as clock_bound_client_v2;
 
 const NSECS_PER_SEC: i64 = 1_000_000_000;
@@ -75,8 +75,8 @@ impl From<clock_bound_client_v2::ClockBoundNowResult> for ClockBoundNowResult {
         }
     }
 }
-impl From<clockbound_shm_v3::ClockBoundNowResult> for ClockBoundNowResult {
-    fn from(value: clockbound_shm_v3::ClockBoundNowResult) -> Self {
+impl From<ClockBoundNowResultV3> for ClockBoundNowResult {
+    fn from(value: ClockBoundNowResultV3) -> Self {
         let midpoint = (value.latest + value.earliest) / 2;
         let bound = (value.latest - value.earliest) / 2;
 

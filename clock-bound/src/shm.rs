@@ -14,11 +14,16 @@ mod shm_header;
 mod tsc;
 mod writer;
 
-// Re-exports reader and writer. The writer is conditionally included under the "writer" feature.
+// Re-exports reader and writer. Depending on the enabled features, a given re-export may have no
+// in-crate consumer (e.g. ShmReader only under `client`, the writer types only in tests), so allow
+// unused_imports rather than gating each one per feature.
 use common::{CLOCK_MONOTONIC, CLOCK_REALTIME, clock_gettime_safe};
 pub use reader::ShmReader;
 use tsc::read_timestamp_counter_begin;
-pub use writer::{ShmWrite, ShmWriter};
+pub use writer::ShmWrite;
+
+#[cfg(any(test, feature = "daemon"))]
+pub use writer::ShmWriter;
 
 use bon::Builder;
 use errno::Errno;
@@ -28,7 +33,7 @@ use std::fmt;
 
 pub const CLOCKBOUND_SHM_DEFAULT_PATH_V0: &str = "/var/run/clockbound/shm0";
 pub const CLOCKBOUND_SHM_DEFAULT_PATH_V1: &str = "/var/run/clockbound/shm1";
-pub const CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH: &str = CLOCKBOUND_SHM_DEFAULT_PATH_V1;
+pub const SHM_DEFAULT_PATH: &str = CLOCKBOUND_SHM_DEFAULT_PATH_V1;
 
 const FREE_RUNNING_GRACE_PERIOD: TimeSpec = TimeSpec::new(60, 0);
 const NANOS_PER_SECOND: f64 = 1_000_000_000.0;
@@ -51,7 +56,6 @@ pub trait ClockBoundSnapshot {
     ///
     /// The function also returns a clock status to assert that the clock is being synchronized, or
     /// free-running, or ...
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
     fn now(&self) -> Result<ClockBoundNowResult, ShmError>;
 }
 
@@ -414,7 +418,6 @@ impl ClockErrorBoundV2 {
     ///   (earliest, latest) = ((now - ceb), (now + ceb))
     /// The function also returns a clock status to assert that the clock is being synchronized, or
     /// free-running, or ...
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn now(&self) -> Result<ClockBoundNowResult, ShmError> {
         // Read the clock, start with the REALTIME one to be as close as possible to the event the
         // caller is interested in. The monotonic clock should be read after. It is correct for the

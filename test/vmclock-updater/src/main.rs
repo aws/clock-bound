@@ -4,8 +4,10 @@ use std::str::FromStr;
 
 use clap::Parser;
 
-use clock_bound::vmclock::shm::{VMCLOCK_SHM_DEFAULT_PATH, VMClockClockStatus, VMClockShmBody};
-use clock_bound::vmclock::shm_writer::{VMClockShmWrite, VMClockShmWriter};
+use clock_bound::VMCLOCK_DEFAULT_PATH;
+use clock_bound::test_utils::{
+    VMClockClockStatus, VMClockShmBody, VMClockShmWrite, VMClockShmWriter,
+};
 
 /// CLI arguments are the possible field values that can be set in the VMClock shared memory segment.
 #[derive(Parser, Debug)]
@@ -78,7 +80,7 @@ struct Cli {
 
 fn main() {
     let args = Cli::parse();
-    let vmclock_shm_path = Path::new(VMCLOCK_SHM_DEFAULT_PATH);
+    let vmclock_shm_path = Path::new(VMCLOCK_DEFAULT_PATH);
 
     let mut vmclock_shm_writer = match VMClockShmWriter::new(vmclock_shm_path) {
         Ok(writer) => writer,

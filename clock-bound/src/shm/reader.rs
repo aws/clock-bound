@@ -173,7 +173,6 @@ impl ShmReader {
     /// On error, returns an appropriate `Errno`. If the content of the segment
     /// is uninitialized, unparseable, or otherwise malformed, EPROTO will be
     /// returned.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(path: &CStr) -> Result<ShmReader, ShmError> {
         // Map the segment, with explicit pointers to fields
         let (mmap_guard, version, generation, ceb_shm) = ShmReader::map_segment(path)?;
@@ -212,7 +211,6 @@ impl ShmReader {
     /// On error, returns an appropriate `Errno`. If the content of the segment
     /// is uninitialized, unparseable, or otherwise malformed, EPROTO will be
     /// returned.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new_with_max_version_unchecked(path: &CStr) -> Result<(ShmReader, u16), ShmError> {
         // Map the segment, with explicit pointers to fields
         let (mmap_guard, version, generation, ceb_shm) = ShmReader::map_segment(path)?;
@@ -312,7 +310,6 @@ impl ShmReader {
     /// updated without one of the thread knowing, leading to a incorrect clock error bond. The
     /// advantage are in terms of performance: less data copied, but also no locking, yielding or
     /// excessive retries.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn snapshot(&mut self) -> Result<&ClockErrorBound, ShmError> {
         // Atomically read the current version in the shared memory segment
         // SAFETY: `self.version` has been validated when creating the reader

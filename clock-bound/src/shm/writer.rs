@@ -76,7 +76,6 @@ impl ShmWriter {
     ///    happened. That's a warm reboot-like scenario.
     /// 3. A variation of 2., but where the layout is being changed (a version bump). This is
     ///    analog to a cold boot.
-    #[expect(clippy::missing_errors_doc, reason = "todo")]
     pub fn new(
         path: &Path,
         minimum_version: ClockErrorBoundLayoutVersion,
@@ -362,7 +361,7 @@ impl Drop for ShmWriter {
 }
 
 #[cfg(test)]
-mod t_writer {
+mod test {
     use super::*;
     use byteorder::{NativeEndian, ReadBytesExt};
     use bytes::Buf;

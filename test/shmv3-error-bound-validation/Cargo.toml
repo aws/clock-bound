@@ -17,7 +17,7 @@ name = "shmv3-error-bound-validation"
 path = "src/main.rs"
 
 [dependencies]
-clock-bound = { path = "../../clock-bound", features = ["client"] }
+clock-bound = { path = "../../clock-bound" }
 clap = { version = "4", features = ["derive"] }
 nix = { version = "0.26", features = ["time"] }
 serde = { version = "1.0", features = ["derive"] }

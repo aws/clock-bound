@@ -27,8 +27,7 @@ use std::time::{Duration, Instant};
 
 use clap::Args;
 use clock_bound::client::{
-    CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
-    VMCLOCK_SHM_DEFAULT_PATH,
+    ClockBoundClient, ClockBoundError, ClockStatus, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH,
 };
 use clock_bound::daemon::autodetect::Autodetect;
 
@@ -197,7 +196,7 @@ pub fn run(args: &WaitsyncArgs) -> ExitCode {
         Autodetect::Amazon(amazon) => !amazon.is_metal(),
         Autodetect::Other => false,
     };
-    if vmclock_required && !Path::new(VMCLOCK_SHM_DEFAULT_PATH).exists() {
+    if vmclock_required && !Path::new(VMCLOCK_DEFAULT_PATH).exists() {
         // TODO: add a link to public documentation on the VMClock device requirement for
         // virtualized EC2 instances to this error message.
         eprintln!(
@@ -207,8 +206,7 @@ pub fn run(args: &WaitsyncArgs) -> ExitCode {
         return ExitCode::from(EXIT_CODE_FATAL);
     }
 
-    let mut observer =
-        ShmObserver::new(CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH, VMCLOCK_SHM_DEFAULT_PATH);
+    let mut observer = ShmObserver::new(SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH);
     wait_for_sync(args.timeout_seconds, POLL_INTERVAL, args.verbose, || {
         observer.observe()
     })

@@ -3,11 +3,11 @@
 //! This executable tests the vmclock runner. It tests that the runner is able to access, and load
 //! the vmclock shared memory file.
 
+use clock_bound::VMCLOCK_DEFAULT_PATH;
 use clock_bound::daemon::io::SourceIO;
 use clock_bound::daemon::io::ntp::DaemonInfo;
 use clock_bound::daemon::message::Dns as DnsMessage;
 use clock_bound::daemon::selected_clock::SelectedClockSource;
-use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
 
 use rand::{RngCore, rng};
 use std::sync::Arc;
@@ -32,8 +32,8 @@ async fn main() {
         tx
     });
 
-    println!("Attempting to create vmclock runner using {VMCLOCK_SHM_DEFAULT_PATH:?} file.");
-    sourceio.create_vmclock(VMCLOCK_SHM_DEFAULT_PATH).await;
+    println!("Attempting to create vmclock runner using {VMCLOCK_DEFAULT_PATH:?} file.");
+    sourceio.create_vmclock(VMCLOCK_DEFAULT_PATH).await;
     sourceio.spawn_all();
 
     // Allow the runner to poll the shared memory file for a while.

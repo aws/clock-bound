@@ -19,7 +19,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 clock-bound-client-generic = { path = "../clock-bound-client-generic" }
-clock-bound = { path = "../../clock-bound", features = ["daemon", "client"] }
+clock-bound = { path = "../../clock-bound", features = ["daemon"] }
 libc = { version = "0.2", default-features = false, features = [
   "extra_traits",
 ] }

@@ -6,8 +6,7 @@
 #![allow(non_camel_case_types)]
 
 use clock_bound::client::{ClockBoundClient, ClockBoundError, ClockBoundErrorKind};
-use clock_bound::shm::{CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH, ClockBoundNowResult, ClockStatus};
-use clock_bound::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
+use clock_bound::{ClockBoundNowResult, ClockStatus, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH};
 use core::ptr;
 use errno::Errno;
 use std::ffi::{CStr, CString, c_char, c_int};
@@ -178,8 +177,8 @@ pub unsafe extern "C" fn clockbound_open(err: *mut clockbound_err) -> *mut clock
     // the default path into a CString is unit tested and safe.
     #[expect(clippy::missing_panics_doc, reason = "infallible")]
     unsafe {
-        let clockbound_shm_path = CString::new(CLOCKBOUND_SHM_CLIENT_DEFAULT_PATH).unwrap();
-        let vmclock_shm_path = CString::new(VMCLOCK_SHM_DEFAULT_PATH).unwrap();
+        let clockbound_shm_path = CString::new(SHM_DEFAULT_PATH).unwrap();
+        let vmclock_shm_path = CString::new(VMCLOCK_DEFAULT_PATH).unwrap();
         clockbound_open_with(clockbound_shm_path.as_ptr(), vmclock_shm_path.as_ptr(), err)
     }
 }
@@ -339,10 +338,12 @@ pub unsafe extern "C" fn clockbound_now(
 }
 
 #[cfg(test)]
-mod t_ffi {
+mod test {
     use super::*;
     use byteorder::{LittleEndian, NativeEndian, WriteBytesExt};
-    use clock_bound::shm::{ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion};
+    use clock_bound::test_utils::{
+        ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion,
+    };
     use std::ffi::CString;
     use std::fs::OpenOptions;
     use std::io::Write;

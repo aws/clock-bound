@@ -13,7 +13,7 @@ use crate::daemon::autodetect::{self, Autodetect};
 use crate::daemon::clock_sync_algorithm::FfSyncParams;
 use crate::daemon::clock_sync_algorithm::source;
 use crate::daemon::io::SourceIO;
-use crate::vmclock::shm::VMCLOCK_SHM_DEFAULT_PATH;
+use crate::vmclock::shm::VMCLOCK_DEFAULT_PATH;
 use tracing::info;
 
 /// Mutate the sources in the app
@@ -85,9 +85,7 @@ impl<'a> SourceMutator<'a> {
         } else {
             // TODO: align create_vmclock error handling with PHC's graceful degradation (currently
             // panics if the shm file is missing on a confirmed non-metal EC2 instance).
-            self.io_front_end
-                .create_vmclock(VMCLOCK_SHM_DEFAULT_PATH)
-                .await;
+            self.io_front_end.create_vmclock(VMCLOCK_DEFAULT_PATH).await;
         }
     }
 
