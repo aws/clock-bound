@@ -56,6 +56,14 @@ impl SourceInfo {
             _ => false,
         }
     }
+
+    /// The source's identifier for logs: its address (`ip:port`) or device path.
+    pub fn identifier(&self) -> String {
+        match self {
+            Self::AmazonTimeSync(addr, _) | Self::NtpSource(addr, _) => addr.to_string(),
+            Self::Phc(device_path) => device_path.to_string(),
+        }
+    }
 }
 
 /// Filesystem path identifying a device-backed clock source, e.g. `/dev/ptp0`.

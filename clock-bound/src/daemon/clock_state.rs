@@ -21,6 +21,7 @@ use crate::daemon::clock_sync_algorithm::SyncParameters;
 use crate::daemon::io::ClockDisruptionEvent;
 use crate::daemon::io::tsc::ReadTscImpl;
 use crate::daemon::io::vmclock::{State as VMClockState, VMClockParams};
+use crate::daemon::logging::synchronization::SNAPSHOT_PERIOD_SECS as SYNC_SNAPSHOT_PERIOD_SECS;
 use crate::daemon::logging::synchronization::{
     log_clock_status_change, log_sync_snapshot, log_system_clock_step, log_system_clock_summary,
 };
@@ -155,7 +156,8 @@ impl ClockState {
     }
 
     pub async fn run(&mut self) {
-        let mut snapshot_interval = tokio::time::interval(tokio::time::Duration::from_mins(1));
+        let mut snapshot_interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(SYNC_SNAPSHOT_PERIOD_SECS));
         // delay first snapshot log by a few seconds to let startup/source-selection converge.
         snapshot_interval.reset_after(tokio::time::Duration::from_secs(8));
         let mut clock_adjust_summary_interval = tokio::time::interval(

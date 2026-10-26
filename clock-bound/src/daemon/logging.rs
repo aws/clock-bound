@@ -11,7 +11,7 @@
 use serde::Serialize;
 
 use crate::daemon::clock_parameters::ClockParameters;
-use crate::daemon::clock_sync_algorithm::{SourceInfo, SyncParameters};
+use crate::daemon::clock_sync_algorithm::SourceInfo;
 use crate::shm::ClockStatus;
 
 pub mod ffevents;
@@ -206,39 +206,19 @@ impl From<ClockStatus> for ClockStatusName {
     }
 }
 
-/// Serializable description of a clock source for log output.
-#[derive(Serialize)]
-struct Source {
-    #[serde(rename = "type")]
-    #[expect(clippy::struct_field_names, reason = "intentional")]
-    source_type: &'static str,
-    identifier: String,
-    /// When the selected source began its current selection tenure.
-    selected_at: String,
-    /// The source's clock error bound (in nanoseconds) at the start of its
-    /// current selection tenure.
-    clock_error_bound_ns: i64,
+/// Synchronization protocol of a clock source, for log output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum SourceType {
+    Ntp,
+    Phc,
 }
 
-impl From<&SyncParameters> for Source {
-    fn from(params: &SyncParameters) -> Self {
-        let selected_at = format_log_timestamp(chrono::DateTime::from_timestamp_nanos(
-            params.selected_at.as_nanos(),
-        ));
-        let clock_error_bound_ns = params.selected_at_clock_error_bound.as_nanos();
-        match &params.source_info {
-            SourceInfo::AmazonTimeSync(addr, _) | SourceInfo::NtpSource(addr, _) => Self {
-                source_type: "ntp",
-                identifier: addr.to_string(),
-                selected_at,
-                clock_error_bound_ns,
-            },
-            SourceInfo::Phc(device_path) => Self {
-                source_type: "phc",
-                identifier: device_path.to_string(),
-                selected_at,
-                clock_error_bound_ns,
-            },
+impl From<&SourceInfo> for SourceType {
+    fn from(info: &SourceInfo) -> Self {
+        match info {
+            SourceInfo::AmazonTimeSync(..) | SourceInfo::NtpSource(..) => Self::Ntp,
+            SourceInfo::Phc(_) => Self::Phc,
         }
     }
 }

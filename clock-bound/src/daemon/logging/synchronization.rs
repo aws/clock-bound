@@ -14,12 +14,45 @@
 
 use serde::Serialize;
 
-use super::{ClockStatusName, FFClock, LogEvent, Source, StructuredLog, emit_event};
+use super::{
+    ClockStatusName, FFClock, LogEvent, SourceType, StructuredLog, emit_event, format_log_timestamp,
+};
 use crate::daemon::clock_sync_algorithm::SyncParameters;
 use crate::shm::ClockStatus;
 
 #[cfg(feature = "daemon")]
 use crate::daemon::clock_state::adjust_data::ClockAdjustData;
+
+/// How often the daemon emits a snapshot to `synchronization.log`.
+pub const SNAPSHOT_PERIOD_SECS: u64 = 60;
+
+/// Serializable description of a clock source for log output.
+#[derive(Serialize)]
+struct Source {
+    #[serde(rename = "type")]
+    #[expect(clippy::struct_field_names, reason = "intentional")]
+    source_type: SourceType,
+    identifier: String,
+    /// When the selected source began its current selection tenure.
+    selected_at: String,
+    /// The source's clock error bound (in nanoseconds) at the start of its
+    /// current selection tenure.
+    clock_error_bound_ns: i64,
+}
+
+impl From<&SyncParameters> for Source {
+    fn from(params: &SyncParameters) -> Self {
+        let selected_at = format_log_timestamp(chrono::DateTime::from_timestamp_nanos(
+            params.selected_at.as_nanos(),
+        ));
+        Self {
+            source_type: SourceType::from(&params.source_info),
+            identifier: params.source_info.identifier(),
+            selected_at,
+            clock_error_bound_ns: params.selected_at_clock_error_bound.as_nanos(),
+        }
+    }
+}
 
 /// Body of a `daemon_started` event, emitted once when the daemon starts.
 #[derive(Serialize)]
