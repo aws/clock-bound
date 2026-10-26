@@ -4,7 +4,7 @@ use super::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
     async_ring_buffer::{self, SendError},
-    event::{self, PhcData},
+    event::{self, PhcData, TscRtt},
     time::tsc::TscCount,
     time::{Duration, Instant},
 };
@@ -43,6 +43,12 @@ pub struct PtpClockTime {
     pub reserved: u32,
 }
 
+impl From<PtpClockTime> for Instant {
+    fn from(time: PtpClockTime) -> Self {
+        Instant::from_time(time.sec, time.nsec)
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PtpSysOffsetExtended {
@@ -60,13 +66,6 @@ ioctl_readwrite!(
     PTP_SYS_OFFSET_EXTENDED2,
     PtpSysOffsetExtended
 );
-
-#[derive(Debug)]
-pub enum TryFromPhcSampleError {
-    InvalidCounterDiff,
-    InvalidClockErrorBound,
-    UnexpectedError,
-}
 
 #[derive(Debug, Error)]
 pub enum PhcError {
@@ -88,8 +87,8 @@ pub enum PhcError {
     AsyncTaskJoinError(task::JoinError),
     #[error("Device driver name not found")]
     DeviceDriverNameNotFound(String),
-    #[error("PhcSample to event::Phc TryFrom error")]
-    PhcSampleToPhcEventConversionError(TryFromPhcSampleError),
+    #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
+    TscOrder { pre: u64, post: u64 },
     #[error("Unexpected error")]
     UnexpectedError(String),
 }
@@ -112,45 +111,18 @@ impl From<nix::Error> for PhcError {
     }
 }
 
+/// A PHC device reading: the reference clock time and the device-reported error bound.
 #[derive(Debug, Clone, Copy)]
-pub struct PhcSample {
-    pub counter_pre: u64,
-    pub counter_post: u64,
-    pub counter_diff: u64,
-
-    /// Reference clock time
-    pub ptp_clock_time: PtpClockTime,
-
-    /// Clock error bound of this measurement
-    pub ptp_clock_error_bound_nsec: i64,
+struct PhcReading {
+    ptp_clock_time: PtpClockTime,
+    clock_error_bound_nsec: u32,
 }
 
-impl TryFrom<PhcSample> for event::Phc {
-    type Error = TryFromPhcSampleError;
-
-    fn try_from(sample: PhcSample) -> Result<Self, Self::Error> {
-        if sample.counter_post < sample.counter_pre {
-            return Err(TryFromPhcSampleError::InvalidCounterDiff);
-        }
-        if sample.ptp_clock_error_bound_nsec < 0 {
-            return Err(TryFromPhcSampleError::InvalidClockErrorBound);
-        }
-
-        #[allow(clippy::cast_possible_wrap)]
-        let tsc_pre = TscCount::new(sample.counter_pre as i64);
-        #[allow(clippy::cast_possible_wrap)]
-        let tsc_post = TscCount::new(sample.counter_post as i64);
-        let builder = event::Phc::builder()
-            .counter_pre(tsc_pre)
-            .counter_post(tsc_post)
-            .data(PhcData {
-                time: Instant::from_time(sample.ptp_clock_time.sec, sample.ptp_clock_time.nsec),
-                clock_error_bound: Duration::from_nanos(sample.ptp_clock_error_bound_nsec),
-            });
-
-        match builder.build() {
-            Some(phc) => Ok(phc),
-            None => Err(TryFromPhcSampleError::UnexpectedError),
+impl From<PhcReading> for PhcData {
+    fn from(reading: PhcReading) -> Self {
+        PhcData {
+            time: reading.ptp_clock_time.into(),
+            clock_error_bound: Duration::from_nanos(i64::from(reading.clock_error_bound_nsec)),
         }
     }
 }
@@ -463,7 +435,7 @@ impl Phc {
     /// times and retaining the best sample.
     async fn sample(&mut self) -> Result<event::Phc, PhcError> {
         let mut last_phc_error: Option<PhcError> = None;
-        let mut best_sample: Option<PhcSample> = None;
+        let mut best_sample: Option<event::Phc> = None;
         let mut best_sample_i: u32 = 0;
 
         debug!("Reading {} PHC samples.", NUM_SAMPLES_PER_POLL);
@@ -484,8 +456,8 @@ impl Phc {
             // Retain the best sample.
             // The best sample is defined as the sample with the smallest
             // time stamp counter value difference.
-            if let Some(bs) = best_sample {
-                if sample.counter_diff < bs.counter_diff {
+            if let Some(bs) = &best_sample {
+                if sample.rtt() < bs.rtt() {
                     best_sample = Some(sample);
                     best_sample_i = i;
                 }
@@ -497,12 +469,7 @@ impl Phc {
 
         if let Some(best_sample) = best_sample {
             trace!(?best_sample_i, ?best_sample, "Selected best PHC sample.");
-
-            // Convert from PhcSample to event::Phc.
-            match event::Phc::try_from(best_sample) {
-                Ok(phc) => Ok(phc),
-                Err(e) => Err(PhcError::PhcSampleToPhcEventConversionError(e)),
-            }
+            Ok(best_sample)
         } else if let Some(last_phc_error) = last_phc_error {
             Err(last_phc_error)
         } else {
@@ -519,33 +486,40 @@ impl Phc {
     /// - Timestamp stamp counter value after collecing the reference clock timestamp.
     ///
     /// If the `PhcReader` and `PhcClockErrorBoundReader` are not initialized, then this
-    async fn read_phc_sample(&self) -> Result<PhcSample, PhcError> {
+    async fn read_phc_sample(&self) -> Result<event::Phc, PhcError> {
         let (ptp_clock_time, counter_pre, counter_post) = self
             .reader
             .ptp_sys_offset_extended2_with_counter_pre_and_counter_post(PHC_SOURCE_TIMEOUT)
             .await?;
 
-        let ptp_clock_error_bound_nsec: i64 = match self.clock_error_bound_reader.read().await {
-            Ok(ceb_nsec) => {
-                if ceb_nsec < 0 {
-                    return Err(PhcError::PhcClockErrorBoundReadFailure(format!(
-                        "Negative PHC clock error bound: {ceb_nsec}"
-                    )));
-                }
-                ceb_nsec
-            }
-            Err(e) => {
-                return Err(PhcError::PhcClockErrorBoundReadFailure(e.clone()));
-            }
-        };
+        let clock_error_bound_nsec = self
+            .clock_error_bound_reader
+            .read()
+            .await
+            .map_err(PhcError::PhcClockErrorBoundReadFailure)?;
 
-        Ok(PhcSample {
-            counter_pre,
-            counter_post,
-            counter_diff: counter_post - counter_pre,
+        let data = PhcData::from(PhcReading {
             ptp_clock_time,
-            ptp_clock_error_bound_nsec,
-        })
+            clock_error_bound_nsec,
+        });
+
+        #[allow(clippy::cast_possible_wrap)]
+        let tsc_pre = TscCount::new(counter_pre as i64);
+        #[allow(clippy::cast_possible_wrap)]
+        let tsc_post = TscCount::new(counter_post as i64);
+
+        event::Phc::builder()
+            .counter_pre(tsc_pre)
+            .counter_post(tsc_post)
+            .data(data)
+            .build()
+            .ok_or(PhcError::TscOrder {
+                pre: counter_pre,
+                post: counter_post,
+            })
+            .inspect_err(|error| {
+                warn!(?error, "TSC event order mismatch detected.");
+            })
     }
 
     /// `PHC` task runner.
@@ -932,14 +906,18 @@ impl PhcClockErrorBoundReader {
         }
     }
 
-    pub(crate) async fn read(&self) -> Result<i64, String> {
+    /// Read the PHC clock error bound, in nanoseconds.
+    ///
+    /// The ENA driver writes this value as an unsigned 32-bit integer, so anything else
+    /// (including a negative value) is a parse failure.
+    pub(crate) async fn read(&self) -> Result<u32, String> {
         let contents = tokio::fs::read_to_string(&self.sysfs_phc_error_bound_path)
             .await
             .map_err(|e| e.to_string())?;
         contents
             .trim()
-            .parse::<i64>()
-            .map_err(|e| format!("Failed to parse PHC error bound value to i64: {e}"))
+            .parse::<u32>()
+            .map_err(|e| format!("Failed to parse PHC error bound value to u32: {e}"))
     }
 }
 
@@ -949,7 +927,6 @@ mod test {
     use tempfile::NamedTempFile;
 
     use super::*;
-    use crate::daemon::event;
 
     use std::io::Write;
 
@@ -998,9 +975,10 @@ twoline",
     #[tokio::test]
     #[rstest]
     #[case::happy_path("12345", 12345)]
+    #[case::trailing_newline("12345\n", 12345)]
     async fn read_phc_error_bound_success(
         #[case] file_contents_to_write: &str,
-        #[case] return_value: i64,
+        #[case] return_value: u32,
     ) {
         let mut test_phc_error_bound_file =
             NamedTempFile::new().expect("create mock phc error bound file failed");
@@ -1017,7 +995,9 @@ twoline",
 
     #[tokio::test]
     #[rstest]
-    #[case::parsing_fail("asdf_not_an_i64")]
+    #[case::not_a_number("asdf_not_a_u32")]
+    #[case::negative("-5")]
+    #[case::too_large("4294967296")]
     async fn read_phc_error_bound_bad_file_contents(#[case] file_contents_to_write: &str) {
         let mut test_phc_error_bound_file =
             NamedTempFile::new().expect("create mock phc error bound file failed");
@@ -1032,7 +1012,7 @@ twoline",
         assert!(
             rt.unwrap_err()
                 .to_string()
-                .contains("Failed to parse PHC error bound value to i64")
+                .contains("Failed to parse PHC error bound value to u32")
         );
     }
 
@@ -1051,65 +1031,34 @@ twoline",
     }
 
     #[test]
-    fn phc_sample_try_from_success() {
-        let sample = PhcSample {
-            counter_pre: 100,
-            counter_post: 200,
-            counter_diff: 100,
-            ptp_clock_time: PtpClockTime {
-                sec: 1234567890,
-                nsec: 123456789,
-                reserved: 0,
-            },
-            ptp_clock_error_bound_nsec: 1000,
+    fn instant_from_ptp_clock_time() {
+        let time = PtpClockTime {
+            sec: 1234567890,
+            nsec: 123456789,
+            reserved: 0,
         };
 
-        let result = event::Phc::try_from(sample);
-        assert!(result.is_ok());
+        assert_eq!(
+            Instant::from(time),
+            Instant::from_time(1234567890, 123456789)
+        );
     }
 
     #[test]
-    fn phc_sample_try_from_invalid_counter_diff() {
-        let sample = PhcSample {
-            counter_pre: 200,
-            counter_post: 100,
-            counter_diff: 0,
+    fn phc_data_from_phc_reading() {
+        let reading = PhcReading {
             ptp_clock_time: PtpClockTime {
                 sec: 1234567890,
                 nsec: 123456789,
                 reserved: 0,
             },
-            ptp_clock_error_bound_nsec: 1000,
+            clock_error_bound_nsec: 1000,
         };
 
-        let result = event::Phc::try_from(sample);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TryFromPhcSampleError::InvalidCounterDiff
-        ));
-    }
+        let data = PhcData::from(reading);
 
-    #[test]
-    fn phc_sample_try_from_invalid_clock_error_bound() {
-        let sample = PhcSample {
-            counter_pre: 100,
-            counter_post: 200,
-            counter_diff: 100,
-            ptp_clock_time: PtpClockTime {
-                sec: 1234567890,
-                nsec: 123456789,
-                reserved: 0,
-            },
-            ptp_clock_error_bound_nsec: -1000,
-        };
-
-        let result = event::Phc::try_from(sample);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TryFromPhcSampleError::InvalidClockErrorBound
-        ));
+        assert_eq!(data.time, Instant::from_time(1234567890, 123456789));
+        assert_eq!(data.clock_error_bound, Duration::from_nanos(1000));
     }
 
     #[test]
