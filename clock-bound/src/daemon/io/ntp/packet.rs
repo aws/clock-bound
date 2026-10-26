@@ -258,11 +258,14 @@ impl TryFrom<Packet> for NtpData {
             } => Err(Self::Error::KissoDeath(reference_id)),
             // Unsynchronized host
             //
-            // Generally NTP servers identify themselves as unsynchronized by their stratum level
-            // and leap indicator value. A stratum of "16" and a leap indicator of "0x3" (Unknown)
-            // are the most widely used indicators.
-            Packet {
-                stratum: 16,
+            // An NTP server signals that it is unsynchronized through its stratum level, its leap
+            // indicator, or both. RFC 5905 does not guarantee the two are set together.
+            // We reject on either condition here.
+            //
+            // - A stratum of "16" (unsynchronized, RFC 5905 Section 7.3 Figure 11), or
+            // - A leap indicator of "0x3" (Unknown / clock unsynchronized).
+            Packet { stratum: 16, .. }
+            | Packet {
                 leap_indicator: LeapIndicator::Unknown,
                 ..
             } => Err(Self::Error::Unsynchronized),
@@ -477,14 +480,28 @@ mod test {
         Packet::builder().build(),
         Err(TryFromPacketError::KissoDeath([0, 0, 0,0]))
     )]
-    #[case::healthy(
+    #[case::unsync_stratum_and_leap(
        Packet::builder()
         .stratum(16)
         .leap_indicator(LeapIndicator::Unknown)
         .build(),
         Err(TryFromPacketError::Unsynchronized)
     )]
-    #[case::healthy(
+    #[case::unsync_stratum_only(
+       Packet::builder()
+        .stratum(16)
+        .leap_indicator(LeapIndicator::NoWarning)
+        .build(),
+        Err(TryFromPacketError::Unsynchronized)
+    )]
+    #[case::unsync_leap_only(
+       Packet::builder()
+        .stratum(2)
+        .leap_indicator(LeapIndicator::Unknown)
+        .build(),
+        Err(TryFromPacketError::Unsynchronized)
+    )]
+    #[case::bad_timestamps(
        Packet::builder()
         .stratum(1)
         .receive_timestamp(Timestamp::new(10))
