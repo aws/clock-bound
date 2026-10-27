@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_sync_algorithm::SourceInfo;
+use crate::daemon::logging::layer::DEFAULT_LOG_BUFFER_BYTES;
 use crate::shm::ClockStatus;
 
 pub mod ffevents;
@@ -101,6 +102,14 @@ impl StructuredLog {
             Self::Synchronization => "synchronization.log",
             Self::Sources => "sources.log",
             Self::AlgoAnalysis => "algo_analysis.log",
+        }
+    }
+
+    pub const fn buffer_size(self) -> usize {
+        match self {
+            Self::FFEvents | Self::AlgoAnalysis => DEFAULT_LOG_BUFFER_BYTES,
+            // Unbuffered. These are low-frequency logstreams.
+            Self::Synchronization | Self::Sources => 0,
         }
     }
 }

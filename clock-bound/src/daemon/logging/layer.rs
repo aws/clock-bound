@@ -30,15 +30,21 @@ use super::{StructuredLog, format_log_timestamp};
 
 /// The log file behind a buffer.
 ///
-/// Lines are buffered (`BufWriter`'s default, 8 KiB) and reach the file in blocks: one `write(2)`
-/// per block instead of one per line. On the daemon's streams that is at most a few seconds of
-/// lines in memory. On a trace replay, with millions of lines, buffering the output cuts down
-/// execution time.
+/// Lines are buffered and reach the file in blocks: one `write(2)` per block instead of one per
+/// line. On the daemon's streams that is at most a few seconds of lines in memory. On a trace
+/// replay, with millions of lines, buffering the output cuts down execution time.
+///
+/// The buffer capacity is configured per stream (see [`StructuredLogLayer::new`]). A capacity of
+/// `0` means each line is written straight through, one `write(2)` per line — the behaviour of an
+/// unbuffered writer.
 ///
 /// The buffer is flushed before the file is swapped on [`LogHandle::reopen`], and by
 /// [`LogHandle::flush`] when the process is done writing. Lines still buffered when the process
 /// aborts are lost. Similar contract with unbuffered writer, which would loose the last logs.
 type LogWriter = BufWriter<File>;
+
+/// Default buffer capacity for a buffered log stream, matching `BufWriter`'s own default.
+pub const DEFAULT_LOG_BUFFER_BYTES: usize = 8 * 1024;
 
 /// A handle to a structured log file that supports reopening.
 ///
@@ -48,6 +54,9 @@ type LogWriter = BufWriter<File>;
 pub struct LogHandle {
     writer: Arc<Mutex<Option<LogWriter>>>,
     path: PathBuf,
+    /// Buffer capacity to rebuild the writer with on [`reopen`](LogHandle::reopen), so a rotated
+    /// file keeps the same buffering as the original.
+    buffer_capacity: usize,
 }
 
 impl LogHandle {
@@ -80,7 +89,7 @@ impl LogHandle {
             .append(true)
             .open(&self.path)
         {
-            Ok(file) => Some(BufWriter::new(file)),
+            Ok(file) => Some(BufWriter::with_capacity(self.buffer_capacity, file)),
             Err(e) => {
                 warn!(
                     "Failed to reopen log file {}: {e}. Suspending output to this log.",
@@ -175,6 +184,8 @@ impl StructuredLogLayer {
     /// - `target_prefix` - Tracing target prefix to filter events (e.g., `"clock_bound::synchronization"`)
     /// - `version` - Version string to inject into every log entry
     /// - `timestamp_source` - Where the `timestamp` injected into every log entry comes from
+    /// - `buffer_capacity` - `BufWriter` capacity in bytes; `0` writes each line straight through
+    ///   (one `write(2)` per line, see [`LogWriter`])
     ///
     /// # Panics
     /// Panics if the log file cannot be opened or created at `log_directory/filename`.
@@ -184,6 +195,7 @@ impl StructuredLogLayer {
         target_prefix: &'static str,
         version: &'static str,
         timestamp_source: TimestampSource,
+        buffer_capacity: usize,
     ) -> (Self, LogHandle) {
         let dir = log_directory.as_ref();
         std::fs::create_dir_all(dir)
@@ -195,7 +207,10 @@ impl StructuredLogLayer {
             .open(&path)
             .unwrap_or_else(|e| panic!("Failed to open log file {}: {}", path.display(), e));
 
-        let writer = Arc::new(Mutex::new(Some(BufWriter::new(file))));
+        let writer = Arc::new(Mutex::new(Some(BufWriter::with_capacity(
+            buffer_capacity,
+            file,
+        ))));
 
         let layer = Self {
             writer: Arc::clone(&writer),
@@ -204,7 +219,11 @@ impl StructuredLogLayer {
             timestamp_source,
         };
 
-        let handle = LogHandle { writer, path };
+        let handle = LogHandle {
+            writer,
+            path,
+            buffer_capacity,
+        };
 
         (layer, handle)
     }
@@ -225,6 +244,7 @@ impl StructuredLogLayer {
             stream.target(),
             version,
             timestamp_source,
+            stream.buffer_size(),
         )
     }
 }
@@ -468,6 +488,7 @@ mod tests {
             TEST_TARGET,
             TEST_VERSION,
             source,
+            DEFAULT_LOG_BUFFER_BYTES,
         );
 
         let subscriber = tracing_subscriber::registry().with(layer);
@@ -660,6 +681,7 @@ mod tests {
             TEST_TARGET,
             TEST_VERSION,
             TimestampSource::None,
+            DEFAULT_LOG_BUFFER_BYTES,
         );
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, || {
