@@ -15,7 +15,7 @@ use tokio::{
 use tracing::{debug, trace, warn};
 
 pub mod packet;
-pub use packet::{ExtensionField, Fec2V1Value as DaemonInfo, Packet};
+pub use packet::{ExtensionField, Fec2V1Value as DaemonInfo, Packet, UnusableNtpResponse};
 
 use crate::daemon::{
     async_ring_buffer::{self, BufferClosedError, SendError},
@@ -41,6 +41,8 @@ pub enum NtpIoError {
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
     TscOrder { pre: u64, post: u64 },
+    #[error("Server responded but the sample is unusable for synchronization: {0}")]
+    UnusableNtpResponse(#[source] UnusableNtpResponse),
 }
 
 impl NtpIoError {
@@ -58,13 +60,17 @@ impl NtpIoError {
     /// and reselect a reachable one, so the daemon stays resilient across network-stack changes
     /// instead of pinning a permanently-broken source.
     ///
+    /// A [`NtpIoError::UnusableResponse`] is explicitly *not* unreachable: the server answered
+    /// our request, it just reported a state we cannot use (e.g. unsynchronized). The source is
+    /// reachable, so we do not retire it on this basis.
+    ///
     /// Everything else is treated as a transient local failure: it is retried on the next tick
     /// and never retires the source, so a transient kernel hiccup cannot thrash the whole pool.
     pub fn indicates_unreachable_source(&self) -> bool {
         match self {
             NtpIoError::Timeout(_) => true,
             NtpIoError::Bind(e) | NtpIoError::SampleIo(e) => is_unreachable_io_error(e),
-            NtpIoError::TscOrder { .. } => false,
+            NtpIoError::TscOrder { .. } | NtpIoError::UnusableNtpResponse(_) => false,
         }
     }
 
@@ -438,8 +444,11 @@ struct BurstState {
 ///
 /// # Errors
 /// Returns an error if:
-/// - the socket has an IO error
-/// - the transaction times out
+/// - the socket has an IO error ([`NtpIoError::SampleIo`])
+/// - the transaction times out ([`NtpIoError::Timeout`])
+/// - the server responds to our request but the sample is unusable, e.g. the server is
+///   unsynchronized ([`NtpIoError::UnusableResponse`])
+/// - the TSC readings bounding the exchange are out of order ([`NtpIoError::TscOrder`])
 async fn sample_packet(
     socket: &UdpSocket,
     addr: SocketAddr,
@@ -452,8 +461,13 @@ async fn sample_packet(
         inner_timeout(socket, addr, send_recv_buffer, expected_counter),
     );
 
-    let (send_timestamp, ntp_data, received_timestamp) =
-        fut.await?.map_err(NtpIoError::SampleIo)?;
+    let (send_timestamp, ntp_data, received_timestamp) = match fut.await? {
+        Ok(sample) => sample,
+        Err(InnerSamplePacketError::Io(e)) => return Err(NtpIoError::SampleIo(e)),
+        Err(InnerSamplePacketError::UnusableNtpResponse(e)) => {
+            return Err(NtpIoError::UnusableNtpResponse(e));
+        }
+    };
 
     #[cfg(not(test))]
     let system_clock_reading = crate::daemon::event::SystemClockMeasurement::now();
@@ -486,15 +500,20 @@ async fn sample_packet(
     Ok(ntp_event)
 }
 
-// private inner function which loops indefinitely. Meant to be wrapped in a timeout
+// private inner function which loops until it gets a definitive outcome for our request.
+// Meant to be wrapped in a timeout.
 //
-// Returns the tx tsc, NTP data, and the rx tsc
+// Returns once the exchange reaches a definitive outcome:
+// - Ok((tx tsc, NtpData, rx tsc)) for a usable response.
+// - Err(InnerSamplePacketError::Io) if the socket send/recv itself fails.
+// - Err(InnerSamplePacketError::Unusable) once a datagram that *is* our response,
+//     but cannot be used as a synchronization sample.
 async fn inner_timeout(
     socket: &UdpSocket,
     addr: SocketAddr,
     send_recv_buffer: &mut [u8],
     expected_counter: u64,
-) -> Result<(u64, NtpData, u64), io::Error> {
+) -> Result<(u64, NtpData, u64), InnerSamplePacketError> {
     let send_timestamp = read_timestamp_counter_begin();
     socket.send_to(send_recv_buffer, addr).await?;
     loop {
@@ -511,32 +530,33 @@ async fn inner_timeout(
 
         if ntp_packet.origin_timestamp.get() != expected_counter {
             trace!(
-                error = ?InnerSamplePacketError::OriginMismatch {
-                    expected: expected_counter,
-                    received: ntp_packet.origin_timestamp.get(),
-                },
+                expected = expected_counter,
+                received = ntp_packet.origin_timestamp.get(),
                 "Origin timestamp mismatch."
             );
             continue;
         }
 
-        let Ok(ntp_data) = NtpData::try_from(ntp_packet)
-            .inspect_err(|e| trace!(error = ?InnerSamplePacketError::PacketParsing(e.to_string()), "Failed to parse NTP data.")) else {
-                continue;
-            };
-
-        return Ok((send_timestamp, ntp_data, received_timestamp));
+        match NtpData::try_from(ntp_packet) {
+            Ok(ntp_data) => return Ok((send_timestamp, ntp_data, received_timestamp)),
+            Err(e) => {
+                trace!(error = ?e, "Server responded with an unusable NTP sample.");
+                return Err(InnerSamplePacketError::UnusableNtpResponse(e));
+            }
+        }
     }
 }
 
+/// Definitive failure outcomes of a single NTP exchange in [`inner_timeout`].
+///
+/// Distinguishes a socket-level failure (the exchange could not complete) from a usable-data
+/// failure (the server responded to our request, but the response cannot be used).
 #[derive(Debug, thiserror::Error)]
 enum InnerSamplePacketError {
     #[error("IO failure.")]
     Io(#[from] io::Error),
-    #[error("Failed to parse NTP packet.")]
-    PacketParsing(String),
-    #[error("Mismatched origin. Expected {expected}, got {received}")]
-    OriginMismatch { expected: u64, received: u64 },
+    #[error("Server responded with an unusable sample: {0}")]
+    UnusableNtpResponse(#[from] UnusableNtpResponse),
 }
 
 #[cfg(test)]
@@ -614,6 +634,15 @@ mod tests {
         assert!(
             !error.indicates_unreachable_source(),
             "TscOrder is a local failure and should not indicate an unreachable source"
+        );
+    }
+
+    #[test]
+    fn indicates_unreachable_source_for_unusable_response() {
+        let error = NtpIoError::UnusableNtpResponse(UnusableNtpResponse::Unsynchronized);
+        assert!(
+            !error.indicates_unreachable_source(),
+            "An unusable response is reachable, so it should not be treated as unreachable"
         );
     }
 
