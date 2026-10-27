@@ -45,6 +45,16 @@ impl AmazonTimeSync {
         self.source_address
     }
 
+    /// The configured poll interval for this source.
+    pub fn poll_interval(&self) -> Duration {
+        Self::POLL_INTERVAL
+    }
+
+    /// This source's identity.
+    pub fn source_info(&self) -> super::SourceInfo {
+        super::SourceInfo::AmazonTimeSync(self.source_address.into(), event::Stratum::Unspecified)
+    }
+
     /// Feed an event into the Amazon Time Sync NTP clock-sync algorithm
     #[tracing::instrument(level = "info", skip_all, fields(source = "amazon_time_sync"))]
     pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {

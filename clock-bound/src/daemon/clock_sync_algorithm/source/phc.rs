@@ -34,6 +34,16 @@ impl Phc {
         self.inner.feed(event)
     }
 
+    /// The configured poll interval for this source.
+    pub fn poll_interval(&self) -> Duration {
+        Self::POLL_INTERVAL
+    }
+
+    /// This source's identity.
+    pub fn source_info(&self) -> super::SourceInfo {
+        super::SourceInfo::Phc(self.device_path.clone())
+    }
+
     /// Handle a disruption event
     ///
     /// This clears the internal `ff` and any other state related to the local system's hardware

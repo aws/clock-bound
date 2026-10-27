@@ -15,6 +15,8 @@
 use serde::Serialize;
 
 use super::{ClockStatusName, LogEvent, SourceType, StructuredLog, emit_event};
+use crate::daemon::clock_sync_algorithm::SourceInfo;
+use crate::daemon::time::Duration;
 
 /// How often the daemon emits a snapshot to `sources.log`.
 pub const SNAPSHOT_PERIOD_SECS: u64 = 60;
@@ -26,10 +28,11 @@ pub struct SourceSnapshotData {
 }
 
 /// Caller-facing data for a single source.
-///
-/// TODO: empty for now; per-source fields are wired in by later commits.
 #[derive(Debug, Clone)]
-pub struct SourceData {}
+pub struct SourceData {
+    pub source_info: SourceInfo,
+    pub poll_interval: Duration,
+}
 
 /// Body of a `sources_snapshot` event.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -67,12 +70,12 @@ struct SourceRow {
 }
 
 impl From<&SourceData> for SourceRow {
-    fn from(_data: &SourceData) -> Self {
-        // TODO: populate fields as they are wired into `SourceData`.
+    fn from(data: &SourceData) -> Self {
+        // TODO: populate health and stats as they are wired in.
         Self {
-            source_type: SourceType::Ntp,
-            identifier: String::new(),
-            poll_interval_sec: 0.0,
+            source_type: SourceType::from(&data.source_info),
+            identifier: data.source_info.identifier(),
+            poll_interval_sec: data.poll_interval.as_seconds_f64(),
             health: Health {
                 selected_at: None,
                 deselected_at: None,
@@ -131,10 +134,13 @@ pub fn log_sources_snapshot(data: &SourceSnapshotData) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::clock_sync_algorithm::SourceInfo;
+    use crate::daemon::event::Stratum;
     use crate::daemon::logging::{
         StructuredLog,
         test_support::{assert_matches_expected, with_layer},
     };
+    use crate::daemon::time::Duration;
     use indoc::indoc;
 
     const TEST_VERSION: &str = "0.1.0-test";
@@ -153,6 +159,78 @@ mod tests {
                 "event": "sources_snapshot",
                 "sources_snapshot": {
                     "sources": []
+                },
+                "version": "0.1.0-test"
+            }
+            "#},
+        );
+    }
+
+    #[test]
+    fn log_sources_snapshot_identity_schema() {
+        let data = SourceSnapshotData {
+            sources: vec![
+                SourceData {
+                    source_info: SourceInfo::NtpSource(
+                        "169.254.169.123:123".parse().unwrap(),
+                        Stratum::Unspecified,
+                    ),
+                    poll_interval: Duration::from_secs(16),
+                },
+                SourceData {
+                    source_info: SourceInfo::Phc("/dev/ptp0".into()),
+                    poll_interval: Duration::from_millis(500),
+                },
+            ],
+        };
+
+        let (output, _tmp) = with_layer(StructuredLog::Sources, TEST_VERSION, || {
+            log_sources_snapshot(&data);
+        });
+
+        assert_matches_expected(
+            output.lines().next().unwrap(),
+            indoc! {r#"
+            {
+                "timestamp": "",
+                "event": "sources_snapshot",
+                "sources_snapshot": {
+                    "sources": [
+                        {
+                            "type": "ntp",
+                            "identifier": "169.254.169.123:123",
+                            "poll_interval_sec": 16.0,
+                            "health": {
+                                "selected_at": null,
+                                "deselected_at": null,
+                                "status": "UNKNOWN"
+                            },
+                            "stats": {
+                                "requests": 0,
+                                "responses": 0,
+                                "latency_ns": null,
+                                "source_clock_error_bound_ns": null,
+                                "window_duration_sec": 0
+                            }
+                        },
+                        {
+                            "type": "phc",
+                            "identifier": "/dev/ptp0",
+                            "poll_interval_sec": 0.5,
+                            "health": {
+                                "selected_at": null,
+                                "deselected_at": null,
+                                "status": "UNKNOWN"
+                            },
+                            "stats": {
+                                "requests": 0,
+                                "responses": 0,
+                                "latency_ns": null,
+                                "source_clock_error_bound_ns": null,
+                                "window_duration_sec": 0
+                            }
+                        }
+                    ]
                 },
                 "version": "0.1.0-test"
             }

@@ -60,6 +60,16 @@ impl NtpSource {
         self.pool_domain.as_deref()
     }
 
+    /// The configured poll interval for this source.
+    pub fn poll_interval(&self) -> Duration {
+        Self::POLL_INTERVAL
+    }
+
+    /// This source's identity.
+    pub fn source_info(&self) -> super::SourceInfo {
+        super::SourceInfo::NtpSource(self.source_address, event::Stratum::Unspecified)
+    }
+
     /// Feed an event into the NTP Source clock-sync algorithm
     #[tracing::instrument(level = "info", skip_all, fields(source = %self.source_address))]
     pub fn feed(&mut self, event: event::Ntp) -> Option<&ClockParameters> {

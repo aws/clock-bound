@@ -149,8 +149,30 @@ impl ClockSyncAlgorithm {
     /// Assemble a point-in-time snapshot of every configured source for
     /// `sources.log`.
     pub fn sources_snapshot(&self) -> logging::sources::SourceSnapshotData {
-        // TODO: populate with per-source data.
-        logging::sources::SourceSnapshotData::default()
+        let mut sources = Vec::new();
+
+        if let Some(phc) = &self.phc {
+            sources.push(logging::sources::SourceData {
+                source_info: phc.source_info(),
+                poll_interval: phc.poll_interval(),
+            });
+        }
+
+        if let Some(amazon_time_sync) = &self.amazon_time_sync {
+            sources.push(logging::sources::SourceData {
+                source_info: amazon_time_sync.source_info(),
+                poll_interval: amazon_time_sync.poll_interval(),
+            });
+        }
+
+        for ntp in &self.ntp_sources {
+            sources.push(logging::sources::SourceData {
+                source_info: ntp.source_info(),
+                poll_interval: ntp.poll_interval(),
+            });
+        }
+
+        logging::sources::SourceSnapshotData { sources }
     }
 
     /// Return the current ffevents sequence number, then increment it.
@@ -448,5 +470,48 @@ mod tests {
 
         csa.remove_ntp_source(&addr);
         assert_eq!(csa.ntp_sources().len(), 0);
+    }
+
+    #[test]
+    fn sources_snapshot_enumerates_identity_in_order() {
+        let ff_sync_params = FfSyncParams::default();
+        let mut csa = make_csa();
+        csa.set_phc(source::Phc::new("/dev/ptp0".into(), &ff_sync_params));
+        csa.set_amazon_time_sync(source::AmazonTimeSync::new(&ff_sync_params));
+        csa.add_ntp_source(source::NtpSource::new_ip_addr_source(
+            "192.0.2.1:123".parse().unwrap(),
+            &ff_sync_params,
+        ));
+
+        let snapshot = csa.sources_snapshot();
+
+        // Order is PHC, then Amazon Time Sync, then other NTP sources.
+        let identities: Vec<SourceInfo> = snapshot
+            .sources
+            .iter()
+            .map(|s| s.source_info.clone())
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                SourceInfo::Phc("/dev/ptp0".into()),
+                SourceInfo::AmazonTimeSync(
+                    "169.254.169.123:123".parse().unwrap(),
+                    Stratum::Unspecified
+                ),
+                SourceInfo::NtpSource("192.0.2.1:123".parse().unwrap(), Stratum::Unspecified),
+            ]
+        );
+
+        let poll_intervals: Vec<Duration> =
+            snapshot.sources.iter().map(|s| s.poll_interval).collect();
+        assert_eq!(
+            poll_intervals,
+            vec![
+                Duration::from_millis(500),
+                Duration::from_secs(2),
+                Duration::from_secs(16),
+            ]
+        );
     }
 }
