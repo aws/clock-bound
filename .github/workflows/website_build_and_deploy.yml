@@ -1,0 +1,86 @@
+# Builds the ClockBound website and deploys it to GitHub Pages.
+#
+# Hosting model: GitHub Actions source.
+# (Settings -> Pages -> Build and deployment -> Source: "GitHub Actions").
+#
+# Project site URL: https://aws.github.io/clock-bound/
+name: Deploy website to GitHub Pages
+
+on:
+  push:
+    branches: [rluu/website]
+    paths:
+      - 'website/**'
+      - '.github/workflows/website_build_and_deploy.yml'
+  workflow_dispatch: {}
+
+# Permissions required by actions/deploy-pages (OIDC-based publish).
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; newer pushes cancel in-progress runs.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          # Authoritative base path for this Pages deployment, computed by
+          # actions/configure-pages.
+          #   - root-served hosts (private *.pages.github.io, or a custom
+          #     domain) -> "/"
+          #   - public project site https://<org>.github.io/<repo>/ -> "/<repo>"
+          # vite.config.ts normalizes the slashes, so either form is safe. The
+          # "|| '/'" guards against an empty output (falls back to root).
+          VITE_BASE: ${{ steps.pages.outputs.base_path || '/' }}
+          # Authenticates the prebuild fetch-stats script against the GitHub API
+          # so build-time stars/forks aren't rate-limited. Auto-provided token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add SPA fallback (404 -> app shell)
+        # vite-react-ssg pre-renders real .html for every known route; this
+        # fallback covers client-navigation paths without a .html on hard refresh.
+        run: cp dist/index.html dist/404.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: website/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

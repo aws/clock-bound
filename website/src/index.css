@@ -1,0 +1,71 @@
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+@import '@fontsource/inter/800.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/700.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-base-900 text-slate-200 font-sans antialiased;
+    /* Subtle radial glow behind the page */
+    background-image:
+      radial-gradient(60rem 40rem at 50% -10%, rgba(99, 102, 241, 0.12), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  /* Respect users who prefer reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+
+  /* Visible focus ring for keyboard users (accessibility) */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-base-900;
+  }
+}
+
+@layer components {
+  /* Gradient-border card: a wrapper whose padding reveals a gradient behind
+     an inner solid panel. */
+  .gradient-border {
+    @apply relative rounded-2xl p-px;
+    background: linear-gradient(
+      135deg,
+      rgba(99, 102, 241, 0.6),
+      rgba(34, 211, 238, 0.25) 50%,
+      rgba(99, 102, 241, 0.05)
+    );
+  }
+  .gradient-border > * {
+    @apply rounded-2xl bg-base-800;
+  }
+
+  /* Section container */
+  .container-page {
+    @apply mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8;
+  }
+}
