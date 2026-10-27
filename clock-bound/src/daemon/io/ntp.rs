@@ -67,6 +67,17 @@ impl NtpIoError {
             NtpIoError::TscOrder { .. } => false,
         }
     }
+
+    /// Returns `true` if this error indicates local routing is failing on the host.
+    ///
+    /// This can be used to determine if the network stack changed out from underneath the instance.
+    /// This logic can be used to determine IPv4/IPv6 stack changes.
+    pub fn indicates_local_routing_failure(&self) -> bool {
+        match self {
+            NtpIoError::Bind(e) | NtpIoError::SampleIo(e) => is_unreachable_io_error(e),
+            NtpIoError::Timeout(_) | NtpIoError::TscOrder { .. } => false,
+        }
+    }
 }
 
 /// Classifies an [`io::Error`] from `bind`/`send_to`/`recv_from` as a routing or
@@ -230,6 +241,11 @@ impl Ntp {
     /// Return the socket address
     pub fn socket_address(&self) -> SocketAddr {
         self.socket_address
+    }
+
+    /// Set the socket address
+    pub fn set_socket_address(&mut self, addr: SocketAddr) {
+        self.socket_address = addr;
     }
 
     /// Samples the NTP source by building a packet, sending it, and awaiting a response.
@@ -613,6 +629,61 @@ mod tests {
         assert!(
             error.indicates_unreachable_source(),
             "Timeout should indicate an unreachable source"
+        );
+    }
+
+    #[rstest]
+    #[case::bind_network_unreachable(
+        NtpIoError::Bind(io::Error::from(ErrorKind::NetworkUnreachable)),
+        true
+    )]
+    #[cfg_attr(
+        unix,
+        case::bind_af_not_supported(
+            NtpIoError::Bind(io::Error::from_raw_os_error(libc::EAFNOSUPPORT)),
+            true
+        )
+    )]
+    #[case::bind_connection_refused(
+        NtpIoError::Bind(io::Error::from(ErrorKind::ConnectionRefused)),
+        false
+    )]
+    #[case::sample_io_addr_not_available(
+        NtpIoError::SampleIo(io::Error::from(ErrorKind::AddrNotAvailable)),
+        true
+    )]
+    #[case::sample_io_connection_refused(
+        NtpIoError::SampleIo(io::Error::from(ErrorKind::ConnectionRefused)),
+        false
+    )]
+    #[case::tsc_order(NtpIoError::TscOrder { pre: 2, post: 1 }, false)]
+    fn indicates_local_routing_failure_classifies_variants(
+        #[case] error: NtpIoError,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            error.indicates_local_routing_failure(),
+            expected,
+            "{error:?} classified wrong"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_is_unreachable_source_but_not_local_routing_failure() {
+        // `time::error::Elapsed` has a private constructor, so obtain one by
+        // actually timing out a pending future.
+        let elapsed =
+            tokio::time::timeout(Duration::from_nanos(1), futures::future::pending::<()>())
+                .await
+                .unwrap_err();
+        let error = NtpIoError::Timeout(elapsed);
+        assert!(
+            error.indicates_unreachable_source(),
+            "Timeout should indicate an unreachable source"
+        );
+        assert!(
+            !error.indicates_local_routing_failure(),
+            "Timeout should not indicate a local routing failure"
         );
     }
 
