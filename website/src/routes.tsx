@@ -17,7 +17,7 @@ function Layout() {
 // at build time, so deep links resolve on any static file server.
 export const routes: RouteRecord[] = [
   {
-    path: '/clock-bound/',
+    path: '/',
     element: <Layout />,
     children: [
       { index: true, element: <LandingPage />, entry: 'src/pages/LandingPage.tsx' },
