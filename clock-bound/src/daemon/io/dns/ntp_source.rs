@@ -21,8 +21,9 @@ const INTERVAL: Duration = Duration::from_secs(16);
 /// Per-sample timeout duration.
 const SAMPLE_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Maximum number of consecutive unreachable samples before the source is considered unreachable.
-const MAX_CONSECUTIVE_UNREACHABLE: u32 = 5;
+/// Maximum number of consecutive unreachable or unusable samples before the source is considered
+/// for replacement.
+const MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE: u32 = 5;
 
 /// Contains data used to run the DNS pool NTP source runner.
 ///
@@ -42,9 +43,9 @@ pub struct NtpSource {
     pool_domain: String,
     ntp: Ntp,
     /// Count of consecutive samples that indicated the source was unreachable (timeouts
-    /// and routing/address-family failures). If this reaches `MAX_CONSECUTIVE_UNREACHABLE`,
-    /// the source is considered unreachable.
-    consecutive_unreachable_count: u32,
+    /// and routing/address-family failures), or unusable (unsynchronized).
+    /// If this reaches `MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE`, the source is considered for replacement.
+    consecutive_unreachable_or_unusable_count: u32,
     /// Communicate with resolver task
     resolver_tx: mpsc::Sender<resolver::Message>,
     /// Guard to prevent sending duplicate messages unreachable messages to the resolver
@@ -79,7 +80,7 @@ impl NtpSource {
             pool_domain,
             ntp,
             resolver_tx,
-            consecutive_unreachable_count: 0,
+            consecutive_unreachable_or_unusable_count: 0,
             sent_unreachable_msg: false,
         }
     }
@@ -139,17 +140,21 @@ impl NtpSource {
 
     async fn handle_ntp_sample_result(&mut self, result: Result<event::Ntp, NtpIoError>) {
         match result {
-            // Errors that indicate the remote source is unreachable count toward the
-            // consecutive failure budget and eventually retire the source. This covers
-            // plain timeouts as well as bind/send failures caused by routing or
-            // address-family problems (e.g. an IPv6 route or the IPv6 stack disappearing
-            // underneath us). Gating reselection on these keeps the pool resilient when
-            // the host's network stack changes, rather than pinning a dead source.
-            Err(e) if e.indicates_unreachable_source() => {
-                debug!(?e, "DNS NTP source unreachable.");
-                self.consecutive_unreachable_count += 1;
+            // Errors that indicate the remote source is not providing usable responses counts
+            // toward the consecutive failure budget and eventually trigger reselection.
+            // This covers plain timeouts, bind/send failures caused by routing or address-family
+            // problems (e.g. an IPv6 route or the IPv6 stack disappearing underneath us),
+            // and responses where the server answered but reported an unusable state (e.g.
+            // unsynchronized). A reachable-but-unusable source is as useless to us as an
+            // unreachable one, so it is treated the same. Gating reselection on these keeps
+            // the pool resilient when the host's network stack changes or a source goes bad,
+            // rather than pinning a dead or useless source.
+            Err(e) if e.indicates_unreachable_or_unusable_source() => {
+                debug!(?e, "DNS NTP source unreachable or unusable.");
+                self.consecutive_unreachable_or_unusable_count += 1;
                 if !self.sent_unreachable_msg
-                    && self.consecutive_unreachable_count >= MAX_CONSECUTIVE_UNREACHABLE
+                    && self.consecutive_unreachable_or_unusable_count
+                        >= MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE
                 {
                     self.sent_unreachable_msg = true;
                     self.notify_resolver_unreachable().await;
@@ -161,7 +166,7 @@ impl NtpSource {
                 debug!(?e, "Failed to sample DNS NTP source.");
             }
             Ok(ntp_event) => {
-                self.consecutive_unreachable_count = 0;
+                self.consecutive_unreachable_or_unusable_count = 0;
                 if self.ntp.send_event(&ntp_event).is_err() {
                     debug!("Attempted to send ntp event to buffer when it's shutting down");
                 }
@@ -189,7 +194,7 @@ impl NtpSource {
 
     /// Notifies the resolver that this source is unreachable.
     ///
-    /// Called when the source has been unreachable [`MAX_CONSECUTIVE_UNREACHABLE`] times
+    /// Called when the source has been unreachable [`MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE`] times
     /// in a row, indicating the resolved address may no longer be valid.
     async fn notify_resolver_unreachable(&self) {
         let addr = self.ntp.socket_address().ip();
@@ -305,13 +310,13 @@ mod tests {
         let (mut source, rx, _resolver_rx) = create_test_ntp_source();
 
         // Simulate some prior unreachable samples
-        source.consecutive_unreachable_count = 3;
+        source.consecutive_unreachable_or_unusable_count = 3;
 
         let ntp_event = create_ntp_event();
         source.handle_ntp_sample_result(Ok(ntp_event.clone())).await;
 
         // Consecutive unreachable count should be reset to 0
-        assert_eq!(source.consecutive_unreachable_count, 0);
+        assert_eq!(source.consecutive_unreachable_or_unusable_count, 0);
 
         let sent_event = rx.recv().await.unwrap();
         assert_eq!(sent_event, ntp_event);
@@ -323,7 +328,7 @@ mod tests {
 
         // Set marked_unreachable to true (simulating it was already triggered)
         source.sent_unreachable_msg = true;
-        source.consecutive_unreachable_count = MAX_CONSECUTIVE_UNREACHABLE;
+        source.consecutive_unreachable_or_unusable_count = MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE;
 
         let ntp_event = create_ntp_event();
         source.handle_ntp_sample_result(Ok(ntp_event)).await;
@@ -335,19 +340,42 @@ mod tests {
     #[tokio::test]
     async fn timeout_error_increments_consecutive_unreachable_count() {
         let (mut source, _rx, _resolver_rx) = create_test_ntp_source();
-        assert_eq!(source.consecutive_unreachable_count, 0);
+        assert_eq!(source.consecutive_unreachable_or_unusable_count, 0);
 
-        for expected_count in 1..MAX_CONSECUTIVE_UNREACHABLE {
+        for expected_count in 1..MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE {
             let err = create_timeout_error().await;
             source.handle_ntp_sample_result(Err(err)).await;
-            assert_eq!(source.consecutive_unreachable_count, expected_count);
+            assert_eq!(
+                source.consecutive_unreachable_or_unusable_count,
+                expected_count
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unusable_response_increments_consecutive_unreachable_count() {
+        let (mut source, _rx, _resolver_rx) = create_test_ntp_source();
+        assert_eq!(source.consecutive_unreachable_or_unusable_count, 0);
+
+        // A reachable-but-unusable response (e.g. the server reporting that it is
+        // unsynchronized) is treated like a timeout: it drives the consecutive
+        // failure budget toward source replacement.
+        for expected_count in 1..MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE {
+            let err = NtpIoError::UnusableNtpResponse(
+                crate::daemon::io::ntp::UnusableNtpResponse::Unsynchronized,
+            );
+            source.handle_ntp_sample_result(Err(err)).await;
+            assert_eq!(
+                source.consecutive_unreachable_or_unusable_count,
+                expected_count
+            );
         }
     }
 
     #[tokio::test]
     async fn transient_error_does_not_increment_consecutive_unreachable_count() {
         let (mut source, _rx, _resolver_rx) = create_test_ntp_source();
-        assert_eq!(source.consecutive_unreachable_count, 0);
+        assert_eq!(source.consecutive_unreachable_or_unusable_count, 0);
 
         let io_err = NtpIoError::SampleIo(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
@@ -355,7 +383,7 @@ mod tests {
         ));
         source.handle_ntp_sample_result(Err(io_err)).await;
 
-        assert_eq!(source.consecutive_unreachable_count, 0);
+        assert_eq!(source.consecutive_unreachable_or_unusable_count, 0);
         assert!(!source.sent_unreachable_msg);
     }
 
@@ -365,14 +393,14 @@ mod tests {
 
         // Feed timeout errors up to the maximum. The final one triggers
         // `notify_resolver_unreachable`, which sends an `UnreachableAddr` message.
-        for _ in 0..MAX_CONSECUTIVE_UNREACHABLE {
+        for _ in 0..MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE {
             let err = create_timeout_error().await;
             source.handle_ntp_sample_result(Err(err)).await;
         }
 
         assert_eq!(
-            source.consecutive_unreachable_count,
-            MAX_CONSECUTIVE_UNREACHABLE
+            source.consecutive_unreachable_or_unusable_count,
+            MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE
         );
         assert!(source.sent_unreachable_msg);
 

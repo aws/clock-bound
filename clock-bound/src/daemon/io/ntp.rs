@@ -46,11 +46,12 @@ pub enum NtpIoError {
 }
 
 impl NtpIoError {
-    /// Returns `true` if this error indicates the remote NTP source is unreachable
-    /// and should be retired so a replacement can be selected.
+    /// Returns `true` if this error means the remote NTP source should be retired so a
+    /// replacement can be selected, either because it is unreachable or because it is
+    /// reachable but will not give us a usable sample.
     ///
-    /// Indicates errors to the `bind(2)`, `send_to(2)`, and `recv_from(2)` mean that
-    /// the source is unreachable and should be replaced.
+    /// Errors from `bind(2)`, `send_to(2)`, and `recv_from(2)`, as well as timeouts, mean the
+    /// source is unreachable and should be replaced.
     ///
     /// This gates reselection on more than timeouts. A host's network stack can change
     /// underneath us: an IPv6 route can disappear, IPv6 can be disabled entirely, or an
@@ -60,17 +61,16 @@ impl NtpIoError {
     /// and reselect a reachable one, so the daemon stays resilient across network-stack changes
     /// instead of pinning a permanently-broken source.
     ///
-    /// A [`NtpIoError::UnusableResponse`] is explicitly *not* unreachable: the server answered
-    /// our request, it just reported a state we cannot use (e.g. unsynchronized). The source is
-    /// reachable, so we do not retire it on this basis.
+    /// A [`NtpIoError::UnusableNtpResponse`] also returns `true`. The server answered our request
+    /// but it reported a state we cannot use (e.g. unsynchronized).
     ///
     /// Everything else is treated as a transient local failure: it is retried on the next tick
     /// and never retires the source, so a transient kernel hiccup cannot thrash the whole pool.
-    pub fn indicates_unreachable_source(&self) -> bool {
+    pub fn indicates_unreachable_or_unusable_source(&self) -> bool {
         match self {
-            NtpIoError::Timeout(_) => true,
+            NtpIoError::Timeout(_) | NtpIoError::UnusableNtpResponse(_) => true,
             NtpIoError::Bind(e) | NtpIoError::SampleIo(e) => is_unreachable_io_error(e),
-            NtpIoError::TscOrder { .. } | NtpIoError::UnusableNtpResponse(_) => false,
+            NtpIoError::TscOrder { .. } => false,
         }
     }
 
@@ -81,7 +81,9 @@ impl NtpIoError {
     pub fn indicates_local_routing_failure(&self) -> bool {
         match self {
             NtpIoError::Bind(e) | NtpIoError::SampleIo(e) => is_unreachable_io_error(e),
-            NtpIoError::Timeout(_) | NtpIoError::TscOrder { .. } => false,
+            NtpIoError::Timeout(_)
+            | NtpIoError::UnusableNtpResponse(_)
+            | NtpIoError::TscOrder { .. } => false,
         }
     }
 }
@@ -599,55 +601,55 @@ mod tests {
     }
 
     #[test]
-    fn indicates_unreachable_source_for_bind_errors() {
+    fn indicates_unreachable_or_unusable_source_for_bind_errors() {
         let unreachable = NtpIoError::Bind(io::Error::from(ErrorKind::NetworkUnreachable));
         assert!(
-            unreachable.indicates_unreachable_source(),
+            unreachable.indicates_unreachable_or_unusable_source(),
             "Bind with NetworkUnreachable should indicate an unreachable source"
         );
 
         let transient = NtpIoError::Bind(io::Error::from(ErrorKind::ConnectionRefused));
         assert!(
-            !transient.indicates_unreachable_source(),
+            !transient.indicates_unreachable_or_unusable_source(),
             "Bind with ConnectionRefused should not indicate an unreachable source"
         );
     }
 
     #[test]
-    fn indicates_unreachable_source_for_sample_io_errors() {
+    fn indicates_unreachable_or_unusable_source_for_sample_io_errors() {
         let unreachable = NtpIoError::SampleIo(io::Error::from(ErrorKind::NetworkUnreachable));
         assert!(
-            unreachable.indicates_unreachable_source(),
+            unreachable.indicates_unreachable_or_unusable_source(),
             "SampleIo with NetworkUnreachable should indicate an unreachable source"
         );
 
         let transient = NtpIoError::SampleIo(io::Error::from(ErrorKind::ConnectionRefused));
         assert!(
-            !transient.indicates_unreachable_source(),
+            !transient.indicates_unreachable_or_unusable_source(),
             "SampleIo with ConnectionRefused should not indicate an unreachable source"
         );
     }
 
     #[test]
-    fn indicates_unreachable_source_for_tsc_order() {
+    fn indicates_unreachable_or_unusable_source_for_tsc_order() {
         let error = NtpIoError::TscOrder { pre: 2, post: 1 };
         assert!(
-            !error.indicates_unreachable_source(),
-            "TscOrder is a local failure and should not indicate an unreachable source"
+            !error.indicates_unreachable_or_unusable_source(),
+            "TscOrder is a local failure and should not retire the source"
         );
     }
 
     #[test]
-    fn indicates_unreachable_source_for_unusable_response() {
+    fn indicates_unreachable_or_unusable_source_for_unusable_response() {
         let error = NtpIoError::UnusableNtpResponse(UnusableNtpResponse::Unsynchronized);
         assert!(
-            !error.indicates_unreachable_source(),
-            "An unusable response is reachable, so it should not be treated as unreachable"
+            error.indicates_unreachable_or_unusable_source(),
+            "An unusable response (reachable but useless) should retire the source like a timeout"
         );
     }
 
     #[tokio::test]
-    async fn indicates_unreachable_source_for_timeout() {
+    async fn indicates_unreachable_or_unusable_source_for_timeout() {
         // `time::error::Elapsed` has a private constructor, so obtain one by
         // actually timing out a pending future.
         let elapsed =
@@ -656,7 +658,7 @@ mod tests {
                 .unwrap_err();
         let error = NtpIoError::Timeout(elapsed);
         assert!(
-            error.indicates_unreachable_source(),
+            error.indicates_unreachable_or_unusable_source(),
             "Timeout should indicate an unreachable source"
         );
     }
@@ -707,8 +709,8 @@ mod tests {
                 .unwrap_err();
         let error = NtpIoError::Timeout(elapsed);
         assert!(
-            error.indicates_unreachable_source(),
-            "Timeout should indicate an unreachable source"
+            error.indicates_unreachable_or_unusable_source(),
+            "Timeout should indicate an unreachable or unusable source"
         );
         assert!(
             !error.indicates_local_routing_failure(),
