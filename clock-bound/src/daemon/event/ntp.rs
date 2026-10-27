@@ -248,6 +248,15 @@ impl TscRtt for Ntp {
     }
 }
 
+impl super::SourceCeb for Ntp {
+    /// The server's own error bound (`root_dispersion + root_delay/2`); it does not include the
+    /// measurement's round-trip contribution. For the RTT-inclusive bound used by the algorithm,
+    /// see [`calculate_clock_error_bound`](Self::calculate_clock_error_bound).
+    fn source_clock_error_bound(&self) -> Duration {
+        self.data().root_dispersion + (self.data().root_delay / 2)
+    }
+}
+
 /// NTP-specific data
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NtpData {
@@ -380,6 +389,7 @@ impl ValidStratumLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::event::SourceCeb;
     use rstest::rstest;
 
     #[rstest]
@@ -812,5 +822,23 @@ mod tests {
         let res = event1.calculate_period_with_error(&event2);
         approx::assert_abs_diff_eq!(res.period_local.get(), expected_period.get());
         approx::assert_abs_diff_eq!(res.error.get(), expected_period_error.get());
+    }
+
+    #[test]
+    fn source_clock_error_bound_is_dispersion_plus_half_delay() {
+        let event = Ntp::builder()
+            .counter_pre(TscCount::new(1000))
+            .counter_post(TscCount::new(2000))
+            .ntp_data(NtpData {
+                server_recv_time: Instant::from_secs(10),
+                server_send_time: Instant::from_secs(11),
+                root_delay: Duration::from_micros(40),
+                root_dispersion: Duration::from_micros(5),
+                stratum: Stratum::TWO,
+            })
+            .build()
+            .unwrap();
+        // 5us + 40us/2 = 25us; RTT plays no part.
+        assert_eq!(event.source_clock_error_bound(), Duration::from_micros(25));
     }
 }

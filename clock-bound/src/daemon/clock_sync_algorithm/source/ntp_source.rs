@@ -6,7 +6,7 @@ use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_sync_algorithm::FfSyncParams;
 use crate::daemon::clock_sync_algorithm::ff;
 use crate::daemon::event;
-use crate::daemon::time::Duration;
+use crate::daemon::time::{Duration, tsc::Period};
 
 /// A NTP Server reference clock source
 ///
@@ -68,6 +68,11 @@ impl NtpSource {
     /// This source's identity.
     pub fn source_info(&self) -> super::SourceInfo {
         super::SourceInfo::NtpSource(self.source_address, event::Stratum::Unspecified)
+    }
+
+    /// Summarize this source's SKM sample buffer for `sources.log`, over the last `window`.
+    pub fn skm_summary(&self, window: Duration, period: Option<Period>) -> ff::SkmSummary {
+        self.inner.skm_summary(window, period)
     }
 
     /// Feed an event into the NTP Source clock-sync algorithm

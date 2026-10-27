@@ -213,6 +213,15 @@ impl TscRtt for Phc {
     }
 }
 
+impl super::SourceCeb for Phc {
+    /// The device-reported `clock_error_bound`, which carries no round-trip component. For the
+    /// RTT-inclusive bound used by the algorithm, see
+    /// [`calculate_clock_error_bound`](Self::calculate_clock_error_bound).
+    fn source_clock_error_bound(&self) -> Duration {
+        self.data().clock_error_bound
+    }
+}
+
 /// PHC specific data
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhcData {
@@ -225,6 +234,7 @@ pub struct PhcData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::event::SourceCeb;
     use rstest::rstest;
 
     #[test]
@@ -544,5 +554,20 @@ mod tests {
         let res = event1.calculate_period_with_error(&event2);
         approx::assert_abs_diff_eq!(res.period_local.get(), expected_period.get());
         approx::assert_abs_diff_eq!(res.error.get(), expected_period_error.get());
+    }
+
+    #[test]
+    fn source_clock_error_bound_is_the_device_reported_bound() {
+        let event = Phc::builder()
+            .counter_pre(TscCount::new(1000))
+            .counter_post(TscCount::new(2000))
+            .data(PhcData {
+                time: Instant::from_days(1),
+                clock_error_bound: Duration::from_micros(21),
+            })
+            .build()
+            .unwrap();
+        // The device-reported bound, verbatim; RTT plays no part.
+        assert_eq!(event.source_clock_error_bound(), Duration::from_micros(21));
     }
 }

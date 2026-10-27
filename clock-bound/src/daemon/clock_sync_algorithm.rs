@@ -149,12 +149,20 @@ impl ClockSyncAlgorithm {
     /// Assemble a point-in-time snapshot of every configured source for
     /// `sources.log`.
     pub fn sources_snapshot(&self) -> logging::sources::SourceSnapshotData {
+        // Scale every source's latency with the selected clock's period, so latencies are
+        // comparable across sources. `None` when no source is selected.
+        // TODO: ideally we should be using the selected clock's uncorrected (long-term)
+        // period estimate rather than its local one.
+        let period = self.selector.current().map(|sp| sp.clock_parameters.period);
+        let window = logging::sources::STATS_WINDOW;
+
         let mut sources = Vec::new();
 
         if let Some(phc) = &self.phc {
             sources.push(logging::sources::SourceData {
                 source_info: phc.source_info(),
                 poll_interval: phc.poll_interval(),
+                skm: phc.skm_summary(window, period),
             });
         }
 
@@ -162,6 +170,7 @@ impl ClockSyncAlgorithm {
             sources.push(logging::sources::SourceData {
                 source_info: amazon_time_sync.source_info(),
                 poll_interval: amazon_time_sync.poll_interval(),
+                skm: amazon_time_sync.skm_summary(window, period),
             });
         }
 
@@ -169,6 +178,7 @@ impl ClockSyncAlgorithm {
             sources.push(logging::sources::SourceData {
                 source_info: ntp.source_info(),
                 poll_interval: ntp.poll_interval(),
+                skm: ntp.skm_summary(window, period),
             });
         }
 

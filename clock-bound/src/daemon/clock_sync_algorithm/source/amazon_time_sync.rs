@@ -6,7 +6,7 @@ use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_sync_algorithm::FfSyncParams;
 use crate::daemon::clock_sync_algorithm::ff;
 use crate::daemon::event;
-use crate::daemon::time::Duration;
+use crate::daemon::time::{Duration, tsc::Period};
 
 /// Amazon Time Sync NTP endpoint address (Amazon Time Sync Service on EC2)
 // FIXME: This duplicates the definition in daemon/io/ntp.rs. The algorithm should not
@@ -53,6 +53,11 @@ impl AmazonTimeSync {
     /// This source's identity.
     pub fn source_info(&self) -> super::SourceInfo {
         super::SourceInfo::AmazonTimeSync(self.source_address.into(), event::Stratum::Unspecified)
+    }
+
+    /// Summarize this source's SKM sample buffer for `sources.log`, over the last `window`.
+    pub fn skm_summary(&self, window: Duration, period: Option<Period>) -> ff::SkmSummary {
+        self.inner.skm_summary(window, period)
     }
 
     /// Feed an event into the Amazon Time Sync NTP clock-sync algorithm

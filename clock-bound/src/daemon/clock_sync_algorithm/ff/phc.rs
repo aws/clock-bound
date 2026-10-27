@@ -3,7 +3,9 @@
 use std::num::NonZeroUsize;
 
 use super::event_buffer;
-use super::{CalculateThetaOutput, LocalPeriodAndError, UncorrectedClock};
+use super::{
+    CalculateThetaOutput, LocalPeriodAndError, SkmSummary, UncorrectedClock, skm_summary_of,
+};
 use crate::daemon::algo_trace;
 use crate::daemon::{
     clock_parameters::ClockParameters,
@@ -225,6 +227,14 @@ impl Phc {
     /// Get the current [`ClockParameters`]
     pub fn clock_parameters(&self) -> Option<&ClockParameters> {
         self.clock_parameters.as_ref()
+    }
+
+    /// Summarize this source's SKM sample buffer for `sources.log`, over the last `window`.
+    ///
+    /// Reads the staging buffer, which spans the SKM window (the local buffer is a shorter
+    /// window used for period/theta).
+    pub fn skm_summary(&self, window: Duration, period: Option<Period>) -> SkmSummary {
+        skm_summary_of(&self.staging, window, period)
     }
 
     /// Feed the internal buffers with a new event

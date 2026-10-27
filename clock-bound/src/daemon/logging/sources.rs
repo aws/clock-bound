@@ -16,10 +16,17 @@ use serde::Serialize;
 
 use super::{ClockStatusName, LogEvent, SourceType, StructuredLog, emit_event};
 use crate::daemon::clock_sync_algorithm::SourceInfo;
+use crate::daemon::clock_sync_algorithm::ff::{SkmSummary, StatSummary};
 use crate::daemon::time::Duration;
 
 /// How often the daemon emits a snapshot to `sources.log`.
 pub const SNAPSHOT_PERIOD_SECS: u64 = 60;
+
+/// The window over which per-source sample statistics are computed and reported.
+///
+/// Clamped to the sample buffer's own window if larger (see
+/// [`skm_summary_of`](crate::daemon::clock_sync_algorithm::ff)).
+pub const STATS_WINDOW: Duration = Duration::from_minutes(10);
 
 /// Caller-facing snapshot data: the per-source data for one snapshot.
 #[derive(Debug, Clone, Default)]
@@ -32,6 +39,7 @@ pub struct SourceSnapshotData {
 pub struct SourceData {
     pub source_info: SourceInfo,
     pub poll_interval: Duration,
+    pub skm: SkmSummary,
 }
 
 /// Body of a `sources_snapshot` event.
@@ -81,13 +89,7 @@ impl From<&SourceData> for SourceRow {
                 deselected_at: None,
                 status: ClockStatusName::Unknown,
             },
-            stats: Stats {
-                requests: 0,
-                responses: 0,
-                latency_ns: None,
-                source_clock_error_bound_ns: None,
-                window_duration_sec: 0,
-            },
+            stats: Stats::from(&data.skm),
         }
     }
 }
@@ -104,12 +106,31 @@ struct Health {
     status: ClockStatusName,
 }
 
+/// A min/median/max summary for log output, in nanoseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct StatSummaryNs {
+    min: i64,
+    median: i64,
+    max: i64,
+}
+
+impl From<StatSummary<Duration>> for StatSummaryNs {
+    fn from(summary: StatSummary<Duration>) -> Self {
+        Self {
+            min: summary.min.as_nanos(),
+            median: summary.median.as_nanos(),
+            max: summary.max.as_nanos(),
+        }
+    }
+}
+
 /// Aggregates computed over a source's sample buffer at snapshot time.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct Stats {
     requests: u64,
     responses: u64,
-    /// Measurement latency distribution over the window, or `None` if empty.
+    /// Measurement latency distribution over the window, or `None` if empty or
+    /// no period is available to scale it.
     latency_ns: Option<StatSummaryNs>,
     /// Source-reported error bound distribution over the window, or `None` if
     /// empty.
@@ -118,12 +139,17 @@ struct Stats {
     window_duration_sec: u64,
 }
 
-/// A min/median/max summary of one distribution, in nanoseconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-struct StatSummaryNs {
-    min: i64,
-    median: i64,
-    max: i64,
+impl From<&SkmSummary> for Stats {
+    fn from(skm: &SkmSummary) -> Self {
+        // TODO: populate request/response counters as they are wired in.
+        Self {
+            requests: 0,
+            responses: 0,
+            latency_ns: skm.latency.map(StatSummaryNs::from),
+            source_clock_error_bound_ns: skm.source_clock_error_bound.map(StatSummaryNs::from),
+            window_duration_sec: skm.window.as_seconds().unsigned_abs(),
+        }
+    }
 }
 
 /// Log a sources snapshot to the sources log.
@@ -176,10 +202,12 @@ mod tests {
                         Stratum::Unspecified,
                     ),
                     poll_interval: Duration::from_secs(16),
+                    skm: SkmSummary::default(),
                 },
                 SourceData {
                     source_info: SourceInfo::Phc("/dev/ptp0".into()),
                     poll_interval: Duration::from_millis(500),
+                    skm: SkmSummary::default(),
                 },
             ],
         };
@@ -228,6 +256,68 @@ mod tests {
                                 "latency_ns": null,
                                 "source_clock_error_bound_ns": null,
                                 "window_duration_sec": 0
+                            }
+                        }
+                    ]
+                },
+                "version": "0.1.0-test"
+            }
+            "#},
+        );
+    }
+
+    #[test]
+    fn log_sources_snapshot_stats_schema() {
+        let data = SourceSnapshotData {
+            sources: vec![SourceData {
+                source_info: SourceInfo::NtpSource(
+                    "169.254.169.123:123".parse().unwrap(),
+                    Stratum::Unspecified,
+                ),
+                poll_interval: Duration::from_secs(16),
+                skm: SkmSummary {
+                    window: Duration::from_secs(1024),
+                    latency: Some(StatSummary {
+                        min: Duration::from_nanos(128_400),
+                        median: Duration::from_nanos(141_200),
+                        max: Duration::from_nanos(155_000),
+                    }),
+                    source_clock_error_bound: Some(StatSummary {
+                        min: Duration::from_nanos(27_800),
+                        median: Duration::from_nanos(30_100),
+                        max: Duration::from_nanos(31_200),
+                    }),
+                },
+            }],
+        };
+
+        let (output, _tmp) = with_layer(StructuredLog::Sources, TEST_VERSION, || {
+            log_sources_snapshot(&data);
+        });
+
+        assert_matches_expected(
+            output.lines().next().unwrap(),
+            indoc! {r#"
+            {
+                "timestamp": "",
+                "event": "sources_snapshot",
+                "sources_snapshot": {
+                    "sources": [
+                        {
+                            "type": "ntp",
+                            "identifier": "169.254.169.123:123",
+                            "poll_interval_sec": 16.0,
+                            "health": {
+                                "selected_at": null,
+                                "deselected_at": null,
+                                "status": "UNKNOWN"
+                            },
+                            "stats": {
+                                "requests": 0,
+                                "responses": 0,
+                                "latency_ns": { "min": 128400, "median": 141200, "max": 155000 },
+                                "source_clock_error_bound_ns": { "min": 27800, "median": 30100, "max": 31200 },
+                                "window_duration_sec": 1024
                             }
                         }
                     ]

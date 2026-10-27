@@ -2,7 +2,7 @@
 
 use crate::daemon::{
     clock_parameters::ClockParameters, clock_sync_algorithm::FfSyncParams,
-    clock_sync_algorithm::ff, event, time::Duration,
+    clock_sync_algorithm::ff, event, time::Duration, time::tsc::Period,
 };
 
 use super::DevicePath;
@@ -42,6 +42,11 @@ impl Phc {
     /// This source's identity.
     pub fn source_info(&self) -> super::SourceInfo {
         super::SourceInfo::Phc(self.device_path.clone())
+    }
+
+    /// Summarize this source's SKM sample buffer for `sources.log`, over the last `window`.
+    pub fn skm_summary(&self, window: Duration, period: Option<Period>) -> ff::SkmSummary {
+        self.inner.skm_summary(window, period)
     }
 
     /// Handle a disruption event

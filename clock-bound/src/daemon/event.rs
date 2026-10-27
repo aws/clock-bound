@@ -41,6 +41,12 @@ pub trait TscRtt {
     }
 }
 
+/// An event carrying a source-reported clock error bound (excluding RTT).
+pub trait SourceCeb {
+    /// The source-reported clock error bound of this event, excluding RTT.
+    fn source_clock_error_bound(&self) -> crate::daemon::time::Duration;
+}
+
 /// Struct containing a system clock read and a TSC read
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SystemClockMeasurement {
