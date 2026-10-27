@@ -9,8 +9,7 @@ use std::ptr;
 use std::sync::atomic;
 use tracing::{debug, error};
 
-use crate::shm::ShmError;
-use crate::syserror;
+use crate::shm::{ShmError, syserror};
 use crate::vmclock::shm::{VMClockShmBody, VMClockShmHeader};
 
 const VMCLOCK_SUPPORTED_VERSION: u16 = 1;

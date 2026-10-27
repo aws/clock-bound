@@ -1,19 +1,16 @@
-use clock_bound::client::{
-    ClockBoundClient, ClockBoundError, ClockStatus, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH,
-};
+use clock_bound::{Client, ClockStatus, Error, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH};
 use std::process;
 use std::thread;
 use std::time::Duration;
 
 fn main() {
-    let mut clockbound =
-        match ClockBoundClient::new_with_paths(SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH) {
-            Ok(c) => c,
-            Err(e) => {
-                print_error("ClockBoundClient::new() failed", &e);
-                process::exit(1);
-            }
-        };
+    let mut clockbound = match Client::new_with_paths(SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH) {
+        Ok(c) => c,
+        Err(e) => {
+            print_error("Client::new_with_paths() failed", &e);
+            process::exit(1);
+        }
+    };
 
     // Run forever.
     // Type Ctrl-C to send a SIGINT and quit the program.
@@ -21,7 +18,7 @@ fn main() {
         let now_result = match clockbound.now() {
             Ok(result) => result,
             Err(e) => {
-                print_error("ClockBoundClient::now() failed", &e);
+                print_error("Client::now() failed", &e);
                 process::exit(1);
             }
         };
@@ -39,7 +36,7 @@ fn main() {
     }
 }
 
-fn print_error(detail: &str, error: &ClockBoundError) {
+fn print_error(detail: &str, error: &Error) {
     eprintln!("{detail} {error:?}");
 }
 
@@ -55,7 +52,7 @@ fn format_clock_status(clock_status: &ClockStatus) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clock_bound::client::ClockBoundErrorKind;
+    use clock_bound::ErrorKind;
     use errno::Errno;
 
     #[test]
@@ -64,8 +61,8 @@ mod tests {
         let clock_bound_error_details = "ClockBound daemon not running";
         let errno_number = 9999;
 
-        let clock_bound_error = ClockBoundError {
-            kind: ClockBoundErrorKind::SegmentNotInitialized,
+        let clock_bound_error = Error {
+            kind: ErrorKind::SegmentNotInitialized,
             errno: Errno(errno_number),
             detail: clock_bound_error_details.to_string(),
         };

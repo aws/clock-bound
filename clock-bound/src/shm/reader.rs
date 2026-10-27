@@ -7,12 +7,9 @@ use std::ptr;
 use std::sync::atomic::{self, AtomicU16};
 
 use crate::shm::shm_header::{CLOCKBOUND_SHM_LATEST_VERSION, ShmHeader};
-use crate::{
-    shm::{
-        ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockErrorBoundV2,
-        ClockErrorBoundV3, ShmError,
-    },
-    syserror,
+use crate::shm::{
+    ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockErrorBoundV2,
+    ClockErrorBoundV3, ShmError, syserror,
 };
 
 /// Typed pointer to the inner `#[repr(C)]` payload stored in the shared
@@ -119,7 +116,7 @@ impl Drop for MmapGuard {
 /// Reader for ClockBound daemon shared memory segment.
 ///
 /// The Clockbound daemon shared memory segment consists of a `ShmHeader` followed by a
-/// `ClockBoundError` struct. The segment is updated by a single producer (the clockbound daemon),
+/// `ClockErrorBound` struct. The segment is updated by a single producer (the clockbound daemon),
 /// but may be read by many clients.  The shared memory segment does not implement a semaphore or
 /// equivalent to synchronize the single-producer / many-consumers processes. Instead, the
 /// mechanism is lock-free and relies on a `generation` number to ensure consistent reads (over

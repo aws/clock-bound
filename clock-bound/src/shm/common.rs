@@ -1,4 +1,4 @@
-use crate::{shm::ShmError, syserror};
+use crate::shm::{ShmError, syserror};
 use nix::sys::time::TimeSpec;
 use nix::time::{ClockId, clock_gettime};
 

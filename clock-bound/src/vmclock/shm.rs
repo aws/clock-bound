@@ -8,8 +8,7 @@ use std::mem::size_of;
 use std::str::FromStr;
 use std::sync::atomic;
 
-use crate::shm::ShmError;
-use crate::syserror;
+use crate::shm::{ShmError, syserror};
 use tracing::{debug, error};
 
 pub const VMCLOCK_DEFAULT_PATH: &str = "/dev/vmclock0";

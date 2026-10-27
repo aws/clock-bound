@@ -26,10 +26,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use clap::Args;
-use clock_bound::client::{
-    ClockBoundClient, ClockBoundError, ClockStatus, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH,
-};
 use clock_bound::daemon::autodetect::Autodetect;
+use clock_bound::{Client, ClockStatus, Error, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH};
 
 /// Exit code when the clock synchronized within the timeout.
 const EXIT_CODE_SYNCHRONIZED: u8 = 0;
@@ -110,10 +108,10 @@ fn wait_for_sync(
     }
 }
 
-/// Format a [`ClockBoundError`] into a human readable reason for a failed attempt.
+/// Format a [`Error`] into a human readable reason for a failed attempt.
 ///
 /// The error kind is always included, followed by the detail message when there is one.
-fn describe_error(error: &ClockBoundError) -> String {
+fn describe_error(error: &Error) -> String {
     if error.detail.is_empty() {
         format!("{:?}", error.kind)
     } else {
@@ -135,7 +133,7 @@ struct ShmObserver {
     vmclock_shm_path: String,
 
     /// The ClockBound client, created on first successful open of the shared memory segment.
-    client: Option<ClockBoundClient>,
+    client: Option<Client>,
 }
 
 impl ShmObserver {
@@ -151,10 +149,7 @@ impl ShmObserver {
     /// needed. Errors carry a human readable reason.
     fn observe(&mut self) -> Result<ClockStatus, String> {
         if self.client.is_none() {
-            match ClockBoundClient::new_with_paths(
-                &self.clockbound_shm_path,
-                &self.vmclock_shm_path,
-            ) {
+            match Client::new_with_paths(&self.clockbound_shm_path, &self.vmclock_shm_path) {
                 Ok(client) => self.client = Some(client),
                 Err(error) => return Err(describe_error(&error)),
             }
@@ -217,7 +212,7 @@ mod test {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
 
-    use clock_bound::client::ClockBoundErrorKind;
+    use clock_bound::ErrorKind;
     use errno::Errno;
 
     use super::*;
@@ -238,8 +233,8 @@ mod test {
     /// appended when present.
     #[test]
     fn describe_error_prepends_kind_to_detail() {
-        let error = ClockBoundError {
-            kind: ClockBoundErrorKind::SegmentNotInitialized,
+        let error = Error {
+            kind: ErrorKind::SegmentNotInitialized,
             errno: Errno(0),
             detail: String::from("waiting for the daemon"),
         };
@@ -252,8 +247,8 @@ mod test {
     /// Assert that a describe_error message with no detail is just the error kind.
     #[test]
     fn describe_error_without_detail_is_kind_only() {
-        let error = ClockBoundError {
-            kind: ClockBoundErrorKind::Syscall,
+        let error = Error {
+            kind: ErrorKind::Syscall,
             errno: Errno(0),
             detail: String::new(),
         };

@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use clock_bound::client::ClockBoundClient;
+use clock_bound::Client;
 use nix::time::{ClockId, clock_gettime};
 
 use results::{TestResult, ValidationReport};
@@ -65,10 +65,10 @@ struct CollectionResult {
 /// Attempt to connect to the ClockBound SHM segment, retrying every 500ms
 /// until `timeout` is reached. In CI, the SHM segment is created asynchronously
 /// by the clockbound daemon after the `CodeBuild` instance starts, so a retry window is needed.
-fn connect_shm_client(shm_path: &str, timeout: Duration) -> Result<ClockBoundClient, String> {
+fn connect_shm_client(shm_path: &str, timeout: Duration) -> Result<Client, String> {
     let start = Instant::now();
     loop {
-        match ClockBoundClient::new_with_path(shm_path) {
+        match Client::new_with_path(shm_path) {
             Ok(c) => {
                 println!(
                     "ClockBound SHM client connected (took {:.1}s)",
@@ -98,7 +98,7 @@ fn connect_shm_client(shm_path: &str, timeout: Duration) -> Result<ClockBoundCli
 ///
 /// Samples are taken at `sample_interval` apart to control memory usage.
 fn collect_samples(
-    client: &mut ClockBoundClient,
+    client: &mut Client,
     duration: Duration,
     sample_interval: Duration,
 ) -> CollectionResult {

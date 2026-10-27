@@ -1,7 +1,7 @@
 use std::mem::{MaybeUninit, size_of};
 use std::sync::atomic;
 
-use crate::{shm::ShmError, syserror};
+use crate::shm::{ShmError, syserror};
 use tracing::error;
 
 /// The magic number that identifies a `ClockErrorBound` shared memory segment.

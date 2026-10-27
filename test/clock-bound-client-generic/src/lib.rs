@@ -8,8 +8,8 @@ use clock_bound::daemon::time::Duration;
 use clock_bound::daemon::time::Instant;
 use nix::sys::time::TimeSpec;
 
-use clock_bound::ClockBoundNowResult as ClockBoundNowResultV3;
-use clock_bound::client as clock_bound_client_v3;
+use clock_bound as clock_bound_client_v3;
+use clock_bound::Now as ClockBoundNowResultV3;
 use clock_bound_client as clock_bound_client_v2;
 
 const NSECS_PER_SEC: i64 = 1_000_000_000;
@@ -96,7 +96,7 @@ pub enum ClockBoundClientVersion {
 
 pub enum ClockBoundClient {
     ClientV2(Box<clock_bound_client_v2::ClockBoundClient>),
-    ClientV3(Box<clock_bound_client_v3::ClockBoundClient>),
+    ClientV3(Box<clock_bound_client_v3::Client>),
 }
 impl ClockBoundClient {
     /// Construct a new generic ClockBound client.
@@ -110,7 +110,7 @@ impl ClockBoundClient {
                     .expect("Failed to initialize ClockBound v2 client."),
             )),
             ClockBoundClientVersion::V3 => Self::ClientV3(Box::new(
-                clock_bound_client_v3::ClockBoundClient::new()
+                clock_bound_client_v3::Client::new()
                     .expect("Failed to initialize ClockBound v3 client."),
             )),
         }

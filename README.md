@@ -105,9 +105,9 @@ clock-bound = "3.0.0-beta.1"
 And then the code:
 
 ```rust
-use clock_bound::client::ClockBoundClient;
+use clock_bound::Client;
 
-let mut client = ClockBoundClient::new()?;
+let mut client = Client::new()?;
 let result = client.now()?;
 println!("Time range: {:?} to {:?}", result.earliest, result.latest);
 ```

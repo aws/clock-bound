@@ -2,7 +2,7 @@
 //!
 //! Defines data structures for capturing and evaluating ClockBound error bound measurements.
 
-use clock_bound::{ClockBoundNowResult, ClockStatus};
+use clock_bound::{ClockStatus, Now};
 use nix::sys::time::{TimeSpec, TimeValLike};
 use serde::Serialize;
 
@@ -11,8 +11,8 @@ use serde::Serialize;
 pub struct RawSample {
     pub elapsed_secs: f64,
     pub realtime: TimeSpec,
-    pub before: ClockBoundNowResult,
-    pub after: ClockBoundNowResult,
+    pub before: Now,
+    pub after: Now,
 }
 
 /// A single ClockBound SHM read (before or after the clock read).
@@ -24,7 +24,7 @@ pub struct BoundWindow {
 }
 
 impl BoundWindow {
-    pub fn new(cb_result: &ClockBoundNowResult) -> Self {
+    pub fn new(cb_result: &Now) -> Self {
         Self {
             earliest_ns: cb_result.earliest.num_nanoseconds(),
             latest_ns: cb_result.latest.num_nanoseconds(),

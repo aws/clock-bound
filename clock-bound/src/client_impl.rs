@@ -1,25 +1,26 @@
 //! A client library to communicate with ClockBound daemon. This client library is written in pure Rust.
 //!
 pub use crate::shm::ClockStatus;
-pub use crate::shm::SHM_DEFAULT_PATH;
+use crate::shm::SHM_DEFAULT_PATH;
 use crate::shm::ShmReader;
-use crate::shm::{ClockBoundNowResult, ClockBoundSnapshot, ClockErrorBound, ShmError};
-pub use crate::vmclock::shm::VMCLOCK_DEFAULT_PATH;
+use crate::shm::{ClockBoundSnapshot, ClockErrorBound, ShmError};
+use crate::vmclock::shm::VMCLOCK_DEFAULT_PATH;
 use crate::vmclock::shm_reader::VMClockShmReader;
 use errno::Errno;
+use nix::sys::time::TimeSpec;
 use std::ffi::CString;
 use std::path::Path;
 
-/// The `ClockBoundClient`
+/// The ClockBound Client
 ///
 /// Use it to return current time, the clock error bound and clock status associated with it.
-pub struct ClockBoundClient {
+pub struct Client {
     clockbound_shm: ClockBoundSHM,
     vmclock_shm: VMClockSHM,
 }
 
-impl ClockBoundClient {
-    /// Creates and returns a new `ClockBoundClient`.
+impl Client {
+    /// Creates and returns a new [`Client`].
     ///
     /// The client accesses two shared memory segments. One written to by the ClockBound daemon.
     /// The second one by the VMClock device (if available).
@@ -27,12 +28,12 @@ impl ClockBoundClient {
     /// Use default paths to the two shared memory segments.
     ///
     /// # Errors
-    /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
-    pub fn new() -> Result<ClockBoundClient, ClockBoundError> {
+    /// Returns [`Error`] if the shared memory segments cannot be open or accessed.
+    pub fn new() -> Result<Client, Error> {
         Self::new_with_path(SHM_DEFAULT_PATH)
     }
 
-    /// Creates and returns a new `ClockBoundClient`.
+    /// Creates and returns a new [`Client`].
     ///
     /// The client accesses two shared memory segments. One written to by the ClockBound daemon.
     /// The second one by the VMClock device (if available).
@@ -41,12 +42,12 @@ impl ClockBoundClient {
     /// Use the default paths to the ClockBound daemon shared memory segment.
     ///
     /// # Errors
-    /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
-    pub fn new_with_path(clockbound_shm_path: &str) -> Result<ClockBoundClient, ClockBoundError> {
+    /// Returns [`Error`] if the shared memory segments cannot be open or accessed.
+    pub fn new_with_path(clockbound_shm_path: &str) -> Result<Client, Error> {
         Self::new_with_paths(clockbound_shm_path, VMCLOCK_DEFAULT_PATH)
     }
 
-    /// Creates and returns a new `ClockBoundClient`.
+    /// Creates and returns a new [`Client`].
     ///
     /// The client accesses two shared memory segments. One written to by the ClockBound daemon.
     /// The second one by the VMClock device (if available).
@@ -54,11 +55,11 @@ impl ClockBoundClient {
     /// Explicitly specifies the paths to the two shared memory segments.
     ///
     /// # Errors
-    /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
+    /// Returns [`Error`] if the shared memory segments cannot be open or accessed.
     pub fn new_with_paths(
         clockbound_shm_path: &str,
         vmclock_shm_path: &str,
-    ) -> Result<ClockBoundClient, ClockBoundError> {
+    ) -> Result<Client, Error> {
         // Create the clockbound shared memory accessor
         let mut clockbound_shm = ClockBoundSHM::new(clockbound_shm_path)?;
 
@@ -72,7 +73,7 @@ impl ClockBoundClient {
             cb_snapshot.clock_disruption_support_enabled(),
         )?;
 
-        Ok(ClockBoundClient {
+        Ok(Client {
             clockbound_shm,
             vmclock_shm,
         })
@@ -88,8 +89,8 @@ impl ClockBoundClient {
     /// free-running, or ...
     ///
     /// # Errors
-    /// Returns [`ClockBoundError`] if the shared memory segments cannot be open or accessed.
-    pub fn now(&mut self) -> Result<ClockBoundNowResult, ClockBoundError> {
+    /// Returns [`Error`] if the shared memory segments cannot be open or accessed.
+    pub fn now(&mut self) -> Result<Now, Error> {
         // The very first thing to do is to read from the ClockBound shared memory segment, take a
         // snapshot to obtain the clock parameters and bound on error, and create a timestamp.
         let cb_snap = self.clockbound_shm.snapshot()?;
@@ -125,6 +126,17 @@ impl ClockBoundClient {
     }
 }
 
+/// Result of the [`Client::now()`] function.
+#[derive(PartialEq, Clone, Debug)]
+pub struct Now {
+    /// The earliest time that true time lies in
+    pub earliest: TimeSpec,
+    /// The latest time that true time
+    pub latest: TimeSpec,
+    /// The clock status
+    pub clock_status: ClockStatus,
+}
+
 /// `ClockBoundSHM` handles access to the shared memory segment populated by the ClockBound daemon.
 struct ClockBoundSHM {
     #[expect(dead_code)]
@@ -138,14 +150,14 @@ impl ClockBoundSHM {
     /// # Errors
     /// Returns a [`ClockErrorBound`] with an appropriate `Errno`. If the content of the segment is
     /// uninitialized, unparseable, or otherwise malformed.
-    fn new(clockbound_shm_path: &str) -> Result<ClockBoundSHM, ClockBoundError> {
+    fn new(clockbound_shm_path: &str) -> Result<ClockBoundSHM, Error> {
         // Fail early if the provided shared memory path does not exist.
         if !Path::new(clockbound_shm_path).exists() {
             let detail = format!(
                 "Path to clockbound daemon shared memory segment does not exist: {clockbound_shm_path}"
             );
-            let error = ClockBoundError {
-                kind: ClockBoundErrorKind::SegmentNotInitialized,
+            let error = Error {
+                kind: ErrorKind::SegmentNotInitialized,
                 detail,
                 errno: Errno(0),
             };
@@ -182,7 +194,7 @@ impl VMClockSHM {
     fn new(
         vmclock_shm_path: &str,
         clock_disruption_support_enabled: bool,
-    ) -> Result<VMClockSHM, ClockBoundError> {
+    ) -> Result<VMClockSHM, Error> {
         // Note that the support for clock disruption signal may be disabled on the ClockBound
         // daemon, in which case, no reader is created.
         let mut vmclock_shm_reader: Option<VMClockShmReader> = None;
@@ -192,8 +204,8 @@ impl VMClockSHM {
                 let detail = format!(
                     "Path to VMClock device shared memory segment does not exist: {vmclock_shm_path}"
                 );
-                let error = ClockBoundError {
-                    kind: ClockBoundErrorKind::SegmentNotInitialized,
+                let error = Error {
+                    kind: ErrorKind::SegmentNotInitialized,
                     detail,
                     errno: Errno(0),
                 };
@@ -226,34 +238,29 @@ impl VMClockSHM {
     }
 }
 
+/// Error returned by the [`Client`] APIs.
 #[derive(Debug)]
-pub struct ClockBoundError {
-    pub kind: ClockBoundErrorKind,
+pub struct Error {
+    pub kind: ErrorKind,
     pub errno: Errno,
     pub detail: String,
 }
 
-impl From<ShmError> for ClockBoundError {
+impl From<ShmError> for Error {
     fn from(value: ShmError) -> Self {
         let (kind, detail, errno) = match value {
-            ShmError::SyscallError(detail, errno) => (ClockBoundErrorKind::Syscall, detail, errno),
+            ShmError::SyscallError(detail, errno) => (ErrorKind::Syscall, detail, errno),
             ShmError::SegmentNotInitialized(detail) => {
-                (ClockBoundErrorKind::SegmentNotInitialized, detail, Errno(0))
+                (ErrorKind::SegmentNotInitialized, detail, Errno(0))
             }
-            ShmError::SegmentMalformed(detail) => {
-                (ClockBoundErrorKind::SegmentMalformed, detail, Errno(0))
+            ShmError::SegmentMalformed(detail) => (ErrorKind::SegmentMalformed, detail, Errno(0)),
+            ShmError::CausalityBreach(detail) => (ErrorKind::CausalityBreach, detail, Errno(0)),
+            ShmError::SegmentVersionNotSupported(detail) => {
+                (ErrorKind::SegmentVersionNotSupported, detail, Errno(0))
             }
-            ShmError::CausalityBreach(detail) => {
-                (ClockBoundErrorKind::CausalityBreach, detail, Errno(0))
-            }
-            ShmError::SegmentVersionNotSupported(detail) => (
-                ClockBoundErrorKind::SegmentVersionNotSupported,
-                detail,
-                Errno(0),
-            ),
         };
 
-        ClockBoundError {
+        Error {
             kind,
             errno,
             detail,
@@ -261,8 +268,9 @@ impl From<ShmError> for ClockBoundError {
     }
 }
 
+/// The category of an [`Error`].
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
-pub enum ClockBoundErrorKind {
+pub enum ErrorKind {
     // FIXME: the `detail` static CString is referenced on the Syscall variant. This is a temporary
     // implementation until the FFI to C is changed to have the caller allocate memory for it.
     Syscall,
@@ -489,7 +497,7 @@ mod lib_tests {
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
         remove_file_or_directory(clockbound_shm_path);
-        let result = ClockBoundClient::new_with_path(clockbound_shm_path);
+        let result = Client::new_with_path(clockbound_shm_path);
         assert!(result.is_err());
     }
 
@@ -545,20 +553,19 @@ mod lib_tests {
         };
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
-        let mut clockbound =
-            match ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("{:?}", e);
-                    panic!("ClockBoundClient::new_with_paths() failed");
-                }
-            };
+        let mut clockbound = match Client::new_with_paths(clockbound_shm_path, vmclock_shm_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{:?}", e);
+                panic!("Client::new_with_paths() failed");
+            }
+        };
 
         let now_result = match clockbound.now() {
             Ok(result) => result,
             Err(e) => {
                 eprintln!("{:?}", e);
-                panic!("ClockBoundClient::now() failed");
+                panic!("Client::now() failed");
             }
         };
 
@@ -576,7 +583,7 @@ mod lib_tests {
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
         remove_file_or_directory(vmclock_shm_path);
-        let result = ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path);
+        let result = Client::new_with_paths(clockbound_shm_path, vmclock_shm_path);
         assert!(result.is_err());
 
         // Test clockbound file exists but vmclock file does not exist.
@@ -592,7 +599,7 @@ mod lib_tests {
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
         remove_file_or_directory(vmclock_shm_path);
-        let result = ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path);
+        let result = Client::new_with_paths(clockbound_shm_path, vmclock_shm_path);
         assert!(result.is_err());
         remove_file_or_directory(clockbound_shm_path);
 
@@ -634,18 +641,18 @@ mod lib_tests {
         };
         write_vmclock_content(&mut vmclock_shm_file, &vmclock_content);
 
-        let result = ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path);
+        let result = Client::new_with_paths(clockbound_shm_path, vmclock_shm_path);
         assert!(result.is_err());
     }
 
-    /// Assert that the new() runs and returns with a ClockBoundClient if the default shared
-    /// memory path exists, or with ClockBoundError if shared memory segment does not exist.
+    /// Assert that the new() runs and returns with a Client if the default shared
+    /// memory path exists, or with Error if shared memory segment does not exist.
     /// We avoid writing to the shared memory for the default shared memory segment path
     /// because it is possible actual clients are relying on the ClockBound data at this location.
     #[test]
     #[ignore = "can fail if daemon has run previously with root privs"]
     fn test_new_sanity_check() {
-        let result = ClockBoundClient::new();
+        let result = Client::new();
         if Path::new(SHM_DEFAULT_PATH).exists() {
             assert!(result.is_ok());
         } else {
@@ -718,14 +725,13 @@ mod lib_tests {
         let ceb = ClockErrorBoundGeneric::builder().build(ClockErrorBoundLayoutVersion::V3);
         writer.write(&ceb);
 
-        let mut clockbound =
-            match ClockBoundClient::new_with_paths(clockbound_shm_path, vmclock_shm_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("{:?}", e);
-                    panic!("ClockBoundClient::new_with_paths() failed");
-                }
-            };
+        let mut clockbound = match Client::new_with_paths(clockbound_shm_path, vmclock_shm_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{:?}", e);
+                panic!("Client::new_with_paths() failed");
+            }
+        };
 
         // Validate now() has a Result with a successful value.
         let now_result = clockbound.now();
@@ -747,7 +753,7 @@ mod lib_tests {
         assert!(now_result.is_err());
     }
 
-    /// Test conversions from ShmError to ClockBoundError.
+    /// Test conversions from ShmError to Error.
 
     #[test]
     fn test_shmerror_clockbounderror_conversion_syscallerror() {
@@ -755,8 +761,8 @@ mod lib_tests {
         let detail = String::from("test detail");
         let shm_error = ShmError::SyscallError(detail.clone(), errno);
         // Perform the conversion.
-        let clockbounderror = ClockBoundError::from(shm_error);
-        assert_eq!(ClockBoundErrorKind::Syscall, clockbounderror.kind);
+        let clockbounderror = Error::from(shm_error);
+        assert_eq!(ErrorKind::Syscall, clockbounderror.kind);
         assert_eq!(errno, clockbounderror.errno);
         assert_eq!(detail, clockbounderror.detail);
     }
@@ -766,11 +772,8 @@ mod lib_tests {
         let detail = String::from("test detail");
         let shm_error = ShmError::SegmentNotInitialized(detail.clone());
         // Perform the conversion.
-        let clockbounderror = ClockBoundError::from(shm_error);
-        assert_eq!(
-            ClockBoundErrorKind::SegmentNotInitialized,
-            clockbounderror.kind
-        );
+        let clockbounderror = Error::from(shm_error);
+        assert_eq!(ErrorKind::SegmentNotInitialized, clockbounderror.kind);
         assert_eq!(Errno(0), clockbounderror.errno);
         assert_eq!(detail, clockbounderror.detail);
     }
@@ -780,8 +783,8 @@ mod lib_tests {
         let detail = String::from("test detail");
         let shm_error = ShmError::SegmentMalformed(detail.clone());
         // Perform the conversion.
-        let clockbounderror = ClockBoundError::from(shm_error);
-        assert_eq!(ClockBoundErrorKind::SegmentMalformed, clockbounderror.kind);
+        let clockbounderror = Error::from(shm_error);
+        assert_eq!(ErrorKind::SegmentMalformed, clockbounderror.kind);
         assert_eq!(Errno(0), clockbounderror.errno);
         assert_eq!(detail, clockbounderror.detail);
     }
@@ -791,8 +794,8 @@ mod lib_tests {
         let detail = String::from("test detail");
         let shm_error = ShmError::CausalityBreach(detail.clone());
         // Perform the conversion.
-        let clockbounderror = ClockBoundError::from(shm_error);
-        assert_eq!(ClockBoundErrorKind::CausalityBreach, clockbounderror.kind);
+        let clockbounderror = Error::from(shm_error);
+        assert_eq!(ErrorKind::CausalityBreach, clockbounderror.kind);
         assert_eq!(Errno(0), clockbounderror.errno);
         assert_eq!(detail, clockbounderror.detail);
     }
