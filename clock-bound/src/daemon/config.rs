@@ -52,6 +52,8 @@ pub struct LoggingConfig {
     synchronization: StreamConfig,
     /// Raw sync data for expert replay.
     ffevents: StreamConfig,
+    /// Per-source state snapshots.
+    sources: StreamConfig,
 }
 
 impl LoggingConfig {
@@ -68,6 +70,11 @@ impl LoggingConfig {
     /// The ffevents stream.
     pub fn ffevents(&self) -> &StreamConfig {
         &self.ffevents
+    }
+
+    /// The sources stream.
+    pub fn sources(&self) -> &StreamConfig {
+        &self.sources
     }
 }
 
@@ -374,8 +381,9 @@ impl Config {
 
         // The reverse is permitted: a directory with no stream enabled writes
         // nothing, which is what the toggles say.
-        let any_stream_enabled =
-            self.logging.synchronization.enabled || self.logging.ffevents.enabled;
+        let any_stream_enabled = self.logging.synchronization.enabled
+            || self.logging.ffevents.enabled
+            || self.logging.sources.enabled;
         if any_stream_enabled && self.logging.log_directory.is_none() {
             violations
                 .push("`log_directory` is required when any log stream is enabled".to_string());

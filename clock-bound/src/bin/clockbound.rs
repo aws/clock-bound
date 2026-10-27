@@ -64,6 +64,7 @@ async fn main() {
             .directory(directory.to_path_buf())
             .synchronization(logging.synchronization().is_enabled())
             .ffevents(logging.ffevents().is_enabled())
+            .sources(logging.sources().is_enabled())
             .build()
     });
     let log_handles = subscriber::init(
@@ -132,6 +133,7 @@ fn log_configuration(
         %log_directory,
         synchronization = logging.synchronization().is_enabled(),
         ffevents = logging.ffevents().is_enabled(),
+        sources = logging.sources().is_enabled(),
         ntp = ?sources.ntp(),
         "Effective configuration"
     );

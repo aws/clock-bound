@@ -16,6 +16,7 @@ use crate::shm::ClockStatus;
 
 pub mod ffevents;
 pub mod layer;
+pub mod sources;
 pub mod subscriber;
 pub mod synchronization;
 
@@ -67,6 +68,8 @@ pub enum StructuredLog {
     FFEvents,
     /// Synchronization log (see [`synchronization`]).
     Synchronization,
+    /// Sources log (see [`sources`]).
+    Sources,
     /// Algorithm analysis log (see [`crate::daemon::algo_analysis`]). Only
     /// emitted with the `algorithm` feature.
     AlgoAnalysis,
@@ -77,6 +80,7 @@ impl StructuredLog {
     const ALL: &'static [StructuredLog] = &[
         StructuredLog::FFEvents,
         StructuredLog::Synchronization,
+        StructuredLog::Sources,
         StructuredLog::AlgoAnalysis,
     ];
 
@@ -85,6 +89,7 @@ impl StructuredLog {
         match self {
             Self::FFEvents => "clock_bound::ffevents",
             Self::Synchronization => "clock_bound::synchronization",
+            Self::Sources => "clock_bound::sources",
             Self::AlgoAnalysis => "clock_bound::algo_analysis",
         }
     }
@@ -94,6 +99,7 @@ impl StructuredLog {
         match self {
             Self::FFEvents => "ffevents.log",
             Self::Synchronization => "synchronization.log",
+            Self::Sources => "sources.log",
             Self::AlgoAnalysis => "algo_analysis.log",
         }
     }
@@ -167,6 +173,9 @@ fn emit_entry(stream: StructuredLog, entry: &str) {
         StructuredLog::Synchronization => {
             tracing::info!(target: StructuredLog::Synchronization.target(), entry = entry);
         }
+        StructuredLog::Sources => {
+            tracing::info!(target: StructuredLog::Sources.target(), entry = entry);
+        }
         StructuredLog::AlgoAnalysis => {
             tracing::info!(target: StructuredLog::AlgoAnalysis.target(), entry = entry);
         }
@@ -186,7 +195,7 @@ pub(crate) fn format_log_timestamp(ts: chrono::DateTime<chrono::Utc>) -> String 
 /// Log-specific representation of clock status for serialization.
 ///
 /// Avoids deriving `Serialize` on the actual [`ClockStatus`] enum.
-#[derive(Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum ClockStatusName {
     Unknown,
@@ -254,12 +263,14 @@ mod tests {
         for variant in [
             StructuredLog::FFEvents,
             StructuredLog::Synchronization,
+            StructuredLog::Sources,
             StructuredLog::AlgoAnalysis,
         ] {
             // Exhaustiveness guard: adding a variant breaks compilation here.
             match variant {
                 StructuredLog::FFEvents
                 | StructuredLog::Synchronization
+                | StructuredLog::Sources
                 | StructuredLog::AlgoAnalysis => {}
             }
             assert!(
@@ -268,7 +279,7 @@ mod tests {
             );
         }
 
-        assert_eq!(StructuredLog::ALL.len(), 3);
+        assert_eq!(StructuredLog::ALL.len(), 4);
     }
 }
 

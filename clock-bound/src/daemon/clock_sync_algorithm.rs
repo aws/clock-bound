@@ -146,6 +146,13 @@ impl ClockSyncAlgorithm {
         self.selector.current()
     }
 
+    /// Assemble a point-in-time snapshot of every configured source for
+    /// `sources.log`.
+    pub fn sources_snapshot(&self) -> logging::sources::SourceSnapshotData {
+        // TODO: populate with per-source data.
+        logging::sources::SourceSnapshotData::default()
+    }
+
     /// Return the current ffevents sequence number, then increment it.
     ///
     /// Used to number every ffevents log entry (`init`/`feed`/`disruption`)

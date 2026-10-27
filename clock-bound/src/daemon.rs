@@ -53,6 +53,7 @@ use {
             clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector, SyncParameters},
             config::{Host, SourcesConfig},
             io::{ClockDisruptionEvent, ntp::DaemonInfo},
+            logging::sources::SNAPSHOT_PERIOD_SECS as SOURCES_SNAPSHOT_PERIOD_SECS,
             message::Dns as DnsMessage,
             receiver_stream::{ReceiverStream, RoutableEvent},
             selected_clock::SelectedClockSource,
@@ -74,6 +75,20 @@ use {
 #[cfg(feature = "daemon")]
 const DAEMON_MESSAGE_CAPACITY: usize = 5;
 
+/// Build the periodic timer that drives `sources.log` snapshots.
+///
+/// # Panics
+///
+/// Panics if not constructed within a tokio runtime.
+#[cfg(feature = "daemon")]
+fn sources_snapshot_interval() -> tokio::time::Interval {
+    let period = tokio::time::Duration::from_secs(SOURCES_SNAPSHOT_PERIOD_SECS);
+    let mut interval = tokio::time::interval(period);
+    // Skip the immediate first tick so no snapshot fires before sources exist.
+    interval.reset();
+    interval
+}
+
 #[cfg(feature = "daemon")]
 pub struct Daemon {
     io_front_end: io::SourceIO,
@@ -85,6 +100,7 @@ pub struct Daemon {
     cancellation_token: CancellationToken,
     clock_state_handle: ClockStateHandle,
     dns_message_rx: mpsc::Receiver<DnsMessage>,
+    sources_snapshot_interval: tokio::time::Interval,
     #[expect(
         dead_code,
         reason = "Only until configured sources are wired into source management"
@@ -186,6 +202,7 @@ impl Daemon {
             cancellation_token,
             clock_state_handle,
             dns_message_rx,
+            sources_snapshot_interval: sources_snapshot_interval(),
             configured_sources,
         }
     }
@@ -276,7 +293,16 @@ impl Daemon {
                 self.handle_dns_message(dns_message).await;
                 RunLoopControl::Continue
             }
+            _ = self.sources_snapshot_interval.tick() => {
+                self.emit_sources_snapshot();
+                RunLoopControl::Continue
+            }
         }
+    }
+
+    /// Emit a point-in-time snapshot of every source to `sources.log`.
+    fn emit_sources_snapshot(&self) {
+        logging::sources::log_sources_snapshot(&self.clock_sync_algorithm.sources_snapshot());
     }
 
     fn handle_event(&mut self, routable_event: RoutableEvent) {
@@ -334,6 +360,7 @@ impl Daemon {
             cancellation_token: _,
             clock_state_handle,
             dns_message_rx: _,
+            sources_snapshot_interval: _,
             configured_sources: _,
         } = self;
 
@@ -460,6 +487,7 @@ mod tests {
             cancellation_token: CancellationToken::new(),
             clock_state_handle,
             dns_message_rx,
+            sources_snapshot_interval: super::sources_snapshot_interval(),
             configured_sources: SourcesConfig::default(),
         };
 

@@ -35,6 +35,8 @@ pub struct FileStreams {
     synchronization: bool,
     /// Whether the ffevents stream is written.
     ffevents: bool,
+    /// Whether the sources stream is written.
+    sources: bool,
 }
 
 impl FileStreams {
@@ -43,6 +45,7 @@ impl FileStreams {
         match stream {
             StructuredLog::FFEvents => self.ffevents,
             StructuredLog::Synchronization => self.synchronization,
+            StructuredLog::Sources => self.sources,
             // Not configurable
             StructuredLog::AlgoAnalysis => false,
         }
@@ -58,7 +61,11 @@ pub fn init(settings: &LogSettings) -> LogHandles {
 
     // Structured streams owned by the daemon. Add a stream here to wire it up
     // automatically; Each still has to be enabled by the settings to get a layer.
-    let daemon_streams = [StructuredLog::FFEvents, StructuredLog::Synchronization];
+    let daemon_streams = [
+        StructuredLog::FFEvents,
+        StructuredLog::Synchronization,
+        StructuredLog::Sources,
+    ];
 
     let mut structured_layers = Vec::new();
     let mut handles = Vec::new();
