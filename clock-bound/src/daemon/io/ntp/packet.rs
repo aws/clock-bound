@@ -241,7 +241,7 @@ impl Packet {
 }
 
 impl TryFrom<Packet> for NtpData {
-    type Error = TryFromPacketError;
+    type Error = UnusableNtpResponse;
 
     fn try_from(value: Packet) -> Result<Self, Self::Error> {
         match value {
@@ -255,7 +255,7 @@ impl TryFrom<Packet> for NtpData {
                 stratum: 0,
                 reference_id,
                 ..
-            } => Err(Self::Error::KissoDeath(reference_id)),
+            } => Err(Self::Error::KissODeath(reference_id)),
             // Unsynchronized host
             //
             // An NTP server signals that it is unsynchronized through its stratum level, its leap
@@ -307,11 +307,11 @@ impl TryFrom<Packet> for NtpData {
 }
 
 #[derive(Debug, Error, PartialEq)]
-pub enum TryFromPacketError {
-    #[error("Could not parse stratum value.")]
-    ParsingStratum(#[from] TryFromU8Error),
+pub enum UnusableNtpResponse {
+    #[error("Invalid stratum value.")]
+    InvalidStratum(#[from] TryFromU8Error),
     #[error("Unspecified or invalid packet.")]
-    KissoDeath([u8; 4]),
+    KissODeath([u8; 4]),
     #[error("The packet's timestamp indicates that it was received after it was transmitted.")]
     BadTimestamps,
     #[error("Server indicates that it is unsynchronized.")]
@@ -478,28 +478,34 @@ mod test {
     #[rstest]
     #[case::kiss_o_death(
         Packet::builder().build(),
-        Err(TryFromPacketError::KissoDeath([0, 0, 0,0]))
+        Err(UnusableNtpResponse::KissODeath([0, 0, 0,0]))
     )]
     #[case::unsync_stratum_and_leap(
        Packet::builder()
         .stratum(16)
         .leap_indicator(LeapIndicator::Unknown)
         .build(),
-        Err(TryFromPacketError::Unsynchronized)
+        Err(UnusableNtpResponse::Unsynchronized)
     )]
     #[case::unsync_stratum_only(
        Packet::builder()
         .stratum(16)
         .leap_indicator(LeapIndicator::NoWarning)
         .build(),
-        Err(TryFromPacketError::Unsynchronized)
+        Err(UnusableNtpResponse::Unsynchronized)
     )]
     #[case::unsync_leap_only(
        Packet::builder()
         .stratum(2)
         .leap_indicator(LeapIndicator::Unknown)
         .build(),
-        Err(TryFromPacketError::Unsynchronized)
+        Err(UnusableNtpResponse::Unsynchronized)
+    )]
+    #[case::invalid_stratum_reserved(
+       Packet::builder()
+        .stratum(17)
+        .build(),
+        Err(UnusableNtpResponse::InvalidStratum(TryFromU8Error))
     )]
     #[case::bad_timestamps(
        Packet::builder()
@@ -507,11 +513,11 @@ mod test {
         .receive_timestamp(Timestamp::new(10))
         .transmit_timestamp(Timestamp::new(9))
         .build(),
-        Err(TryFromPacketError::BadTimestamps)
+        Err(UnusableNtpResponse::BadTimestamps)
     )]
     fn packet_is_unuseable(
         #[case] packet: Packet,
-        #[case] ntp_data: Result<NtpData, TryFromPacketError>,
+        #[case] ntp_data: Result<NtpData, UnusableNtpResponse>,
     ) {
         // This unit tests only tests for failures.
         // The happy path is tested in `conversion_packet_to_ntp_data`.
