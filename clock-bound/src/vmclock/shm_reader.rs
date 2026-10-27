@@ -160,6 +160,14 @@ pub struct VMClockShmReader {
     seq_count_snapshot: u32,
 }
 
+// SAFETY: This struct holds exclusive access to the raw memory mapped pointers and
+// can be sent to other threads. No limitations from mmap
+unsafe impl Send for VMClockShmReader {}
+
+// SAFETY: It is Sync because this struct does not mutate the underlying pointers.
+// All mutations require `&mut self` (which only affect the non-pointer fields anyways)
+unsafe impl Sync for VMClockShmReader {}
+
 impl VMClockShmReader {
     /// Open a VMClock shared memory segment for reading.
     ///

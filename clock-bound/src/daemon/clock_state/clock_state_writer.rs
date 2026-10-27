@@ -12,30 +12,8 @@ use crate::{
             tsc::{Period, Skew},
         },
     },
-    shm::{
-        ClockErrorBound, ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockStatus,
-        ShmWrite, ShmWriter,
-    },
+    shm::{ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion, ClockStatus, ShmWrite},
 };
-
-/// Newtype wrapper around `ShmWriter` so we can implement `Send` + `Sync`,
-/// and thus construct this as part of an async task.
-/// `ShmWriter` itself does not implement these because of its usage of a raw
-/// pointer, but semantics in our daemon are that only one such `ShmWriter` should exist
-/// at all, so `SafeShmWriter` does that for us.
-pub struct SafeShmWriter(ShmWriter);
-impl SafeShmWriter {
-    pub fn new(shm_writer: ShmWriter) -> Self {
-        Self(shm_writer)
-    }
-}
-impl ShmWrite for SafeShmWriter {
-    fn write(&mut self, ceb: &ClockErrorBound) {
-        self.0.write(ceb);
-    }
-}
-unsafe impl Send for SafeShmWriter {}
-unsafe impl Sync for SafeShmWriter {}
 
 pub struct ClockStateWriter<T> {
     clock_disruption_support_enabled: bool,
@@ -264,7 +242,10 @@ impl<T: ShmWrite> ClockStateWriter<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::time::{Duration, Instant, TscCount, tsc::Period};
+    use crate::{
+        daemon::time::{Duration, Instant, TscCount, tsc::Period},
+        shm::ClockErrorBound,
+    };
     use mockall::mock;
     use rstest::rstest;
 

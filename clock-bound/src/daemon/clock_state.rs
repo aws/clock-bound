@@ -12,8 +12,8 @@ use tracing::{debug, info};
 use crate::daemon::async_ring_buffer::Receiver;
 use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_state::adjust_data::ClockAdjustData;
+use crate::daemon::clock_state::clock_state_writer::ClockStateWrite;
 use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
-use crate::daemon::clock_state::clock_state_writer::{ClockStateWrite, SafeShmWriter};
 use crate::daemon::clock_state::system_clock_discipliner::{
     ClockCorrection, SystemClockDiscipliner,
 };
@@ -107,7 +107,6 @@ impl ClockState {
             ClockErrorBoundLayoutVersion::V2,
         )
         .unwrap();
-        let safe_shm_writer_0 = SafeShmWriter::new(shm_writer_0);
 
         let shm_writer_1 = ShmWriter::new(
             Path::new(CLOCKBOUND_SHM_DEFAULT_PATH_V1),
@@ -115,12 +114,11 @@ impl ClockState {
             ClockErrorBoundLayoutVersion::V3,
         )
         .unwrap();
-        let safe_shm_writer_1 = SafeShmWriter::new(shm_writer_1);
 
-        let clock_state_writer: ClockStateWriter<SafeShmWriter> = ClockStateWriter::builder()
+        let clock_state_writer: ClockStateWriter<ShmWriter> = ClockStateWriter::builder()
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .shm_writer_0(safe_shm_writer_0)
-            .shm_writer_1(safe_shm_writer_1)
+            .shm_writer_0(shm_writer_0)
+            .shm_writer_1(shm_writer_1)
             // The same oscillator bound the synchronization algorithm uses; always representable
             // (validated positive and far below 1e9 ppb).
             .max_drift_ppb(

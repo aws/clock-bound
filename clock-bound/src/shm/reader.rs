@@ -164,6 +164,14 @@ pub struct ShmReader {
     snapshot_gen: u16,
 }
 
+// SAFETY: This struct holds exclusive access to the raw memory mapped pointers and
+// can be sent to other threads. No limitations from mmap
+unsafe impl Send for ShmReader {}
+
+// SAFETY: It is Sync because this struct does not mutate the underlying pointers.
+// All mutations require `&mut self` (which only affect the non-pointer fields anyways)
+unsafe impl Sync for ShmReader {}
+
 impl ShmReader {
     /// Open a ClockBound shared memory segment for reading.
     ///

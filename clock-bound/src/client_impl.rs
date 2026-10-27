@@ -281,7 +281,7 @@ pub enum ErrorKind {
 }
 
 #[cfg(test)]
-mod lib_tests {
+mod test {
     use super::*;
     use crate::shm::{ClockErrorBound, ShmWrite, ShmWriter};
     use crate::shm::{ClockErrorBoundGeneric, ClockErrorBoundLayoutVersion};
@@ -798,5 +798,12 @@ mod lib_tests {
         assert_eq!(ErrorKind::CausalityBreach, clockbounderror.kind);
         assert_eq!(Errno(0), clockbounderror.errno);
         assert_eq!(detail, clockbounderror.detail);
+    }
+
+    // this doesn't actually do anything at runtime. Failures detected at build time.
+    #[test]
+    fn client_is_send_sync() {
+        fn is_send_sync<T: Send + Sync>() {}
+        is_send_sync::<Client>();
     }
 }

@@ -64,6 +64,14 @@ pub struct ShmWriter {
     ceb: LayoutPtr,
 }
 
+// SAFETY: This struct holds exclusive access to the raw memory mapped pointers and
+// can be sent to other threads. No limitations from mmap
+unsafe impl Send for ShmWriter {}
+
+// SAFETY: It is Sync because we do not write to the underlying pointers with `&self`.
+// All mutations require `&mut self`
+unsafe impl Sync for ShmWriter {}
+
 impl ShmWriter {
     /// Create a new `ShmWriter` referencing the memory segment to write `ClockErrorBound` data to.
     ///

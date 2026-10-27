@@ -50,6 +50,14 @@ pub struct VMClockShmWriter {
     vmclock_shm_body: *mut VMClockShmBody,
 }
 
+// SAFETY: This struct holds exclusive access to the raw memory mapped pointers and
+// can be sent to other threads. No limitations from mmap
+unsafe impl Send for VMClockShmWriter {}
+
+// SAFETY: It is Sync because we are do not write to the underlying pointers with `&self`.
+// All mutations require `&mut self`
+unsafe impl Sync for VMClockShmWriter {}
+
 impl VMClockShmWriter {
     /// Create a new `VMClockShmWriter` referencing the memory segment to write `VMClockShmBody` data to.
     ///
