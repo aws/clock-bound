@@ -9,7 +9,7 @@ use clock_bound::daemon::time::Instant;
 use nix::sys::time::TimeSpec;
 
 use clock_bound as clock_bound_client_v3;
-use clock_bound::Now as ClockBoundNowResultV3;
+use clock_bound::TimeWindow as ClockBoundNowResultV3;
 use clock_bound_client as clock_bound_client_v2;
 
 const NSECS_PER_SEC: i64 = 1_000_000_000;

@@ -90,7 +90,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns [`Error`] if the shared memory segments cannot be open or accessed.
-    pub fn now(&mut self) -> Result<Now, Error> {
+    pub fn now(&mut self) -> Result<TimeWindow, Error> {
         // The very first thing to do is to read from the ClockBound shared memory segment, take a
         // snapshot to obtain the clock parameters and bound on error, and create a timestamp.
         let cb_snap = self.clockbound_shm.snapshot()?;
@@ -126,12 +126,17 @@ impl Client {
     }
 }
 
-/// Result of the [`Client::now()`] function.
-#[derive(PartialEq, Clone, Debug)]
-pub struct Now {
+/// The 2 timestamps which define true time
+///
+/// True time lies between `earliest` and `latest` when the [`ClockStatus`]
+/// is [`Synchronized`](ClockStatus::Synchronized) or [`FreeRunning`](ClockStatus::FreeRunning)
+///
+/// This is the output of the [`Client::now()`] function.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct TimeWindow {
     /// The earliest time that true time lies in
     pub earliest: TimeSpec,
-    /// The latest time that true time
+    /// The latest time that true time lies in
     pub latest: TimeSpec,
     /// The clock status
     pub clock_status: ClockStatus,

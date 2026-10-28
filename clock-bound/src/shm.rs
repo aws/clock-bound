@@ -31,7 +31,7 @@ use nix::sys::time::{TimeSpec, TimeValLike};
 use std::error::Error;
 use std::fmt;
 
-use crate::Now;
+use crate::TimeWindow;
 
 pub const CLOCKBOUND_SHM_DEFAULT_PATH_V0: &str = "/var/run/clockbound/shm0";
 pub const CLOCKBOUND_SHM_DEFAULT_PATH_V1: &str = "/var/run/clockbound/shm1";
@@ -59,7 +59,7 @@ pub trait ClockBoundSnapshot {
     ///
     /// The function also returns a clock status to assert that the clock is being synchronized, or
     /// free-running, or ...
-    fn now(&self) -> Result<Now, ShmError>;
+    fn now(&self) -> Result<TimeWindow, ShmError>;
 }
 
 /// Enum that holds supported layout of the `ClockErrorBound` stored in the ClockBound daemon
@@ -122,7 +122,7 @@ impl ClockErrorBound {
 }
 
 impl ClockBoundSnapshot for ClockErrorBound {
-    fn now(&self) -> Result<Now, ShmError> {
+    fn now(&self) -> Result<TimeWindow, ShmError> {
         match self {
             ClockErrorBound::V2(ceb) => ceb.now(),
             ClockErrorBound::V3(ceb) => ceb.now(),
@@ -307,7 +307,7 @@ impl Error for ShmError {}
 /// memory segment, and its representation *may* be different for C code compiled with specific
 /// flags. Making it explicit removes this risk and ambiguity.
 #[repr(i32)]
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ClockStatus {
     /// The status of the clock is unknown.
     /// In this clock status, error-bounded timestamps should not be trusted.
@@ -413,7 +413,7 @@ impl ClockErrorBoundV2 {
     ///   (earliest, latest) = ((now - ceb), (now + ceb))
     /// The function also returns a clock status to assert that the clock is being synchronized, or
     /// free-running, or ...
-    pub fn now(&self) -> Result<Now, ShmError> {
+    pub fn now(&self) -> Result<TimeWindow, ShmError> {
         // Read the clock, start with the REALTIME one to be as close as possible to the event the
         // caller is interested in. The monotonic clock should be read after. It is correct for the
         // process be preempted between the two calls: a delayed read of the monotonic clock will
@@ -436,7 +436,7 @@ impl ClockErrorBoundV2 {
         clippy::cast_possible_truncation,
         reason = "todo, come back and evaluate impact"
     )]
-    fn compute_bound_at(&self, real: TimeSpec, mono: TimeSpec) -> Result<Now, ShmError> {
+    fn compute_bound_at(&self, real: TimeSpec, mono: TimeSpec) -> Result<TimeWindow, ShmError> {
         // Sanity checks:
         // - `now()` should operate on a consistent snapshot of the shared memory segment, and
         //   causality between mono and as_of should be enforced.
@@ -541,7 +541,7 @@ impl ClockErrorBoundV2 {
         let earliest = real - updated_bound;
         let latest = real + updated_bound;
 
-        Ok(Now {
+        Ok(TimeWindow {
             earliest,
             latest,
             clock_status,
@@ -554,7 +554,7 @@ impl ClockBoundSnapshot for ClockErrorBoundV2 {
     ///
     /// This version relies on the system clock to retrieve the current time as well as grow the
     /// bound on the clock error at a constant rate.
-    fn now(&self) -> Result<Now, ShmError> {
+    fn now(&self) -> Result<TimeWindow, ShmError> {
         // Read the clock, start with the REALTIME one to be as close as possible to the event the
         // caller is interested in. The monotonic clock should be read after. It is correct for the
         // process be preempted between the two calls: a delayed read of the monotonic clock will
@@ -722,7 +722,7 @@ impl ClockErrorBoundV3 {
 
     #[allow(clippy::cast_precision_loss)]
     #[allow(clippy::cast_possible_truncation)]
-    fn compute_bound_at_tsc(&self, now_tsc: u64) -> Result<Now, ShmError> {
+    fn compute_bound_at_tsc(&self, now_tsc: u64) -> Result<TimeWindow, ShmError> {
         // Sanity checks:
         // - `now()` should operate on a consistent snapshot of the shared memory segment, and
         //   causality between mono and as_of should be enforced.
@@ -796,7 +796,7 @@ impl ClockErrorBoundV3 {
             }
         };
 
-        Ok(Now {
+        Ok(TimeWindow {
             earliest,
             latest,
             clock_status,
@@ -809,7 +809,7 @@ impl ClockBoundSnapshot for ClockErrorBoundV3 {
     ///
     /// This version relies on the system clock to retrieve the current time as well as grow the
     /// bound on the clock error at a constant rate.
-    fn now(&self) -> Result<Now, ShmError> {
+    fn now(&self) -> Result<TimeWindow, ShmError> {
         let now_tsc = read_timestamp_counter_begin();
         self.compute_bound_at_tsc(now_tsc)
     }
@@ -897,7 +897,7 @@ mod t_lib {
         let real = TimeSpec::new(2, 0);
         let mono = TimeSpec::new(2, 0);
 
-        let Now {
+        let TimeWindow {
             earliest,
             latest,
             clock_status,
@@ -922,7 +922,7 @@ mod t_lib {
         let real = TimeSpec::new(20, 0); // realtime clock way ahead
         let mono = TimeSpec::new(4, 0);
 
-        let Now {
+        let TimeWindow {
             earliest,
             latest,
             clock_status,
@@ -947,7 +947,7 @@ mod t_lib {
         let real = TimeSpec::new(61, 0);
         let mono = TimeSpec::new(61, 0);
 
-        let Now {
+        let TimeWindow {
             earliest,
             latest,
             clock_status,
@@ -972,7 +972,7 @@ mod t_lib {
         let real = TimeSpec::new(10, 0);
         let mono = TimeSpec::new(10, 0); // Passed void_after
 
-        let Now {
+        let TimeWindow {
             earliest,
             latest,
             clock_status,

@@ -9,8 +9,8 @@ pub mod client {
     pub use crate::ClockStatus;
     pub use crate::Error as ClockBoundError;
     pub use crate::ErrorKind as ClockBoundErrorKind;
-    pub use crate::Now as ClockBoundNowResult;
     pub use crate::SHM_DEFAULT_PATH as CLOCKBOUND_SHM_DEFAULT_PATH;
+    pub use crate::TimeWindow as ClockBoundNowResult;
     pub use crate::VMCLOCK_DEFAULT_PATH as VMCLOCK_SHM_DEFAULT_PATH;
 }
 
@@ -21,7 +21,7 @@ pub use client_impl::Client;
 pub use client_impl::ClockStatus;
 pub use client_impl::Error;
 pub use client_impl::ErrorKind;
-pub use client_impl::Now;
+pub use client_impl::TimeWindow;
 
 mod shm;
 

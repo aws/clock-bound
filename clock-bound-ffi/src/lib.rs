@@ -6,7 +6,7 @@
 #![allow(non_camel_case_types)]
 
 use clock_bound::{Client, Error, ErrorKind};
-use clock_bound::{ClockStatus, Now, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH};
+use clock_bound::{ClockStatus, SHM_DEFAULT_PATH, TimeWindow, VMCLOCK_DEFAULT_PATH};
 use core::ptr;
 use errno::Errno;
 use std::ffi::{CStr, CString, c_char, c_int};
@@ -106,7 +106,7 @@ pub struct clockbound_ctx {
 
 impl clockbound_ctx {
     /// Obtain error-bounded timestamps and the `ClockStatus`.
-    fn now(&mut self) -> Result<Now, Error> {
+    fn now(&mut self) -> Result<TimeWindow, Error> {
         self.clockbound_client.now()
     }
 }
@@ -143,9 +143,9 @@ pub struct clockbound_now_result {
     clock_status: clockbound_clock_status,
 }
 
-impl From<Now> for clockbound_now_result {
-    fn from(value: Now) -> Self {
-        let Now {
+impl From<TimeWindow> for clockbound_now_result {
+    fn from(value: TimeWindow) -> Self {
+        let TimeWindow {
             earliest,
             latest,
             clock_status,
