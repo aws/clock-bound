@@ -58,17 +58,25 @@ pub struct Cli {
     force: bool,
 }
 
-pub fn main(args: Cli) -> anyhow::Result<()> {
-    // try_init: tolerate an already-installed subscriber (e.g. when invoked
-    // from tests or another in-process caller)
-    let _ = tracing_subscriber::fmt()
+/// Install the stdout logging subscriber used by the `fix-log-order` CLI.
+///
+/// Defaults to INFO, overridable with `RUST_LOG`.
+pub fn init_logging() {
+    tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
                 .with_default_directive(Level::INFO.into())
                 .from_env_lossy(),
         )
-        .try_init();
+        .init();
+}
 
+/// Run the fix-log-order pass.
+///
+/// Does not install a tracing subscriber: logging setup belongs to the binary entry
+/// point (see [`init_logging`]). A global subscriber installed here would outlive
+/// the call and leak into every other test sharing the libtest process.
+pub fn main(args: Cli) -> anyhow::Result<()> {
     let mut writer = match (&args.output, args.check) {
         (Some(path), false) => {
             if path.exists() && !args.force {

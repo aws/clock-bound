@@ -32,7 +32,10 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::DefaultFfSyncParams => bins::default_ffsync_params::main(),
-        Commands::FixLogOrder(cli) => bins::fix_log_order::main(cli)?,
+        Commands::FixLogOrder(cli) => {
+            bins::fix_log_order::init_logging();
+            bins::fix_log_order::main(cli)?;
+        }
         Commands::OscillatorGenerator(cli) => bins::oscillator_generator::main(cli)?,
         Commands::ReproReplay(cli) => bins::repro_replay::main(cli)?,
         Commands::ScenarioGenerator(cli) => bins::scenario_generator::main(cli)?,
