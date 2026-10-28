@@ -1,7 +1,9 @@
 //! Adjust system clock and clockbound shared memory
 pub mod adjust_data;
-pub mod clock_state_writer;
+mod shm_writer;
 pub mod system_clock_discipliner;
+
+use shm_writer::{Shm0, Shm1};
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -12,8 +14,6 @@ use tracing::{debug, info};
 use crate::daemon::async_ring_buffer::Receiver;
 use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_state::adjust_data::ClockAdjustData;
-use crate::daemon::clock_state::clock_state_writer::ClockStateWrite;
-use crate::daemon::clock_state::clock_state_writer::ClockStateWriter;
 use crate::daemon::clock_state::system_clock_discipliner::{
     ClockCorrection, SystemClockDiscipliner,
 };
@@ -43,10 +43,13 @@ const CLOCK_ADJUST_SUMMARY_PERIOD_SECS: u64 = 600;
 /// - the `SystemClockDiscipliner` component which interfaces with the
 ///   `CLOCK_REALTIME` kernel clock to synchronize it with `ClockBound` estimate
 ///   of UTC (`ClockBound` clock), and
-/// - `ClockStateWriter` which manages writing
-///   the `ClockErrorBound` to SHM segment for the client to read.
+/// - `Shm0` which manages writing
+///   the `ClockErrorBound` to SHM segment for `ClockBoundV2` clients to read
+/// - `Shm1` which manages writing
+///   the `ClockErrorBound` to SHM segment for `ClockBoundV3` clients to read
 pub(crate) struct ClockState {
-    state_writer: Box<dyn ClockStateWrite>,
+    shm0: Shm0,
+    shm1: Shm1,
     system_clock_discipliner: SystemClockDiscipliner,
     sync_parameters: Option<SyncParameters>,
     clock_status: ClockStatus,
@@ -58,8 +61,10 @@ pub(crate) struct ClockState {
 }
 
 impl ClockState {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
-        clock_state_writer: Box<dyn ClockStateWrite>,
+        shm0: Shm0,
+        shm1: Shm1,
         system_clock_discipliner: SystemClockDiscipliner,
         clock_params_receiver: Receiver<SyncParameters>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
@@ -68,7 +73,8 @@ impl ClockState {
         vmclock_state: Option<Arc<Mutex<VMClockState>>>,
     ) -> Self {
         Self {
-            state_writer: clock_state_writer,
+            shm0,
+            shm1,
             system_clock_discipliner,
             clock_params_receiver,
             clock_disruption_receiver,
@@ -99,7 +105,7 @@ impl ClockState {
         // Build two writers, each writing to a specific shared memory segment path.
         //
         // FIXME: given these path are const strings, would be worth looking into moving the
-        // creation of these writers to the ClockStateWriter::new() method.
+        // creation of these writers to the Shm0::new()/Shm1::new() methods.
         //
         let shm_writer_0 = ShmWriter::new(
             Path::new(CLOCKBOUND_SHM_DEFAULT_PATH_V0),
@@ -115,17 +121,22 @@ impl ClockState {
         )
         .unwrap();
 
-        let clock_state_writer: ClockStateWriter<ShmWriter> = ClockStateWriter::builder()
+        // The same oscillator bound the synchronization algorithm uses; always representable
+        // (validated positive and far below 1e9 ppb).
+        let max_drift_ppb = max_dispersion
+            .to_ppb()
+            .expect("max_dispersion is a valid ppb value");
+
+        let shm0 = Shm0::builder()
+            .shm_writer(Box::new(shm_writer_0))
             .clock_disruption_support_enabled(clock_disruption_support_enabled)
-            .shm_writer_0(shm_writer_0)
-            .shm_writer_1(shm_writer_1)
-            // The same oscillator bound the synchronization algorithm uses; always representable
-            // (validated positive and far below 1e9 ppb).
-            .max_drift_ppb(
-                max_dispersion
-                    .to_ppb()
-                    .expect("max_dispersion is a valid ppb value"),
-            )
+            .max_drift_ppb(max_drift_ppb)
+            .disruption_marker(disruption_marker)
+            .build();
+        let shm1 = Shm1::builder()
+            .shm_writer(Box::new(shm_writer_1))
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
+            .max_drift_ppb(max_drift_ppb)
             .disruption_marker(disruption_marker)
             .build();
         #[cfg(not(feature = "test-side-by-side"))]
@@ -134,7 +145,8 @@ impl ClockState {
         let system_clock_discipliner = SystemClockDiscipliner::with_noop_clock_adjuster();
 
         Self::new(
-            Box::new(clock_state_writer),
+            shm0,
+            shm1,
             system_clock_discipliner,
             clock_params_receiver,
             clock_disruption_receiver,
@@ -170,7 +182,7 @@ impl ClockState {
         // in case a previous `ClockBound` has written reliable SHM data.
         // We could consider to wait til we are about to step the clock, and set the
         // clock status to unknown right before then.
-        self.state_writer.initialize_ceb_v2_shm();
+        self.shm0.initialize();
         loop {
             tokio::select! {
                 biased; // biased to ensure disruption is handled first when this happens
@@ -288,16 +300,16 @@ impl ClockState {
             // Log clock status transitions and update shared state
             Self::set_clock_status(&mut self.clock_status, clock_status_v3);
 
-            self.state_writer
-                .handle_clock_parameters_shm1(parameters, clock_status_v3);
+            self.shm1
+                .handle_clock_parameters(parameters, clock_status_v3);
 
             // Handle SHM0 (`ClockErrorboundV2`) after SHM1.
             let mut clock_status_v2 = self.determine_clock_error_bound_v2_status(parameters);
             if vmclock_failed {
                 clock_status_v2 = ClockStatus::Unknown;
             }
-            self.state_writer
-                .handle_clock_parameters_shm0(parameters, clock_status_v2);
+            self.shm0
+                .handle_clock_parameters(parameters, clock_status_v2);
         }
     }
 
@@ -319,7 +331,8 @@ impl ClockState {
         // This makes it a compilation error if we add a new field this Self without handling it here
         let Self {
             system_clock_discipliner,
-            state_writer: clock_state_writer,
+            shm0,
+            shm1,
             clock_params_receiver,
             clock_disruption_receiver,
             sync_parameters,
@@ -331,9 +344,10 @@ impl ClockState {
 
         let val = clock_disruption_receiver.borrow_and_update().clone();
         if let Some(disruption_marker) = val.disruption_marker {
-            // Update the clock status on the shared memory segments
+            // Update the clock status on the shared memory segments.
             if let Some(sp) = sync_parameters {
-                clock_state_writer.handle_disruption(&sp.clock_parameters, disruption_marker);
+                shm1.handle_disruption(&sp.clock_parameters, disruption_marker);
+                shm0.handle_disruption(&sp.clock_parameters, disruption_marker);
             }
 
             *sync_parameters = None;
@@ -355,7 +369,7 @@ mod tests {
     use crate::{
         daemon::{
             async_ring_buffer,
-            clock_state::clock_state_writer::MockClockStateWrite,
+            clock_state::shm_writer::test_support::MockShmWriter,
             clock_state::system_clock_discipliner::MockNtpAdjTimeExt,
             clock_sync_algorithm::SourceInfo,
             time::clocks::RealTime,
@@ -364,10 +378,31 @@ mod tests {
                 tsc::{Frequency, Period},
             },
         },
-        shm::ClockStatus,
+        shm::{ClockErrorBound, ClockStatus},
     };
 
     use super::*;
+
+    /// Builds a `Shm0` over the supplied mock writer, with inert field values. Tests assert on the
+    /// `ClockStatus` written at the `ShmWrite` seam, so the field values here are not significant.
+    fn mock_shm0(mock: MockShmWriter) -> Shm0 {
+        Shm0::builder()
+            .shm_writer(Box::new(mock))
+            .clock_disruption_support_enabled(false)
+            .max_drift_ppb(0)
+            .disruption_marker(0)
+            .build()
+    }
+
+    /// Builds a `Shm1` over the supplied mock writer, with inert field values.
+    fn mock_shm1(mock: MockShmWriter) -> Shm1 {
+        Shm1::builder()
+            .shm_writer(Box::new(mock))
+            .clock_disruption_support_enabled(false)
+            .max_drift_ppb(0)
+            .disruption_marker(0)
+            .build()
+    }
 
     /// This function used to have deterministic values. However, removing
     /// the high level trait on the system clock discipline struct and
@@ -405,20 +440,34 @@ mod tests {
             period_max_error: Period::from_seconds(1e-11),
             as_of_monotonic: Instant::from_nanos(1000),
         };
-        let expected_clock_parameters = clock_parameters.clone();
-        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
-        mock_clock_state_writer
-            .expect_handle_disruption()
+
+        let mut mock_shm_writer_1 = MockShmWriter::new();
+        mock_shm_writer_1
+            .expect_write()
             .once()
-            .withf(move |param: &ClockParameters, marker: &u64| {
-                *param == expected_clock_parameters && *marker == 123
+            .withf(move |ceb: &ClockErrorBound| {
+                ceb.clock_status() == ClockStatus::Disrupted
+                    && ceb.disruption_marker() == disruption_marker
             })
             .return_const(());
+        let mut mock_shm_writer_0 = MockShmWriter::new();
+        mock_shm_writer_0
+            .expect_write()
+            .once()
+            .withf(move |ceb: &ClockErrorBound| {
+                ceb.clock_status() == ClockStatus::Disrupted
+                    && ceb.disruption_marker() == disruption_marker
+            })
+            .return_const(());
+
+        let shm0 = mock_shm0(mock_shm_writer_0);
+        let shm1 = mock_shm1(mock_shm_writer_1);
         let (_tx, rx) = async_ring_buffer::create(1);
         let (clock_disruption_sender, clock_disruption_receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         let mut clock_state = ClockState::new(
-            Box::new(mock_clock_state_writer),
+            shm0,
+            shm1,
             system_clock_discipliner,
             rx,
             clock_disruption_receiver,
@@ -458,24 +507,28 @@ mod tests {
             .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
         let system_clock_discipliner = SystemClockDiscipliner::new(Box::new(mock_ntp_adjtime));
 
-        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
-        mock_clock_state_writer
-            .expect_handle_clock_parameters_shm1()
+        let mut mock_shm_writer_1 = MockShmWriter::new();
+        mock_shm_writer_1
+            .expect_write()
             .once()
-            .withf(|_clock_params, clock_status| *clock_status == ClockStatus::Unknown)
+            .withf(|ceb: &ClockErrorBound| ceb.clock_status() == ClockStatus::Unknown)
             .return_const(());
-        mock_clock_state_writer
-            .expect_handle_clock_parameters_shm0()
+        let mut mock_shm_writer_0 = MockShmWriter::new();
+        mock_shm_writer_0
+            .expect_write()
             .once()
-            .withf(|_clock_params, clock_status| *clock_status == ClockStatus::Unknown)
+            .withf(|ceb: &ClockErrorBound| ceb.clock_status() == ClockStatus::Unknown)
             .return_const(());
+        let shm0 = mock_shm0(mock_shm_writer_0);
+        let shm1 = mock_shm1(mock_shm_writer_1);
 
         let (_tx, rx) = async_ring_buffer::create(1);
         let (_, clock_disruption_receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         let vmclock_state = Some(Arc::new(Mutex::new(VMClockState::Failed)));
         let mut clock_state = ClockState::new(
-            Box::new(mock_clock_state_writer),
+            shm0,
+            shm1,
             system_clock_discipliner,
             rx,
             clock_disruption_receiver,
@@ -512,23 +565,27 @@ mod tests {
             .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
         let system_clock_discipliner = SystemClockDiscipliner::new(Box::new(mock_ntp_adjtime));
 
-        let mut mock_clock_state_writer: MockClockStateWrite = MockClockStateWrite::new();
-        mock_clock_state_writer
-            .expect_handle_clock_parameters_shm1()
+        let mut mock_shm_writer_1 = MockShmWriter::new();
+        mock_shm_writer_1
+            .expect_write()
             .once()
-            .withf(|_clock_params, clock_status| *clock_status == ClockStatus::Synchronized)
+            .withf(|ceb: &ClockErrorBound| ceb.clock_status() == ClockStatus::Synchronized)
             .return_const(());
-        mock_clock_state_writer
-            .expect_handle_clock_parameters_shm0()
+        let mut mock_shm_writer_0 = MockShmWriter::new();
+        mock_shm_writer_0
+            .expect_write()
             .once()
-            .withf(|_clock_params, clock_status| *clock_status == ClockStatus::Synchronized)
+            .withf(|ceb: &ClockErrorBound| ceb.clock_status() == ClockStatus::Synchronized)
             .return_const(());
+        let shm0 = mock_shm0(mock_shm_writer_0);
+        let shm1 = mock_shm1(mock_shm_writer_1);
 
         let (_tx, rx) = async_ring_buffer::create(1);
         let (_, clock_disruption_receiver) =
             watch::channel::<ClockDisruptionEvent>(ClockDisruptionEvent::default());
         let mut clock_state = ClockState::new(
-            Box::new(mock_clock_state_writer),
+            shm0,
+            shm1,
             system_clock_discipliner,
             rx,
             clock_disruption_receiver,
@@ -555,7 +612,8 @@ mod tests {
         let build = |vmclock_state: Option<Arc<Mutex<VMClockState>>>| {
             let (_, rx) = async_ring_buffer::create(1);
             ClockState::new(
-                Box::new(MockClockStateWrite::new()),
+                mock_shm0(MockShmWriter::new()),
+                mock_shm1(MockShmWriter::new()),
                 SystemClockDiscipliner::new(Box::new(MockNtpAdjTimeExt::new())),
                 rx,
                 clock_disruption_receiver.clone(),
