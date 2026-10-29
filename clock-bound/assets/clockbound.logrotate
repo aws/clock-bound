@@ -14,9 +14,24 @@
 # Install to: /etc/logrotate.d/clockbound
 
 /var/log/clockbound/synchronization.log
-/var/log/clockbound/ffevents.log {
+/var/log/clockbound/sources.log {
     daily
     rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        # Signal clockbound to reopen log files. The `|| true` ensures logrotate
+        # does not fail if the service is not currently running.
+        /usr/bin/systemctl kill --signal=HUP clockbound.service 2>/dev/null || true
+    endscript
+}
+
+/var/log/clockbound/ffevents.log {
+    daily
+    rotate 3
     missingok
     notifempty
     compress
