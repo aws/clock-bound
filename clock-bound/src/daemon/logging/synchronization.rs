@@ -224,7 +224,6 @@ mod tests {
 
     mod end_to_end {
         use super::*;
-        use crate::daemon::event::Stratum;
         use crate::daemon::logging::{
             StructuredLog,
             test_support::{assert_matches_expected, with_layer},
@@ -332,7 +331,7 @@ mod tests {
             let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
             let sync_parameters = SyncParameters {
                 clock_parameters: sample_clock_parameters(),
-                source_info: SourceInfo::AmazonTimeSync(addr, Stratum::ONE),
+                source_info: SourceInfo::AmazonTimeSync(addr),
                 selected_at: Instant::from_secs(1_721_139_180),
                 selected_at_clock_error_bound: Duration::from_nanos(95_000),
             };

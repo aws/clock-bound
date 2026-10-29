@@ -235,7 +235,7 @@ enum SourceType {
 impl From<&SourceInfo> for SourceType {
     fn from(info: &SourceInfo) -> Self {
         match info {
-            SourceInfo::AmazonTimeSync(..) | SourceInfo::NtpSource(..) => Self::Ntp,
+            SourceInfo::AmazonTimeSync(_) | SourceInfo::NtpSource(_) => Self::Ntp,
             SourceInfo::Phc(_) => Self::Phc,
         }
     }

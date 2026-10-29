@@ -67,7 +67,7 @@ impl NtpSource {
 
     /// This source's identity.
     pub fn source_info(&self) -> super::SourceInfo {
-        super::SourceInfo::NtpSource(self.source_address, event::Stratum::Unspecified)
+        super::SourceInfo::NtpSource(self.source_address)
     }
 
     /// Summarize this source's SKM sample buffer for `sources.log`, over the last `window`.

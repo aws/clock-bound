@@ -52,7 +52,7 @@ impl AmazonTimeSync {
 
     /// This source's identity.
     pub fn source_info(&self) -> super::SourceInfo {
-        super::SourceInfo::AmazonTimeSync(self.source_address.into(), event::Stratum::Unspecified)
+        super::SourceInfo::AmazonTimeSync(self.source_address.into())
     }
 
     /// Summarize this source's SKM sample buffer for `sources.log`, over the last `window`.

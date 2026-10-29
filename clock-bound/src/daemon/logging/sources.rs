@@ -161,7 +161,6 @@ pub fn log_sources_snapshot(data: &SourceSnapshotData) {
 mod tests {
     use super::*;
     use crate::daemon::clock_sync_algorithm::SourceInfo;
-    use crate::daemon::event::Stratum;
     use crate::daemon::logging::{
         StructuredLog,
         test_support::{assert_matches_expected, with_layer},
@@ -197,10 +196,7 @@ mod tests {
         let data = SourceSnapshotData {
             sources: vec![
                 SourceData {
-                    source_info: SourceInfo::NtpSource(
-                        "169.254.169.123:123".parse().unwrap(),
-                        Stratum::Unspecified,
-                    ),
+                    source_info: SourceInfo::NtpSource("169.254.169.123:123".parse().unwrap()),
                     poll_interval: Duration::from_secs(16),
                     skm: SkmSummary::default(),
                 },
@@ -270,10 +266,7 @@ mod tests {
     fn log_sources_snapshot_stats_schema() {
         let data = SourceSnapshotData {
             sources: vec![SourceData {
-                source_info: SourceInfo::NtpSource(
-                    "169.254.169.123:123".parse().unwrap(),
-                    Stratum::Unspecified,
-                ),
+                source_info: SourceInfo::NtpSource("169.254.169.123:123".parse().unwrap()),
                 poll_interval: Duration::from_secs(16),
                 skm: SkmSummary {
                     window: Duration::from_secs(1024),

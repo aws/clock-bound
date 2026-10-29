@@ -31,37 +31,54 @@ use std::sync::Arc;
 
 use crate::daemon::event::Stratum;
 
-/// Identifies which clock source produced a [`SyncParameters`](super::SyncParameters).
+/// Identifies a clock source.
+///
+/// Used for logging and for tracking which source is selected. Where the stratum of the source's
+/// last response is needed, see [`SourceInfoWithStratum`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceInfo {
+    AmazonTimeSync(SocketAddr),
+    NtpSource(SocketAddr),
+    Phc(DevicePath),
+}
+
+impl SourceInfo {
+    /// The source's identifier for logs: its address (`ip:port`) or device path.
+    pub fn identifier(&self) -> String {
+        match self {
+            Self::AmazonTimeSync(addr) | Self::NtpSource(addr) => addr.to_string(),
+            Self::Phc(device_path) => device_path.to_string(),
+        }
+    }
+}
+
+/// A [`SourceInfo`] plus the stratum reported by the source's latest NTP response.
+///
+/// Only the NTP-based variants carry a stratum. Convert to a [`SourceInfo`] (via [`From`]) to
+/// drop it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceInfoWithStratum {
     AmazonTimeSync(SocketAddr, Stratum),
     NtpSource(SocketAddr, Stratum),
     Phc(DevicePath),
 }
 
-impl SourceInfo {
-    /// Returns `true` when `self` and `other` refer to the same clock source.
-    ///
-    /// Identity is the variant plus the socket address for the NTP-based
-    /// sources (`AmazonTimeSync`/`NtpSource`), or the device path for `Phc`.
-    /// `AmazonTimeSync` and `NtpSource` are different variants and are never
-    /// considered the same source, even if they happened to share an address.
-    ///
-    /// Stratum is deliberately excluded from this comparison.
-    pub fn same_source(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::AmazonTimeSync(a, _), Self::AmazonTimeSync(b, _))
-            | (Self::NtpSource(a, _), Self::NtpSource(b, _)) => a == b,
-            (Self::Phc(a), Self::Phc(b)) => a == b,
-            _ => false,
+impl From<&SourceInfoWithStratum> for SourceInfo {
+    fn from(value: &SourceInfoWithStratum) -> Self {
+        match value {
+            SourceInfoWithStratum::AmazonTimeSync(addr, _) => Self::AmazonTimeSync(*addr),
+            SourceInfoWithStratum::NtpSource(addr, _) => Self::NtpSource(*addr),
+            SourceInfoWithStratum::Phc(device_path) => Self::Phc(device_path.clone()),
         }
     }
+}
 
-    /// The source's identifier for logs: its address (`ip:port`) or device path.
-    pub fn identifier(&self) -> String {
-        match self {
-            Self::AmazonTimeSync(addr, _) | Self::NtpSource(addr, _) => addr.to_string(),
-            Self::Phc(device_path) => device_path.to_string(),
+impl From<SourceInfoWithStratum> for SourceInfo {
+    fn from(value: SourceInfoWithStratum) -> Self {
+        match value {
+            SourceInfoWithStratum::AmazonTimeSync(addr, _) => Self::AmazonTimeSync(addr),
+            SourceInfoWithStratum::NtpSource(addr, _) => Self::NtpSource(addr),
+            SourceInfoWithStratum::Phc(device_path) => Self::Phc(device_path),
         }
     }
 }
@@ -97,59 +114,71 @@ impl From<&str> for DevicePath {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::event::Stratum;
 
     #[test]
     fn phc_with_same_device_path_is_same_source() {
         let a = SourceInfo::Phc(DevicePath::from("/dev/ptp0"));
         let b = SourceInfo::Phc(DevicePath::from("/dev/ptp0"));
-        assert!(a.same_source(&b));
+        assert_eq!(a, b);
     }
 
     #[test]
     fn phc_with_different_device_path_is_not_same_source() {
         let a = SourceInfo::Phc(DevicePath::from("/dev/ptp0"));
         let b = SourceInfo::Phc(DevicePath::from("/dev/ptp1"));
-        assert!(!a.same_source(&b));
+        assert_ne!(a, b);
     }
 
     #[test]
     fn amazon_time_sync_with_same_address_is_same_source() {
         let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
-        let a = SourceInfo::AmazonTimeSync(addr, Stratum::ONE);
-        let b = SourceInfo::AmazonTimeSync(addr, Stratum::ONE);
-        assert!(a.same_source(&b));
-    }
-
-    #[test]
-    fn amazon_time_sync_stratum_change_is_still_same_source() {
-        // Stratum is deliberately excluded from source identity.
-        let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
-        let a = SourceInfo::AmazonTimeSync(addr, Stratum::ONE);
-        let b = SourceInfo::AmazonTimeSync(addr, Stratum::TWO);
-        assert!(a.same_source(&b));
+        assert_eq!(
+            SourceInfo::AmazonTimeSync(addr),
+            SourceInfo::AmazonTimeSync(addr)
+        );
     }
 
     #[test]
     fn amazon_time_sync_with_different_address_is_not_same_source() {
-        let a = SourceInfo::AmazonTimeSync("169.254.169.123:123".parse().unwrap(), Stratum::ONE);
-        let b = SourceInfo::AmazonTimeSync("169.254.169.101:123".parse().unwrap(), Stratum::ONE);
-        assert!(!a.same_source(&b));
+        let a = SourceInfo::AmazonTimeSync("169.254.169.123:123".parse().unwrap());
+        let b = SourceInfo::AmazonTimeSync("169.254.169.101:123".parse().unwrap());
+        assert_ne!(a, b);
     }
 
     #[test]
     fn amazon_time_sync_and_ntp_source_with_same_address_are_not_same_source() {
         // Different variants are never the same source, even with a shared address.
         let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
-        let a = SourceInfo::AmazonTimeSync(addr, Stratum::ONE);
-        let b = SourceInfo::NtpSource(addr, Stratum::ONE);
-        assert!(!a.same_source(&b));
+        assert_ne!(
+            SourceInfo::AmazonTimeSync(addr),
+            SourceInfo::NtpSource(addr)
+        );
     }
 
     #[test]
     fn phc_and_ntp_source_are_never_same_source() {
         let a = SourceInfo::Phc(DevicePath::from("/dev/ptp0"));
-        let b = SourceInfo::NtpSource("169.254.169.123:123".parse().unwrap(), Stratum::ONE);
-        assert!(!a.same_source(&b));
+        let b = SourceInfo::NtpSource("169.254.169.123:123".parse().unwrap());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn stratum_is_dropped_when_converting_to_source_info() {
+        // Sources differing only by stratum convert to the same `SourceInfo`.
+        let addr: SocketAddr = "169.254.169.123:123".parse().unwrap();
+        let one = SourceInfoWithStratum::AmazonTimeSync(addr, Stratum::ONE);
+        let two = SourceInfoWithStratum::AmazonTimeSync(addr, Stratum::TWO);
+        assert_ne!(one, two);
+        assert_eq!(SourceInfo::from(&one), SourceInfo::from(&two));
+        assert_eq!(SourceInfo::from(one), SourceInfo::AmazonTimeSync(addr));
+    }
+
+    #[test]
+    fn phc_converts_to_source_info() {
+        let with = SourceInfoWithStratum::Phc(DevicePath::from("/dev/ptp0"));
+        assert_eq!(
+            SourceInfo::from(&with),
+            SourceInfo::Phc(DevicePath::from("/dev/ptp0"))
+        );
     }
 }

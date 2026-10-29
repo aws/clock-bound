@@ -7,7 +7,7 @@ pub use ffsync_params::{
 };
 mod selector;
 pub use selector::{Selector, SyncParameters};
-pub use source::SourceInfo;
+pub use source::{SourceInfo, SourceInfoWithStratum};
 
 pub mod ff;
 
@@ -212,11 +212,14 @@ impl ClockSyncAlgorithm {
                 Self::feed_phc(phc, device_path, event)
             }
         };
-        let (clock_parameters, source_info) = alg_output?;
+        let (clock_parameters, source_info_with_stratum) = alg_output?;
 
-        let output = self.selector.update(clock_parameters, source_info.clone());
+        let output = self.selector.update(
+            clock_parameters,
+            SourceInfo::from(&source_info_with_stratum),
+        );
         if output.is_some() {
-            Self::update_selected_clock(&self.selected_clock, &source_info);
+            Self::update_selected_clock(&self.selected_clock, &source_info_with_stratum);
         }
 
         output
@@ -259,14 +262,17 @@ impl ClockSyncAlgorithm {
     fn feed_amazon_time_sync(
         amazon_time_sync: &mut source::AmazonTimeSync,
         event: event::Ntp,
-    ) -> Option<(&ClockParameters, SourceInfo)> {
+    ) -> Option<(&ClockParameters, SourceInfoWithStratum)> {
         // associated method to help borrow checker
         let stratum = event.data().stratum;
         let address = SocketAddr::from(amazon_time_sync.source_address());
 
-        amazon_time_sync
-            .feed(event)
-            .map(|params| (params, SourceInfo::AmazonTimeSync(address, stratum)))
+        amazon_time_sync.feed(event).map(|params| {
+            (
+                params,
+                SourceInfoWithStratum::AmazonTimeSync(address, stratum),
+            )
+        })
     }
 
     /// Feed event into an ntp source (standalone or pool-resolved)
@@ -276,14 +282,19 @@ impl ClockSyncAlgorithm {
         ntp_sources: &mut [source::NtpSource],
         sender_address: SocketAddr,
         event: event::Ntp,
-    ) -> Option<(&ClockParameters, SourceInfo)> {
+    ) -> Option<(&ClockParameters, SourceInfoWithStratum)> {
         // associated method to help borrow checker
         let stratum = event.data().stratum;
         ntp_sources
             .iter_mut()
             .find(|source| source.socket_address() == sender_address)
             .and_then(|source| source.feed(event))
-            .map(|params| (params, SourceInfo::NtpSource(sender_address, stratum)))
+            .map(|params| {
+                (
+                    params,
+                    SourceInfoWithStratum::NtpSource(sender_address, stratum),
+                )
+            })
     }
 
     /// Feed event into the phc
@@ -291,19 +302,22 @@ impl ClockSyncAlgorithm {
         phc: &mut source::Phc,
         device_path: source::DevicePath,
         event: event::Phc,
-    ) -> Option<(&ClockParameters, SourceInfo)> {
+    ) -> Option<(&ClockParameters, SourceInfoWithStratum)> {
         phc.feed(event)
-            .map(|params| (params, SourceInfo::Phc(device_path)))
+            .map(|params| (params, SourceInfoWithStratum::Phc(device_path)))
     }
 
-    fn update_selected_clock(selected_clock: &Arc<SelectedClockSource>, source_info: &SourceInfo) {
+    fn update_selected_clock(
+        selected_clock: &Arc<SelectedClockSource>,
+        source_info: &SourceInfoWithStratum,
+    ) {
         // associated method to help borrow checker
         match source_info {
-            SourceInfo::AmazonTimeSync(address, stratum)
-            | SourceInfo::NtpSource(address, stratum) => {
+            SourceInfoWithStratum::AmazonTimeSync(address, stratum)
+            | SourceInfoWithStratum::NtpSource(address, stratum) => {
                 selected_clock.set_to_server(address.ip(), *stratum);
             }
-            SourceInfo::Phc(_) => selected_clock.set_to_phc(),
+            SourceInfoWithStratum::Phc(_) => selected_clock.set_to_phc(),
         }
     }
 
@@ -406,12 +420,12 @@ mod tests {
     }
 
     #[rstest]
-    #[case(SourceInfo::AmazonTimeSync("169.254.169.123:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("169.254.169.123").unwrap().into()), Stratum::TWO)]
-    #[case(SourceInfo::NtpSource("169.254.169.101:123".parse().unwrap(), Stratum::ONE), ClockSource::Server(Ipv4Addr::from_str("169.254.169.101").unwrap().into()), Stratum::ONE)]
-    #[case(SourceInfo::NtpSource("[2001:db8::1:1234]:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("199.132.19.175").unwrap().into()), Stratum::TWO)]
-    #[case(SourceInfo::Phc("/dev/ptp0".into()), ClockSource::Phc, Stratum::Unspecified)]
+    #[case(SourceInfoWithStratum::AmazonTimeSync("169.254.169.123:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("169.254.169.123").unwrap().into()), Stratum::TWO)]
+    #[case(SourceInfoWithStratum::NtpSource("169.254.169.101:123".parse().unwrap(), Stratum::ONE), ClockSource::Server(Ipv4Addr::from_str("169.254.169.101").unwrap().into()), Stratum::ONE)]
+    #[case(SourceInfoWithStratum::NtpSource("[2001:db8::1:1234]:123".parse().unwrap(), Stratum::TWO), ClockSource::Server(Ipv4Addr::from_str("199.132.19.175").unwrap().into()), Stratum::TWO)]
+    #[case(SourceInfoWithStratum::Phc("/dev/ptp0".into()), ClockSource::Phc, Stratum::Unspecified)]
     fn update_selected_clock(
-        #[case] source_info: SourceInfo,
+        #[case] source_info: SourceInfoWithStratum,
         #[case] expected_clock_source: ClockSource,
         #[case] expected_stratum: Stratum,
     ) {
@@ -505,11 +519,8 @@ mod tests {
             identities,
             vec![
                 SourceInfo::Phc("/dev/ptp0".into()),
-                SourceInfo::AmazonTimeSync(
-                    "169.254.169.123:123".parse().unwrap(),
-                    Stratum::Unspecified
-                ),
-                SourceInfo::NtpSource("192.0.2.1:123".parse().unwrap(), Stratum::Unspecified),
+                SourceInfo::AmazonTimeSync("169.254.169.123:123".parse().unwrap()),
+                SourceInfo::NtpSource("192.0.2.1:123".parse().unwrap()),
             ]
         );
 
