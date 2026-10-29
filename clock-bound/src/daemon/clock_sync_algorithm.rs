@@ -6,7 +6,7 @@ pub use ffsync_params::{
     FfSyncParamsError, SourceParams,
 };
 mod selector;
-pub use selector::{Selector, SyncParameters};
+pub use selector::{Selector, SyncParameters, Tenure};
 pub use source::{SourceInfo, SourceInfoWithStratum};
 
 pub mod ff;
@@ -106,7 +106,10 @@ impl ClockSyncAlgorithm {
             .position(|s| s.socket_address() == *addr)
             .unwrap();
 
-        self.ntp_sources.swap_remove(removed_index);
+        let removed = self.ntp_sources.swap_remove(removed_index);
+        // TODO: consider not forgetting the source data immediately, but after
+        // a few snapshot cycles.
+        self.selector.forget_source(&removed.source_info());
     }
 
     /// NTP sources getter
@@ -159,24 +162,30 @@ impl ClockSyncAlgorithm {
         let mut sources = Vec::new();
 
         if let Some(phc) = &self.phc {
+            let source_info = phc.source_info();
             sources.push(logging::sources::SourceData {
-                source_info: phc.source_info(),
+                tenure: self.selector.tenure_of(&source_info),
+                source_info,
                 poll_interval: phc.poll_interval(),
                 skm: phc.skm_summary(window, period),
             });
         }
 
         if let Some(amazon_time_sync) = &self.amazon_time_sync {
+            let source_info = amazon_time_sync.source_info();
             sources.push(logging::sources::SourceData {
-                source_info: amazon_time_sync.source_info(),
+                tenure: self.selector.tenure_of(&source_info),
+                source_info,
                 poll_interval: amazon_time_sync.poll_interval(),
                 skm: amazon_time_sync.skm_summary(window, period),
             });
         }
 
         for ntp in &self.ntp_sources {
+            let source_info = ntp.source_info();
             sources.push(logging::sources::SourceData {
-                source_info: ntp.source_info(),
+                tenure: self.selector.tenure_of(&source_info),
+                source_info,
                 poll_interval: ntp.poll_interval(),
                 skm: ntp.skm_summary(window, period),
             });
@@ -368,7 +377,7 @@ mod tests {
     use crate::daemon::{
         event::Stratum,
         selected_clock::ClockSource,
-        time::{Duration, Instant, TscCount},
+        time::{Duration, Instant, TscCount, tsc::Period},
     };
 
     use super::*;
@@ -494,6 +503,78 @@ mod tests {
 
         csa.remove_ntp_source(&addr);
         assert_eq!(csa.ntp_sources().len(), 0);
+    }
+
+    #[test]
+    fn remove_pool_source_forgets_its_tenure() {
+        let ff_sync_params = FfSyncParams::default();
+        let mut csa = make_csa();
+        let displaced_addr: SocketAddr = "192.0.2.1:123".parse().unwrap();
+        let selected_addr: SocketAddr = "192.0.2.2:123".parse().unwrap();
+        for addr in [displaced_addr, selected_addr] {
+            csa.add_ntp_source(source::NtpSource::new_with_pool(
+                addr,
+                "pool.ntp.org".to_string(),
+                &ff_sync_params,
+            ));
+        }
+        let displaced = SourceInfo::NtpSource(displaced_addr);
+        let selected = SourceInfo::NtpSource(selected_addr);
+        let params = |time_ns, clock_error_bound_ns| ClockParameters {
+            tsc_count: TscCount::new(1_000_000),
+            time: Instant::from_nanos(time_ns),
+            clock_error_bound: Duration::from_nanos(clock_error_bound_ns),
+            period: Period::from_seconds(1e-9),
+            period_max_error: Period::from_seconds(1e-11),
+            as_of_monotonic: Instant::new(0),
+        };
+        csa.selector
+            .update(&params(1_000, 10_000), displaced.clone());
+        csa.selector.update(&params(5_000, 5_000), selected.clone());
+        assert!(csa.selector.tenure_of(&displaced).is_some());
+
+        csa.remove_ntp_source(&displaced_addr);
+        assert_eq!(csa.selector.tenure_of(&displaced), None);
+
+        // Removing the selected source drops its tenure too; the selection itself is unchanged.
+        csa.remove_ntp_source(&selected_addr);
+        assert_eq!(csa.selector.tenure_of(&selected), None);
+    }
+
+    #[test]
+    fn sources_snapshot_includes_selection_tenure() {
+        let ff_sync_params = FfSyncParams::default();
+        let mut csa = make_csa();
+        let selected_addr: SocketAddr = "192.0.2.1:123".parse().unwrap();
+        let idle_addr: SocketAddr = "192.0.2.2:123".parse().unwrap();
+        for addr in [selected_addr, idle_addr] {
+            csa.add_ntp_source(source::NtpSource::new_ip_addr_source(addr, &ff_sync_params));
+        }
+        let params = ClockParameters {
+            tsc_count: TscCount::new(1_000_000),
+            time: Instant::from_nanos(1_000),
+            clock_error_bound: Duration::from_nanos(10_000),
+            period: Period::from_seconds(1e-9),
+            period_max_error: Period::from_seconds(1e-11),
+            as_of_monotonic: Instant::new(0),
+        };
+        csa.selector
+            .update(&params, SourceInfo::NtpSource(selected_addr));
+
+        let snapshot = csa.sources_snapshot();
+
+        // The selected source reports its tenure; a source that was never selected has none.
+        let tenures: Vec<Option<Tenure>> = snapshot.sources.iter().map(|s| s.tenure).collect();
+        assert_eq!(
+            tenures,
+            vec![
+                Some(Tenure {
+                    selected_at: params.time,
+                    deselected_at: None,
+                }),
+                None,
+            ]
+        );
     }
 
     #[test]

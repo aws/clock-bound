@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_sync_algorithm::SourceInfo;
 use crate::daemon::logging::layer::DEFAULT_LOG_BUFFER_BYTES;
+use crate::daemon::time::Instant;
 use crate::shm::ClockStatus;
 
 pub mod ffevents;
@@ -201,6 +202,11 @@ pub(crate) fn format_log_timestamp(ts: chrono::DateTime<chrono::Utc>) -> String 
     ts.format(LOG_TIMESTAMP_FORMAT).to_string()
 }
 
+/// Format a `ClockBound` [`Instant`] for structured log output.
+pub(crate) fn format_log_instant(instant: Instant) -> String {
+    format_log_timestamp(chrono::DateTime::from_timestamp_nanos(instant.as_nanos()))
+}
+
 /// Log-specific representation of clock status for serialization.
 ///
 /// Avoids deriving `Serialize` on the actual [`ClockStatus`] enum.
@@ -252,9 +258,7 @@ struct FFClock {
 impl FFClock {
     /// Build from clock parameters and current status.
     fn from_params(params: &ClockParameters, clock_status: ClockStatus) -> Self {
-        let time_sync = format_log_timestamp(chrono::DateTime::from_timestamp_nanos(
-            params.time.as_nanos(),
-        ));
+        let time_sync = format_log_instant(params.time);
         Self {
             time_sync,
             clock_error_bound_ns: params.clock_error_bound.as_nanos(),
@@ -265,7 +269,14 @@ impl FFClock {
 
 #[cfg(test)]
 mod tests {
-    use super::StructuredLog;
+    use super::{StructuredLog, format_log_instant};
+    use crate::daemon::time::{Duration, Instant};
+
+    #[test]
+    fn format_log_instant_uses_microsecond_utc_format() {
+        let instant = Instant::from_secs(86_400) + Duration::from_micros(250);
+        assert_eq!(format_log_instant(instant), "1970-01-02T00:00:00.000250Z");
+    }
 
     #[test]
     fn all_lists_every_variant() {

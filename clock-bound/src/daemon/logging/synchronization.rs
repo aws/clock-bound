@@ -15,7 +15,7 @@
 use serde::Serialize;
 
 use super::{
-    ClockStatusName, FFClock, LogEvent, SourceType, StructuredLog, emit_event, format_log_timestamp,
+    ClockStatusName, FFClock, LogEvent, SourceType, StructuredLog, emit_event, format_log_instant,
 };
 use crate::daemon::clock_sync_algorithm::SyncParameters;
 use crate::shm::ClockStatus;
@@ -42,9 +42,7 @@ struct Source {
 
 impl From<&SyncParameters> for Source {
     fn from(params: &SyncParameters) -> Self {
-        let selected_at = format_log_timestamp(chrono::DateTime::from_timestamp_nanos(
-            params.selected_at.as_nanos(),
-        ));
+        let selected_at = format_log_instant(params.selected_at);
         Self {
             source_type: SourceType::from(&params.source_info),
             identifier: params.source_info.identifier(),

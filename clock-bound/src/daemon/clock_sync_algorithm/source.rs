@@ -35,7 +35,7 @@ use crate::daemon::event::Stratum;
 ///
 /// Used for logging and for tracking which source is selected. Where the stratum of the source's
 /// last response is needed, see [`SourceInfoWithStratum`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SourceInfo {
     AmazonTimeSync(SocketAddr),
     NtpSource(SocketAddr),

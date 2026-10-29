@@ -1,5 +1,7 @@
 //! Select from multiple clock sources
 
+use std::collections::HashMap;
+
 use crate::daemon::{
     clock_parameters::ClockParameters,
     time::{Duration, Instant, tsc::Skew},
@@ -21,6 +23,7 @@ use super::source::SourceInfo;
 pub struct Selector {
     current: Option<SyncParameters>,
     max_dispersion_growth: Skew,
+    tenures: SourceTenures,
 }
 
 impl Selector {
@@ -29,6 +32,7 @@ impl Selector {
         Self {
             current: None,
             max_dispersion_growth,
+            tenures: SourceTenures::new(),
         }
     }
 
@@ -41,6 +45,8 @@ impl Selector {
         source_info: SourceInfo,
     ) -> Option<&SyncParameters> {
         let Some(current) = &self.current else {
+            self.tenures
+                .record_selection(source_info.clone(), clock_parameters.time);
             self.current = Some(SyncParameters {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
@@ -63,8 +69,12 @@ impl Selector {
                 if current.source_info == source_info {
                     (current.selected_at, current.selected_at_clock_error_bound)
                 } else {
+                    self.tenures
+                        .record_deselection(&current.source_info, clock_parameters.time);
                     (clock_parameters.time, clock_parameters.clock_error_bound)
                 };
+            self.tenures
+                .record_selection(source_info.clone(), selected_at);
             self.current = Some(SyncParameters {
                 clock_parameters: clock_parameters.clone(),
                 source_info,
@@ -76,13 +86,84 @@ impl Selector {
     }
 
     /// Clear inner state during a disruption event.
+    ///
+    /// The selected source's tenure ends. A disruption has no timestamp here, so the tenure is
+    /// stamped with the time of the source's latest selected sample instead. Tenures are kept,
+    /// so a source can start a new one afterwards or stay deselected.
     pub fn handle_disruption(&mut self) {
-        self.current = None;
+        if let Some(current) = self.current.take() {
+            self.tenures
+                .record_deselection(&current.source_info, current.clock_parameters.time);
+        }
     }
 
     /// Get the current best clock parameters
     pub fn current(&self) -> Option<&SyncParameters> {
         self.current.as_ref()
+    }
+
+    /// Get the most recent selection tenure of a source, if it has ever been selected.
+    pub fn tenure_of(&self, source_info: &SourceInfo) -> Option<Tenure> {
+        self.tenures.get(source_info)
+    }
+
+    /// Forget the tenure of a source that no longer exists.
+    ///
+    /// The selection is unchanged: a removed source that is still selected stays selected until
+    /// another source displaces it.
+    pub fn forget_source(&mut self, source_info: &SourceInfo) {
+        self.tenures.forget(source_info);
+    }
+}
+
+/// A source's most recent selection tenure.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tenure {
+    /// Time at which the source began its most recent tenure.
+    pub selected_at: Instant,
+    /// Time at which the source was displaced by another source, or its selection was cleared
+    /// by a disruption. `None` while it is selected.
+    pub deselected_at: Option<Instant>,
+}
+
+/// The most recent selection [`Tenure`] of every source that has been selected and still exists.
+#[derive(Debug, Clone)]
+struct SourceTenures(HashMap<SourceInfo, Tenure>);
+
+impl SourceTenures {
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+    /// Record that a source has been selected since `selected_at`.
+    ///
+    /// Recording a source that is already selected, with its unchanged `selected_at`, changes
+    /// nothing.
+    fn record_selection(&mut self, source_info: SourceInfo, selected_at: Instant) {
+        self.0.insert(
+            source_info,
+            Tenure {
+                selected_at,
+                deselected_at: None,
+            },
+        );
+    }
+
+    /// End the tenure of a source displaced by another one. Does nothing for a source without
+    /// a tenure.
+    fn record_deselection(&mut self, source_info: &SourceInfo, deselected_at: Instant) {
+        if let Some(tenure) = self.0.get_mut(source_info) {
+            tenure.deselected_at = Some(deselected_at);
+        }
+    }
+
+    /// Drop a source's tenure.
+    fn forget(&mut self, source_info: &SourceInfo) {
+        self.0.remove(source_info);
+    }
+
+    /// A source's tenure, if it has one.
+    fn get(&self, source_info: &SourceInfo) -> Option<Tenure> {
+        self.0.get(source_info).copied()
     }
 }
 
@@ -273,6 +354,7 @@ mod tests {
                 selected_at_clock_error_bound: Duration::from_nanos(10_500),
             }),
             max_dispersion_growth: max_dispersion,
+            tenures: SourceTenures::new(),
         };
         let result = selector
             .update(&val, SourceInfo::Phc("/dev/ptp0".into()))
@@ -428,6 +510,267 @@ mod tests {
         assert_eq!(
             result.selected_at_clock_error_bound,
             second.clock_error_bound
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-source tenure map (`tenure_of`)
+    // -------------------------------------------------------------------------
+
+    fn ntp_source(addr: &str) -> SourceInfo {
+        SourceInfo::NtpSource(addr.parse().unwrap())
+    }
+
+    #[test]
+    fn first_selection_starts_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let source = ntp_source("192.0.2.1:123");
+        let params = params_at(1_000, 10_000);
+        selector.update(&params, source.clone()).unwrap();
+
+        assert_eq!(
+            selector.tenure_of(&source),
+            Some(Tenure {
+                selected_at: params.time,
+                deselected_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn never_selected_source_has_no_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let selected = ntp_source("192.0.2.1:123");
+        let rejected = ntp_source("192.0.2.2:123");
+        selector
+            .update(&params_at(1_000, 5_000), selected.clone())
+            .unwrap();
+
+        // A worse candidate keeps the current selection and gains no tenure.
+        assert!(
+            selector
+                .update(&params_at(2_000, 10_000), rejected.clone())
+                .is_none()
+        );
+        assert_eq!(selector.tenure_of(&rejected), None);
+        assert_eq!(selector.tenure_of(&selected).unwrap().deselected_at, None);
+    }
+
+    #[test]
+    fn handover_ends_displaced_tenure_and_starts_winner_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let first_source = ntp_source("192.0.2.1:123");
+        let second_source = ntp_source("192.0.2.2:123");
+        let first = params_at(1_000, 10_000);
+        let second = params_at(5_000, 5_000);
+        selector.update(&first, first_source.clone()).unwrap();
+        selector.update(&second, second_source.clone()).unwrap();
+
+        assert_eq!(
+            selector.tenure_of(&first_source),
+            Some(Tenure {
+                selected_at: first.time,
+                deselected_at: Some(second.time),
+            })
+        );
+        assert_eq!(
+            selector.tenure_of(&second_source),
+            Some(Tenure {
+                selected_at: second.time,
+                deselected_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn same_source_rewinning_keeps_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let source = ntp_source("192.0.2.1:123");
+        let first = params_at(1_000, 10_000);
+        selector.update(&first, source.clone()).unwrap();
+        selector
+            .update(&params_at(5_000, 5_000), source.clone())
+            .unwrap();
+
+        assert_eq!(
+            selector.tenure_of(&source),
+            Some(Tenure {
+                selected_at: first.time,
+                deselected_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn disruption_ends_the_selected_sources_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let source = ntp_source("192.0.2.1:123");
+        let first = params_at(1_000, 10_000);
+        let latest = params_at(5_000, 5_000);
+        selector.update(&first, source.clone()).unwrap();
+        selector.update(&latest, source.clone()).unwrap();
+
+        selector.handle_disruption();
+
+        // The disruption has no timestamp, so the tenure ends at the latest selected sample.
+        assert_eq!(
+            selector.tenure_of(&source),
+            Some(Tenure {
+                selected_at: first.time,
+                deselected_at: Some(latest.time),
+            })
+        );
+    }
+
+    #[test]
+    fn source_left_behind_by_disruption_keeps_its_ended_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let left_behind = ntp_source("192.0.2.1:123");
+        let winner = ntp_source("192.0.2.2:123");
+        let first = params_at(1_000, 10_000);
+        selector.update(&first, left_behind.clone()).unwrap();
+        selector.handle_disruption();
+
+        // A different source wins after the disruption; the first stays deselected.
+        let second = params_at(9_000, 20_000);
+        selector.update(&second, winner.clone()).unwrap();
+
+        assert_eq!(
+            selector.tenure_of(&left_behind),
+            Some(Tenure {
+                selected_at: first.time,
+                deselected_at: Some(first.time),
+            })
+        );
+        assert_eq!(
+            selector.tenure_of(&winner),
+            Some(Tenure {
+                selected_at: second.time,
+                deselected_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn reselection_after_disruption_starts_fresh_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let source = ntp_source("192.0.2.1:123");
+        selector
+            .update(&params_at(1_000, 10_000), source.clone())
+            .unwrap();
+        selector.handle_disruption();
+        let after = params_at(9_000, 20_000);
+        selector.update(&after, source.clone()).unwrap();
+
+        assert_eq!(
+            selector.tenure_of(&source),
+            Some(Tenure {
+                selected_at: after.time,
+                deselected_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn forgetting_a_displaced_source_drops_only_its_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let displaced = ntp_source("192.0.2.1:123");
+        let selected = ntp_source("192.0.2.2:123");
+        selector
+            .update(&params_at(1_000, 10_000), displaced.clone())
+            .unwrap();
+        selector
+            .update(&params_at(5_000, 5_000), selected.clone())
+            .unwrap();
+
+        selector.forget_source(&displaced);
+
+        assert_eq!(selector.tenure_of(&displaced), None);
+        assert!(selector.tenure_of(&selected).is_some());
+    }
+
+    #[test]
+    fn forgetting_the_selected_source_leaves_nothing_behind() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let removed = ntp_source("192.0.2.1:123");
+        let winner = ntp_source("192.0.2.2:123");
+        selector
+            .update(&params_at(1_000, 10_000), removed.clone())
+            .unwrap();
+
+        selector.forget_source(&removed);
+
+        // Removal drops the tenure but leaves the selection alone.
+        assert_eq!(selector.tenure_of(&removed), None);
+        assert_eq!(selector.current().unwrap().source_info, removed);
+
+        // Displacing the removed source has no tenure to end, and records none for it.
+        let second = params_at(5_000, 5_000);
+        selector.update(&second, winner.clone()).unwrap();
+        assert_eq!(selector.tenure_of(&removed), None);
+        assert_eq!(
+            selector.tenure_of(&winner),
+            Some(Tenure {
+                selected_at: second.time,
+                deselected_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn removed_selected_source_winning_again_records_its_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let source = ntp_source("192.0.2.1:123");
+        let first = params_at(1_000, 10_000);
+        selector.update(&first, source.clone()).unwrap();
+
+        // The source is removed and re-added while still selected, then wins again. It is the
+        // same source, so its tenure carries on from the original `selected_at`.
+        selector.forget_source(&source);
+        selector
+            .update(&params_at(5_000, 5_000), source.clone())
+            .unwrap();
+
+        assert_eq!(
+            selector.tenure_of(&source),
+            Some(Tenure {
+                selected_at: first.time,
+                deselected_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn forgetting_an_unknown_source_is_a_no_op() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        selector.forget_source(&ntp_source("192.0.2.1:123"));
+        assert!(selector.current().is_none());
+    }
+
+    #[test]
+    fn reselection_after_deselection_starts_fresh_tenure() {
+        let mut selector = test_selector(Skew::from_ppm(0.0));
+        let first_source = ntp_source("192.0.2.1:123");
+        let second_source = ntp_source("192.0.2.2:123");
+        selector
+            .update(&params_at(1_000, 10_000), first_source.clone())
+            .unwrap();
+        selector
+            .update(&params_at(5_000, 5_000), second_source.clone())
+            .unwrap();
+        let third = params_at(9_000, 1_000);
+        selector.update(&third, first_source.clone()).unwrap();
+
+        assert_eq!(
+            selector.tenure_of(&first_source),
+            Some(Tenure {
+                selected_at: third.time,
+                deselected_at: None,
+            })
+        );
+        assert_eq!(
+            selector.tenure_of(&second_source).unwrap().deselected_at,
+            Some(third.time)
         );
     }
 }
