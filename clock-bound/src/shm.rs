@@ -10,7 +10,7 @@
 
 pub mod common;
 mod reader;
-mod shm_header;
+pub mod shm_header;
 mod tsc;
 mod writer;
 
@@ -802,17 +802,35 @@ impl ClockErrorBoundV3 {
             clock_status,
         })
     }
+
+    /// Compute `now()`, and also return the counter value it was computed at.
+    pub fn now_with_counter(&self) -> Result<TimeWindowWithCounter, ShmError> {
+        let counter = read_timestamp_counter_begin();
+        Ok(TimeWindowWithCounter {
+            time_window: self.compute_bound_at_tsc(counter)?,
+            counter,
+        })
+    }
 }
 
 impl ClockBoundSnapshot for ClockErrorBoundV3 {
     /// The `ClockErrorBoundV3` implementation of `now()`.
     ///
-    /// This version relies on the system clock to retrieve the current time as well as grow the
-    /// bound on the clock error at a constant rate.
+    /// This version reads the counter and projects the time and the bound from the last clock
+    /// sync.
     fn now(&self) -> Result<TimeWindow, ShmError> {
-        let now_tsc = read_timestamp_counter_begin();
-        self.compute_bound_at_tsc(now_tsc)
+        self.now_with_counter()
+            .map(|time_window_with_counter| time_window_with_counter.time_window)
     }
+}
+
+/// The result of [`ClockErrorBoundV3::now_with_counter`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeWindowWithCounter {
+    /// The interval and status `now()` computes at `counter`.
+    pub time_window: TimeWindow,
+    /// The counter value.
+    pub counter: u64,
 }
 
 /// A value in `[0, 1)` — a period in seconds per tick, or a relative error — as a scaled fraction
@@ -1111,6 +1129,40 @@ mod t_lib {
         assert_eq!(ceb.as_of_counter(), 3_847_592_014_882);
     }
 
+    /// Assert that `now_with_counter()` returns a counter value read during the call, and the
+    /// interval and status `now()` computes at that counter value.
+    #[test]
+    fn ceb_v3_now_with_counter_returns_the_counter_it_computes_at() {
+        let ceb = ClockErrorBoundV3::new(
+            0,                     // as_of_tsc
+            TimeSpec::new(1, 0),   // as_of
+            TimeSpec::new(100, 0), // void_after
+            1e-9,                  // period = 1 ns (1 GHz clock)
+            1e-6,                  // period_err = 1 ppm, relative
+            10_000,                // bound_nsec = 10 µs
+            0,                     // disruption_marker
+            2_000,                 // max_drift_ppb = 2 ppm
+            ClockStatus::Synchronized,
+            true,
+        );
+
+        let before = read_timestamp_counter_begin();
+        let TimeWindowWithCounter {
+            time_window,
+            counter,
+        } = ceb.now_with_counter().expect("Should succeed");
+        let after = read_timestamp_counter_begin();
+
+        assert!(
+            before <= counter && counter <= after,
+            "counter {counter} outside the counter reads around the call [{before}, {after}]"
+        );
+        assert_eq!(
+            time_window,
+            ceb.compute_bound_at_tsc(counter).expect("Should succeed")
+        );
+    }
+
     /// The V3 bound grows by both rates, to the nanosecond: the oscillator's worst-case drift
     /// (`max_drift_ppb`) and the period estimate's relative error (`period_err`), each times the
     /// elapsed time.
@@ -1140,6 +1192,42 @@ mod t_lib {
         assert_eq!(
             result.latest,
             TimeSpec::new(3, 0) + TimeSpec::nanoseconds(16_000)
+        );
+    }
+
+    /// The V3 clock status at fixed counter values, 1 ns per tick from a sync at counter 0:
+    /// synchronized for 60 s, free running after that, unknown past `void_after`, and a published
+    /// `Disrupted` or `Unknown` kept.
+    #[rstest::rstest]
+    #[case::synchronized(ClockStatus::Synchronized, 59, ClockStatus::Synchronized)]
+    #[case::free_running(ClockStatus::Synchronized, 61, ClockStatus::FreeRunning)]
+    #[case::void(ClockStatus::Synchronized, 1001, ClockStatus::Unknown)]
+    #[case::disrupted_kept(ClockStatus::Disrupted, 1001, ClockStatus::Disrupted)]
+    #[case::unknown_kept(ClockStatus::Unknown, 0, ClockStatus::Unknown)]
+    fn ceb_v3_status_at_counter(
+        #[case] published: ClockStatus,
+        #[case] seconds_after_sync: u64,
+        #[case] expected: ClockStatus,
+    ) {
+        let ceb = ClockErrorBoundV3::new(
+            0,                      // as_of_tsc
+            TimeSpec::new(1, 0),    // as_of
+            TimeSpec::new(1001, 0), // void_after = as_of + 1000 s
+            1e-9,                   // period = 1 ns (1 GHz clock)
+            1e-6,                   // period_err = 1 ppm, relative
+            10_000,                 // bound_nsec = 10 µs
+            0,                      // disruption_marker
+            2_000,                  // max_drift_ppb = 2 ppm
+            published,
+            true,
+        );
+
+        let time_window = ceb
+            .compute_bound_at_tsc(seconds_after_sync * 1_000_000_000)
+            .expect("Should succeed");
+        assert_eq!(
+            time_window.clock_status, expected,
+            "published {published:?}, {seconds_after_sync} s after the sync"
         );
     }
 

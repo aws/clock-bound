@@ -128,10 +128,7 @@ impl Client {
         // VMClock shared memory is successfully read, this compares the value of the disruption
         // marker between the clockbound daemon and the VMClock. If these disagree, a disruption
         // has occurred, and the clockbound daemon has not recovered from it yet.
-        let is_disrupted = match self.vmclock_shm.disruption_marker()? {
-            Some(marker) => marker != cb_snap.disruption_marker(),
-            None => false,
-        };
+        let is_disrupted = self.vmclock_shm.is_disrupted(cb_snap.disruption_marker())?;
 
         // If the clock is disrupted, overwrite the status
         if is_disrupted {
@@ -227,7 +224,7 @@ impl ClockBoundSHM {
 }
 
 /// `VMClockSHM` handles access to the shared memory segment populated by the VMClock device.
-struct VMClockSHM {
+pub struct VMClockSHM {
     vmclock_shm_path: String,
     vmclock_shm_reader: Option<VMClockShmReader>,
 }
@@ -238,7 +235,7 @@ impl VMClockSHM {
     /// # Errors
     /// Returns a [`ClockErrorBound`] with an appropriate `Errno`. If the content of the segment is
     /// uninitialized, unparseable, or otherwise malformed.
-    fn new(
+    pub fn new(
         vmclock_shm_path: &str,
         clock_disruption_support_enabled: bool,
     ) -> Result<VMClockSHM, Error> {
@@ -282,6 +279,18 @@ impl VMClockSHM {
 
         // The clock disruption support is not enabled
         Ok(None)
+    }
+
+    /// Whether the VMClock disruption marker differs from the marker in the ClockBound
+    /// daemon shared memory segment: a disruption the daemon has not recovered from yet.
+    /// Always false when the clock disruption support is not enabled.
+    ///
+    /// # Errors
+    /// Returns a [`ShmError`] if the VMClock shared memory segment cannot be read.
+    pub fn is_disrupted(&mut self, clockbound_disruption_marker: u64) -> Result<bool, ShmError> {
+        Ok(self
+            .disruption_marker()?
+            .is_some_and(|marker| marker != clockbound_disruption_marker))
     }
 }
 

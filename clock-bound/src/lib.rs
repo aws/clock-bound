@@ -23,6 +23,9 @@ pub use client_impl::Error;
 pub use client_impl::ErrorKind;
 pub use client_impl::TimeWindow;
 
+#[cfg(feature = "daemon")]
+pub mod cbctl;
+
 mod shm;
 
 mod vmclock;
