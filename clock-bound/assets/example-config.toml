@@ -16,6 +16,10 @@ enabled = true
 [logging.ffevents]
 enabled = true
 
+# Per source snapshot, easily read with `cbctl sources`
+[logging.sources]
+enabled = true
+
 # Additional NTP sources, used alongside the built-in ones. Repeat a block for
 # more than one; each sets exactly one of `server` or `pool`. The values below
 # are documentation-only and never resolve or respond, so replace them with your

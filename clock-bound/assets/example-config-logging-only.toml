@@ -1,0 +1,23 @@
+# ClockBound configuration — a logging only configuration.
+#
+# Adding sources is unnecessary, `clockbound` detects and uses built-in defaults
+#
+# Read once at startup; restart the daemon to apply changes.
+
+# Enabled file streams grow without bound; pair them with a log-rotation
+# strategy sized to your retention and disk budget.
+[logging]
+# Directory for the log streams below.
+log_directory = "/var/log/clockbound"
+
+# Human-readable clock sync history.
+[logging.synchronization]
+enabled = true
+
+# Raw sync data for expert replay; highest volume.
+[logging.ffevents]
+enabled = true
+
+# Per source snapshot, easily read with `cbctl sources`
+[logging.sources]
+enabled = true

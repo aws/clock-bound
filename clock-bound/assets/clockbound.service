@@ -7,10 +7,9 @@ Conflicts=ntpd.service systemd-timesyncd.service chronyd.service
 Type=exec
 # Make the vmclock readable by clients
 ExecStartPre=-/usr/bin/chmod a+r /dev/vmclock0
-# Enable the PHC if possible
-ExecStartPre=-/usr/sbin/configure_phc
 ExecStart=/usr/bin/clockbound
 Restart=on-failure
+RestartSecs=5
 
 [Install]
 WantedBy=multi-user.target
