@@ -96,22 +96,38 @@ impl Client {
         let cb_snap = self.clockbound_shm.snapshot()?;
         let mut clock_bound_now_result = cb_snap.now()?;
 
-        // Now that the timestamp is created, check whether the clockbound daemon has been
-        // restarted and the option to enable the clock disruption support has been turned on. If
-        // so, need to create a reader for the VMClock device shared memory.
-        if self.vmclock_shm.vmclock_shm_reader.is_none()
-            && cb_snap.clock_disruption_support_enabled()
-        {
-            self.vmclock_shm.vmclock_shm_reader = Some(VMClockShmReader::new(
-                self.vmclock_shm.vmclock_shm_path.as_str(),
-            )?);
+        // If SHM disruption support and VMClock does not match, error out
+        //
+        // This is truly unexpected. This logic is checked on init, as disruption support
+        // should not change during the lifetime of an environment (it should not suddenly change
+        // to being virtualized)
+        if let Some(reason) = Self::is_vmclock_state_mismatch(
+            self.vmclock_shm.vmclock_shm_reader.is_some(),
+            cb_snap.clock_disruption_support_enabled(),
+        ) {
+            let vmclock_shm_path = &self.vmclock_shm.vmclock_shm_path;
+            let detail = match reason {
+                VMClockSupportMismatch::DaemonDisabled => format!(
+                    "Unexpected: Daemon disabled VMClock support, but client reads VMClock shared memory segment: {vmclock_shm_path}"
+                ),
+                VMClockSupportMismatch::DaemonEnabled => format!(
+                    "Unexpected: Daemon enabled VMClock support, but client does not read VMClock shared memory segment: {vmclock_shm_path}"
+                ),
+            };
+
+            let error = Error {
+                kind: ErrorKind::SegmentNotInitialized,
+                detail,
+                errno: Errno(0),
+            };
+            return Err(error);
         }
 
         // Check whether the clock is disrupted. If the support to capture the clock disruption
         // signal has been explicitly disabled, there is nothing to do. Otherwise, and if the
         // VMClock shared memory is successfully read, this compares the value of the disruption
         // marker between the clockbound daemon and the VMClock. If these disagree, a disruption
-        // has occured, and the clockbound daemon has not recovered from it yet.
+        // has occurred, and the clockbound daemon has not recovered from it yet.
         let is_disrupted = match self.vmclock_shm.disruption_marker()? {
             Some(marker) => marker != cb_snap.disruption_marker(),
             None => false,
@@ -124,6 +140,32 @@ impl Client {
 
         Ok(clock_bound_now_result)
     }
+
+    /// Returns `Some(reason)` if the client's VMClock reader state disagrees with the daemon's
+    /// `clock_disruption_support_enabled` flag, and `None` if they agree.
+    ///
+    /// `Some` is unexpected. VMClock support is an immutable property of an environment, and the
+    /// client decides whether to hold a VMClock reader from the daemon's flag at init. A mismatch
+    /// indicates a bug either in client init or in the daemon's detection logic.
+    fn is_vmclock_state_mismatch(
+        has_vmclock_reader: bool,
+        daemon_support_enabled: bool,
+    ) -> Option<VMClockSupportMismatch> {
+        match (has_vmclock_reader, daemon_support_enabled) {
+            (false, true) => Some(VMClockSupportMismatch::DaemonEnabled),
+            (true, false) => Some(VMClockSupportMismatch::DaemonDisabled),
+            (true, true) | (false, false) => None,
+        }
+    }
+}
+
+/// Why the client's VMClock reader state disagrees with the daemon's disruption support flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VMClockSupportMismatch {
+    /// The daemon enabled VMClock support, but the client holds no VMClock reader.
+    DaemonEnabled,
+    /// The daemon disabled VMClock support, but the client holds a VMClock reader.
+    DaemonDisabled,
 }
 
 /// The 2 timestamps which define true time
@@ -430,7 +472,7 @@ mod test {
     /// Assert that VMClock can be created successfully and the disruption marker is retrieved when
     /// clock_disruption_support_enabled is true and a valid file exists at the vmclock_shm_path.
     #[test]
-    fn test_vmclock_now_with_clock_disruption_support_enabled_success() {
+    fn vmclock_now_with_clock_disruption_support_enabled_success() {
         let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
@@ -460,7 +502,7 @@ mod test {
     /// Assert that VMClock will fail to be created when clock_disruption_support_enabled is true
     /// and no file exists at the vmclock_shm_path.
     #[test]
-    fn test_vmclock_now_with_clock_disruption_support_enabled_failure() {
+    fn vmclock_now_with_clock_disruption_support_enabled_failure() {
         let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
@@ -474,7 +516,7 @@ mod test {
     /// Assert that VMClock can be created successfully when clock_disruption_support_enabled is
     /// false and no file exists at the vmclock_shm_path.
     #[test]
-    fn test_vmclock_now_with_clock_disruption_support_not_enabled() {
+    fn vmclock_now_with_clock_disruption_support_not_enabled() {
         let vmclock_shm_tempfile = NamedTempFile::new().expect("create vmclock file failed");
         let vmclock_shm_temppath = vmclock_shm_tempfile.into_temp_path();
         let vmclock_shm_path = vmclock_shm_temppath.to_str().unwrap();
@@ -497,7 +539,7 @@ mod test {
     }
 
     #[test]
-    fn test_new_with_path_does_not_exist() {
+    fn new_with_path_does_not_exist() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
@@ -508,7 +550,7 @@ mod test {
 
     /// Assert that the shared memory segment can be open, read and and closed. Only a sanity test.
     #[test]
-    fn test_new_with_paths_sanity_check() {
+    fn new_with_paths_sanity_check() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
@@ -578,7 +620,7 @@ mod test {
     }
 
     #[test]
-    fn test_new_with_paths_does_not_exist() {
+    fn new_with_paths_does_not_exist() {
         // Test both clockbound and vmclock files do not exist.
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
@@ -656,7 +698,7 @@ mod test {
     /// because it is possible actual clients are relying on the ClockBound data at this location.
     #[test]
     #[ignore = "can fail if daemon has run previously with root privs"]
-    fn test_new_sanity_check() {
+    fn new_sanity_check() {
         let result = Client::new();
         if Path::new(SHM_DEFAULT_PATH).exists() {
             assert!(result.is_ok());
@@ -669,7 +711,7 @@ mod test {
     // FIXME: this will fail until the writer is upgraded
     // https://github.com/aws/private-clock-bound-staging/pull/158
     #[ignore = "daemon version mismatch"]
-    fn test_now_clock_error_bound_now_error() {
+    fn now_clock_error_bound_now_error() {
         let clockbound_shm_tempfile = NamedTempFile::new().expect("create clockbound file failed");
         let clockbound_shm_temppath = clockbound_shm_tempfile.into_temp_path();
         let clockbound_shm_path = clockbound_shm_temppath.to_str().unwrap();
@@ -761,7 +803,7 @@ mod test {
     /// Test conversions from ShmError to Error.
 
     #[test]
-    fn test_shmerror_clockbounderror_conversion_syscallerror() {
+    fn shmerror_clockbounderror_conversion_syscallerror() {
         let errno = Errno(1);
         let detail = String::from("test detail");
         let shm_error = ShmError::SyscallError(detail.clone(), errno);
@@ -773,7 +815,7 @@ mod test {
     }
 
     #[test]
-    fn test_shmerror_clockbounderror_conversion_segmentnotinitialized() {
+    fn shmerror_clockbounderror_conversion_segmentnotinitialized() {
         let detail = String::from("test detail");
         let shm_error = ShmError::SegmentNotInitialized(detail.clone());
         // Perform the conversion.
@@ -784,7 +826,7 @@ mod test {
     }
 
     #[test]
-    fn test_shmerror_clockbounderror_conversion_segmentmalformed() {
+    fn shmerror_clockbounderror_conversion_segmentmalformed() {
         let detail = String::from("test detail");
         let shm_error = ShmError::SegmentMalformed(detail.clone());
         // Perform the conversion.
@@ -795,7 +837,7 @@ mod test {
     }
 
     #[test]
-    fn test_shmerror_clockbounderror_conversion_causalitybreach() {
+    fn shmerror_clockbounderror_conversion_causalitybreach() {
         let detail = String::from("test detail");
         let shm_error = ShmError::CausalityBreach(detail.clone());
         // Perform the conversion.
@@ -805,6 +847,109 @@ mod test {
         assert_eq!(detail, clockbounderror.detail);
     }
 
+    /// Build a layout V3 `ClockErrorBound` readable by the current `ShmReader`.
+    fn ceb_v3(clock_disruption_support_enabled: bool, disruption_marker: u64) -> ClockErrorBound {
+        ClockErrorBoundGeneric::builder()
+            .as_of(TimeSpec::new(100, 0))
+            .void_after(TimeSpec::new(200, 0))
+            .clock_status(ClockStatus::Synchronized)
+            .disruption_marker(disruption_marker)
+            .clock_disruption_support_enabled(clock_disruption_support_enabled)
+            .build(ClockErrorBoundLayoutVersion::V3)
+    }
+
+    /// Create a layout V3 ClockBound segment at `path` and write `ceb` to it.
+    fn clockbound_segment(path: &str, ceb: &ClockErrorBound) -> ShmWriter {
+        let mut writer = ShmWriter::new(
+            Path::new(path),
+            ClockErrorBoundLayoutVersion::V3,
+            ClockErrorBoundLayoutVersion::V3,
+        )
+        .expect("Failed to create a ShmWriter");
+        writer.write(ceb);
+        writer
+    }
+
+    /// Create a VMClock segment at `path` carrying `disruption_marker`.
+    fn vmclock_segment(path: &str, disruption_marker: u64) -> VMClockShmWriter {
+        remove_file_or_directory(path);
+        let body = VMClockShmBody {
+            disruption_marker,
+            ..vmclockshmbody!()
+        };
+        let mut writer =
+            VMClockShmWriter::new(Path::new(path)).expect("Failed to create a VMClockShmWriter");
+        writer.write(&body);
+        writer
+    }
+
+    /// The helper flags both directions of disagreement and nothing else.
+    #[test]
+    fn is_vmclock_state_mismatch_truth_table() {
+        let cases = [
+            (true, true, None),
+            (false, false, None),
+            (false, true, Some(VMClockSupportMismatch::DaemonEnabled)),
+            (true, false, Some(VMClockSupportMismatch::DaemonDisabled)),
+        ];
+        for (has_vmclock_reader, daemon_support_enabled, expected) in cases {
+            assert_eq!(
+                Client::is_vmclock_state_mismatch(has_vmclock_reader, daemon_support_enabled),
+                expected,
+                "has_vmclock_reader={has_vmclock_reader}, daemon_support_enabled={daemon_support_enabled}"
+            );
+        }
+    }
+
+    /// A client holding a VMClock reader errors if the daemon later reports disruption support as
+    /// disabled, and the error names the VMClock segment path.
+    #[test]
+    fn now_errors_when_daemon_disables_vmclock_support() {
+        let cb_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let cb_temppath = cb_tempfile.into_temp_path();
+        let cb_path = cb_temppath.to_str().unwrap();
+        let vmclock_tempfile = NamedTempFile::new().expect("create vmclock file failed");
+        let vmclock_temppath = vmclock_tempfile.into_temp_path();
+        let vmclock_path = vmclock_temppath.to_str().unwrap();
+
+        let mut cb_writer = clockbound_segment(cb_path, &ceb_v3(true, 1));
+        // Different markers: before the mismatch check existed, this returned Ok(Disrupted).
+        let _vmclock_writer = vmclock_segment(vmclock_path, 2);
+
+        let mut client =
+            Client::new_with_paths(cb_path, vmclock_path).expect("Client::new_with_paths failed");
+        cb_writer.write(&ceb_v3(false, 1));
+
+        let err = client
+            .now()
+            .expect_err("expected a VMClock support mismatch error");
+        assert_eq!(err.kind, ErrorKind::SegmentNotInitialized);
+        assert_eq!(err.errno, Errno(0));
+    }
+
+    /// A client built without VMClock support errors if the daemon later enables it, and the
+    /// error names the VMClock segment path.
+    #[test]
+    fn now_errors_when_daemon_enables_vmclock_support() {
+        let cb_tempfile = NamedTempFile::new().expect("create clockbound file failed");
+        let cb_temppath = cb_tempfile.into_temp_path();
+        let cb_path = cb_temppath.to_str().unwrap();
+        let vmclock_tempfile = NamedTempFile::new().expect("create vmclock file failed");
+        let vmclock_temppath = vmclock_tempfile.into_temp_path();
+        let vmclock_path = vmclock_temppath.to_str().unwrap();
+        remove_file_or_directory(vmclock_path);
+
+        let mut cb_writer = clockbound_segment(cb_path, &ceb_v3(false, 0));
+        let mut client =
+            Client::new_with_paths(cb_path, vmclock_path).expect("Client::new_with_paths failed");
+        cb_writer.write(&ceb_v3(true, 0));
+
+        let err = client
+            .now()
+            .expect_err("expected a VMClock support mismatch error");
+        assert_eq!(err.kind, ErrorKind::SegmentNotInitialized);
+        assert_eq!(err.errno, Errno(0));
+    }
     // this doesn't actually do anything at runtime. Failures detected at build time.
     #[test]
     fn client_is_send_sync() {
