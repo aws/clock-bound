@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info};
 
 use super::ntp::{BurstConfig, Ntp, NtpIoError};
+use super::stats::IOStats;
 use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{async_ring_buffer, event, selected_clock::SelectedClockSource};
 
@@ -45,6 +46,7 @@ impl AmazonTimeSync {
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         selected_clock: Arc<SelectedClockSource>,
+        io_stats: IOStats,
     ) -> Self {
         let burst_config = BurstConfig {
             duration: BURST_DURATION,
@@ -59,6 +61,7 @@ impl AmazonTimeSync {
             .ctrl_receiver(ctrl_receiver)
             .clock_disruption_receiver(clock_disruption_receiver)
             .selected_clock(selected_clock)
+            .io_stats(io_stats)
             .extensions(vec![]) // No extensions for Amazon Time Sync
             .socket_address(socket_addr)
             .timeout(SAMPLE_TIMEOUT)
@@ -217,6 +220,7 @@ mod tests {
                 ctrl_receiver,
                 clock_disruption_receiver,
                 selected_clock.clone(),
+                IOStats::empty(),
             ),
             clock_disruption_sender,
             selected_clock,

@@ -30,6 +30,9 @@ use ip_addr_source::IpAddrSource;
 mod phc;
 use phc::Phc;
 
+pub mod stats;
+use stats::{IOStats, IOStatsSnapshot};
+
 pub mod tsc;
 
 pub mod vmclock;
@@ -114,16 +117,19 @@ impl SourceIO {
             self.amazon_time_sync = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
                 let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
+                let io_stats = IOStats::empty();
 
                 let amazon_time_sync = AmazonTimeSync::construct(
                     event_sender,
                     ctrl_receiver,
                     clock_disruption_receiver,
                     self.selected_clock.clone(),
+                    io_stats.clone(),
                 );
                 Some(Source {
                     state: SourceState::Initialized(amazon_time_sync),
                     ctrl_sender,
+                    io_stats: Some(io_stats),
                 })
             };
         }
@@ -143,6 +149,7 @@ impl SourceIO {
         if !self.ip_addr_sources.contains_key(&server_address) {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
             let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
+            let io_stats = IOStats::empty();
 
             let ip_addr_source = IpAddrSource::construct(
                 server_address,
@@ -151,11 +158,13 @@ impl SourceIO {
                 clock_disruption_receiver,
                 self.selected_clock.clone(),
                 self.daemon_info.clone(),
+                io_stats.clone(),
             );
 
             let source = Source {
                 state: SourceState::Initialized(ip_addr_source),
                 ctrl_sender,
+                io_stats: Some(io_stats),
             };
             self.ip_addr_sources.insert(server_address, source);
             self.in_use_ip_addrs.add(server_address.ip()).unwrap();
@@ -226,6 +235,7 @@ impl SourceIO {
         let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
         let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
         let resolver_tx = pool.resolver_message_sender();
+        let io_stats = IOStats::empty();
 
         let ntp_source = dns::ntp_source::NtpSource::construct(
             pool_domain.to_owned(),
@@ -236,11 +246,13 @@ impl SourceIO {
             self.selected_clock.clone(),
             self.daemon_info.clone(),
             resolver_tx,
+            io_stats.clone(),
         );
 
         let source = Source {
             state: SourceState::Running,
             ctrl_sender,
+            io_stats: Some(io_stats),
         };
         pool.add_source(address, source);
 
@@ -283,10 +295,19 @@ impl SourceIO {
             self.phc = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
                 let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
-                match Phc::construct(event_sender, ctrl_receiver, clock_disruption_receiver).await {
+                let io_stats = IOStats::empty();
+                match Phc::construct(
+                    event_sender,
+                    ctrl_receiver,
+                    clock_disruption_receiver,
+                    io_stats.clone(),
+                )
+                .await
+                {
                     Ok(phc) => Some(Source {
                         state: SourceState::Initialized(phc),
                         ctrl_sender,
+                        io_stats: Some(io_stats),
                     }),
                     Err(e) => {
                         warn!(error = %e, "Failed to construct PHC source.");
@@ -364,10 +385,42 @@ impl SourceIO {
                 let source = Source {
                     state: SourceState::Initialized(vmclock),
                     ctrl_sender,
+                    io_stats: None,
                 };
                 Some(source)
             };
         }
+    }
+
+    /// A copy of the Amazon Time Sync source's request and response counters, if the source has
+    /// been created.
+    pub fn amazon_time_sync_io_stats(&self) -> Option<IOStatsSnapshot> {
+        self.amazon_time_sync
+            .as_ref()
+            .and_then(Source::io_stats_snapshot)
+    }
+
+    /// A copy of the PHC source's request and response counters, if the source has been created.
+    pub fn phc_io_stats(&self) -> Option<IOStatsSnapshot> {
+        self.phc.as_ref().and_then(Source::io_stats_snapshot)
+    }
+
+    /// A copy of the request and response counters of the NTP source at `addr`, whether it was
+    /// configured by IP address or resolved from a DNS pool.
+    pub fn ntp_io_stats(&self, addr: &SocketAddr) -> Option<IOStatsSnapshot> {
+        // Sources configured by IP address.
+        if let Some(source) = self.ip_addr_sources.get(addr) {
+            return source.io_stats_snapshot();
+        }
+
+        // Sources resolved from a DNS pool, which each pool keeps itself.
+        for pool in self.dns_pools.values() {
+            if let Some(source) = pool.source(addr) {
+                return source.io_stats_snapshot();
+            }
+        }
+
+        None
     }
 
     /// Returns `VMCLock` if it has been initialized
@@ -407,6 +460,7 @@ impl SourceIO {
         if let Some(Source {
             state,
             ctrl_sender: _,
+            io_stats: _,
         }) = &mut self.amazon_time_sync
         {
             debug!("Attempting to spawn Amazon Time Sync source.");
@@ -427,6 +481,7 @@ impl SourceIO {
         if let Some(Source {
             state,
             ctrl_sender: _,
+            io_stats: _,
         }) = &mut self.phc
         {
             debug!("Attempting to spawn PHC source.");
@@ -444,6 +499,7 @@ impl SourceIO {
         if let Some(Source {
             state,
             ctrl_sender: _,
+            io_stats: _,
         }) = &mut self.vmclock
         {
             if let SourceState::Initialized(mut vmclock) = state.transition_to_running() {
@@ -489,6 +545,7 @@ impl SourceIO {
         if let Some(Source {
             state: _,
             ctrl_sender,
+            io_stats: _,
         }) = &mut self.amazon_time_sync
         {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
@@ -504,6 +561,7 @@ impl SourceIO {
         if let Some(Source {
             state: _,
             ctrl_sender,
+            io_stats: _,
         }) = &mut self.phc
         {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
@@ -516,6 +574,7 @@ impl SourceIO {
         if let Some(Source {
             state: _,
             ctrl_sender,
+            io_stats: _,
         }) = &mut self.vmclock
         {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
@@ -564,10 +623,21 @@ pub enum ControlRequest {
 }
 
 /// A helper struct packaging the source state and its control sender together.
+///
+/// Sources whose task samples a time source also carry the request and response counters of
+/// that task.
 #[derive(Debug)]
 struct Source<T> {
     state: SourceState<T>,
     ctrl_sender: mpsc::Sender<ControlRequest>,
+    io_stats: Option<IOStats>,
+}
+
+impl<T> Source<T> {
+    /// A copy of the task's request and response counters, if it has any.
+    fn io_stats_snapshot(&self) -> Option<IOStatsSnapshot> {
+        self.io_stats.as_ref().map(IOStats::snapshot)
+    }
 }
 
 /// The possible states a time source can be in.
@@ -610,6 +680,7 @@ mod tests {
             ctrl_receiver,
             clock_disruption_receiver,
             Arc::new(SelectedClockSource::default()),
+            IOStats::empty(),
         );
         let current_state = SourceState::Initialized(amazon_time_sync);
         assert!(current_state.is_initialized())
@@ -660,6 +731,47 @@ mod tests {
             info,
             dns_message_tx,
         )
+    }
+
+    #[tokio::test]
+    async fn amazon_time_sync_counters_exist_once_the_source_is_created() {
+        let mut source_io = make_source_io();
+        assert_eq!(source_io.amazon_time_sync_io_stats(), None);
+
+        let (event_sender, _) = async_ring_buffer::create::<event::Ntp>(1);
+        source_io.create_amazon_time_sync(event_sender);
+
+        assert_eq!(
+            source_io.amazon_time_sync_io_stats(),
+            Some(IOStatsSnapshot {
+                requests: 0,
+                responses: 0
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn ntp_counters_exist_for_each_ip_addr_source() {
+        let mut source_io = make_source_io();
+        let created: SocketAddr = "192.0.2.1:123".parse().unwrap();
+        let other: SocketAddr = "192.0.2.2:123".parse().unwrap();
+
+        let (event_sender, _) = async_ring_buffer::create::<event::Ntp>(1);
+        source_io.create_ip_addr_source((created, event_sender));
+
+        assert_eq!(
+            source_io.ntp_io_stats(&created),
+            Some(IOStatsSnapshot {
+                requests: 0,
+                responses: 0
+            })
+        );
+        assert_eq!(source_io.ntp_io_stats(&other), None);
+    }
+
+    #[test]
+    fn phc_counters_do_not_exist_without_a_phc_source() {
+        assert_eq!(make_source_io().phc_io_stats(), None);
     }
 
     #[test]

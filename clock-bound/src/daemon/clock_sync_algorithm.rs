@@ -168,6 +168,8 @@ impl ClockSyncAlgorithm {
                 source_info,
                 poll_interval: phc.poll_interval(),
                 skm: phc.skm_summary(window, period),
+                requests: 0,
+                responses: 0,
             });
         }
 
@@ -178,6 +180,8 @@ impl ClockSyncAlgorithm {
                 source_info,
                 poll_interval: amazon_time_sync.poll_interval(),
                 skm: amazon_time_sync.skm_summary(window, period),
+                requests: 0,
+                responses: 0,
             });
         }
 
@@ -188,6 +192,8 @@ impl ClockSyncAlgorithm {
                 source_info,
                 poll_interval: ntp.poll_interval(),
                 skm: ntp.skm_summary(window, period),
+                requests: 0,
+                responses: 0,
             });
         }
 

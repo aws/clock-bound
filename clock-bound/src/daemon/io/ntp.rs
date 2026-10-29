@@ -22,6 +22,7 @@ use crate::daemon::{
     event::{self, NtpData},
     io::{
         ClockDisruptionEvent, ControlRequest,
+        stats::IOStats,
         tsc::{read_timestamp_counter_begin, read_timestamp_counter_end},
     },
     selected_clock::SelectedClockSource,
@@ -88,6 +89,17 @@ impl NtpIoError {
     }
 }
 
+/// Whether the outcome of a sample counts as a response from the source.
+///
+/// Any reply that matched our request is a response, whether or not it turned out to be usable.
+/// Failing to get a reply, because of a socket error or a timeout, is not.
+fn is_response(result: &Result<event::Ntp, NtpIoError>) -> bool {
+    match result {
+        Ok(_) | Err(NtpIoError::UnusableNtpResponse(_) | NtpIoError::TscOrder { .. }) => true,
+        Err(NtpIoError::SampleIo(_) | NtpIoError::Bind(_) | NtpIoError::Timeout(_)) => false,
+    }
+}
+
 /// Classifies an [`io::Error`] from `bind`/`send_to`/`recv_from` as a routing or
 /// address-family failure that means this destination is unreachable on the current host.
 ///
@@ -149,6 +161,7 @@ pub struct Ntp {
     normal_interval: Duration,
     buffer: Vec<u8>,
     selected_clock: Arc<SelectedClockSource>,
+    io_stats: IOStats,
     transmit_counter: Wrapping<u64>,
     extensions: Vec<ExtensionField>,
     socket_address: SocketAddr,
@@ -173,6 +186,8 @@ impl Ntp {
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
         /// Shared reference to the currently selected clock source
         selected_clock: Arc<SelectedClockSource>,
+        /// Request and response counters, shared with the daemon
+        io_stats: IOStats,
         /// Extension fields to include in outgoing NTP packets
         extensions: Vec<ExtensionField>,
         /// Target NTP server socket address
@@ -208,6 +223,7 @@ impl Ntp {
             normal_interval: interval,
             buffer: vec![0u8; buffer_size],
             selected_clock,
+            io_stats,
             transmit_counter: Wrapping(0),
             extensions,
             socket_address,
@@ -259,7 +275,8 @@ impl Ntp {
     /// Samples the NTP source by building a packet, sending it, and awaiting a response.
     ///
     /// Handles counter management, packet construction with configured extensions,
-    /// socket binding, and the NTP request/response cycle.
+    /// socket binding, and the NTP request/response cycle. The request and any response are
+    /// counted on the source's [`IOStats`].
     ///
     /// # Errors
     /// Returns an error if the socket cannot be bound, the operation times out,
@@ -282,15 +299,23 @@ impl Ntp {
             .await
             .map_err(NtpIoError::Bind)?;
 
-        let ntp_event = sample_packet(
+        let mut request_sent = false;
+        let result = sample_packet(
             &socket,
             self.socket_address,
             &mut self.buffer,
             self.timeout,
             counter,
+            &mut request_sent,
         )
-        .await
-        .inspect_err(|error| {
+        .await;
+        if request_sent {
+            self.io_stats.record_request();
+        }
+        if is_response(&result) {
+            self.io_stats.record_response();
+        }
+        let ntp_event = result.inspect_err(|error| {
             if let NtpIoError::TscOrder { .. } = error {
                 warn!(
                     ?error,
@@ -317,6 +342,7 @@ impl Ntp {
             normal_interval: _,
             buffer: _,
             selected_clock: _,
+            io_stats: _,
             transmit_counter: _,
             extensions: _,
             socket_address: _,
@@ -444,6 +470,9 @@ struct BurstState {
 /// - ensuring the origin timestamp matches the one that was sent
 /// - converting the packet into an [`event::Ntp`]
 ///
+/// `request_sent` is set to `true` once the request has been sent, whatever the outcome. It is
+/// left `false` if the send failed or the transaction timed out before the send completed.
+///
 /// # Errors
 /// Returns an error if:
 /// - the socket has an IO error ([`NtpIoError::SampleIo`])
@@ -457,10 +486,17 @@ async fn sample_packet(
     send_recv_buffer: &mut [u8],
     timeout: std::time::Duration,
     expected_counter: u64,
+    request_sent: &mut bool,
 ) -> Result<event::Ntp, NtpIoError> {
     let fut = tokio::time::timeout(
         timeout,
-        inner_timeout(socket, addr, send_recv_buffer, expected_counter),
+        inner_timeout(
+            socket,
+            addr,
+            send_recv_buffer,
+            expected_counter,
+            request_sent,
+        ),
     );
 
     let (send_timestamp, ntp_data, received_timestamp) = match fut.await? {
@@ -510,14 +546,19 @@ async fn sample_packet(
 // - Err(InnerSamplePacketError::Io) if the socket send/recv itself fails.
 // - Err(InnerSamplePacketError::Unusable) once a datagram that *is* our response,
 //     but cannot be used as a synchronization sample.
+//
+// `request_sent` is set as soon as the request has been sent. It is a flag, not part of the
+// return value, because the timeout drops this future without a return value when it elapses.
 async fn inner_timeout(
     socket: &UdpSocket,
     addr: SocketAddr,
     send_recv_buffer: &mut [u8],
     expected_counter: u64,
+    request_sent: &mut bool,
 ) -> Result<(u64, NtpData, u64), InnerSamplePacketError> {
     let send_timestamp = read_timestamp_counter_begin();
     socket.send_to(send_recv_buffer, addr).await?;
+    *request_sent = true;
     loop {
         let (len, recv_addr) = socket.recv_from(send_recv_buffer).await?;
         let received_timestamp = read_timestamp_counter_end();
@@ -716,6 +757,63 @@ mod tests {
             !error.indicates_local_routing_failure(),
             "Timeout should not indicate a local routing failure"
         );
+    }
+
+    fn ntp_event() -> event::Ntp {
+        event::Ntp::builder()
+            .counter_pre(TscCount::new(1_000))
+            .counter_post(TscCount::new(2_000))
+            .ntp_data(NtpData {
+                server_recv_time: crate::daemon::time::Instant::from_secs(10),
+                server_send_time: crate::daemon::time::Instant::from_secs(11),
+                root_delay: crate::daemon::time::Duration::from_micros(100),
+                root_dispersion: crate::daemon::time::Duration::from_micros(50),
+                stratum: event::Stratum::ONE,
+            })
+            .build()
+            .expect("valid NTP event")
+    }
+
+    // Any reply to our request is a response; failing to get a reply is not.
+    #[rstest]
+    #[case::usable(Ok(ntp_event()), true)]
+    #[case::unsynchronized(
+        Err(NtpIoError::UnusableNtpResponse(UnusableNtpResponse::Unsynchronized)),
+        true
+    )]
+    #[case::kiss_o_death(
+        Err(NtpIoError::UnusableNtpResponse(UnusableNtpResponse::KissODeath([0; 4]))),
+        true
+    )]
+    #[case::bad_timestamps(
+        Err(NtpIoError::UnusableNtpResponse(UnusableNtpResponse::BadTimestamps)),
+        true
+    )]
+    #[case::tsc_order(Err(NtpIoError::TscOrder { pre: 2, post: 1 }), true)]
+    #[case::sample_io(
+        Err(NtpIoError::SampleIo(io::Error::from(ErrorKind::ConnectionRefused))),
+        false
+    )]
+    #[case::bind(
+        Err(NtpIoError::Bind(io::Error::from(ErrorKind::AddrNotAvailable))),
+        false
+    )]
+    fn is_response_counts_any_reply_to_our_request(
+        #[case] result: Result<event::Ntp, NtpIoError>,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(is_response(&result), expected);
+    }
+
+    #[tokio::test]
+    async fn timeout_is_not_a_response() {
+        // `time::error::Elapsed` has a private constructor, so obtain one by
+        // actually timing out a pending future.
+        let elapsed =
+            tokio::time::timeout(Duration::from_nanos(1), futures::future::pending::<()>())
+                .await
+                .unwrap_err();
+        assert!(!is_response(&Err(NtpIoError::Timeout(elapsed))));
     }
 
     #[test]

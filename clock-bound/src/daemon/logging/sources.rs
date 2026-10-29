@@ -42,6 +42,8 @@ pub struct SourceData {
     /// The source's most recent selection tenure, or `None` if it has never been selected.
     pub tenure: Option<Tenure>,
     pub skm: SkmSummary,
+    pub requests: u64,
+    pub responses: u64,
 }
 
 /// Body of a `sources_snapshot` event.
@@ -96,7 +98,7 @@ impl From<&SourceData> for SourceRow {
                     .map(format_log_instant),
                 status: ClockStatusName::Unknown,
             },
-            stats: Stats::from(&data.skm),
+            stats: Stats::new(&data.skm, data.requests, data.responses),
         }
     }
 }
@@ -146,12 +148,11 @@ struct Stats {
     window_duration_sec: u64,
 }
 
-impl From<&SkmSummary> for Stats {
-    fn from(skm: &SkmSummary) -> Self {
-        // TODO: populate request/response counters as they are wired in.
+impl Stats {
+    fn new(skm: &SkmSummary, requests: u64, responses: u64) -> Self {
         Self {
-            requests: 0,
-            responses: 0,
+            requests,
+            responses,
             latency_ns: skm.latency.map(StatSummaryNs::from),
             source_clock_error_bound_ns: skm.source_clock_error_bound.map(StatSummaryNs::from),
             window_duration_sec: skm.window.as_seconds().unsigned_abs(),
@@ -207,12 +208,16 @@ mod tests {
                     poll_interval: Duration::from_secs(16),
                     tenure: None,
                     skm: SkmSummary::default(),
+                    requests: 0,
+                    responses: 0,
                 },
                 SourceData {
                     source_info: SourceInfo::Phc("/dev/ptp0".into()),
                     poll_interval: Duration::from_millis(500),
                     tenure: None,
                     skm: SkmSummary::default(),
+                    requests: 0,
+                    responses: 0,
                 },
             ],
         };
@@ -291,6 +296,8 @@ mod tests {
                         max: Duration::from_nanos(31_200),
                     }),
                 },
+                requests: 12,
+                responses: 11,
             }],
         };
 
@@ -316,8 +323,8 @@ mod tests {
                                 "status": "UNKNOWN"
                             },
                             "stats": {
-                                "requests": 0,
-                                "responses": 0,
+                                "requests": 12,
+                                "responses": 11,
                                 "latency_ns": { "min": 128400, "median": 141200, "max": 155000 },
                                 "source_clock_error_bound_ns": { "min": 27800, "median": 30100, "max": 31200 },
                                 "window_duration_sec": 1024

@@ -63,6 +63,7 @@ impl Pool {
             resolver: Source {
                 state: SourceState::Initialized(resolver),
                 ctrl_sender,
+                io_stats: None,
             },
             resolver_message_tx,
         }
@@ -96,6 +97,11 @@ impl Pool {
             error!(pool_domain = self.domain, %addr, "Attempted to add duplicate addr to pool");
             panic!("Attempted to add an already-existing pool source");
         }
+    }
+
+    /// The NTP source at `addr`, if the pool has one.
+    pub(super) fn source(&self, addr: &SocketAddr) -> Option<&Source<NtpSource>> {
+        self.ntp_sources.get(addr)
     }
 
     /// Removes an NTP source from the pool, returning it.

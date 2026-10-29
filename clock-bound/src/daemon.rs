@@ -50,9 +50,11 @@ use {
             async_ring_buffer::Sender,
             autodetect::Autodetect,
             clock_state::ClockState,
-            clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector, SyncParameters},
+            clock_sync_algorithm::{
+                ClockSyncAlgorithm, FfSyncParams, Selector, SourceInfo, SyncParameters,
+            },
             config::{Host, SourcesConfig},
-            io::{ClockDisruptionEvent, ntp::DaemonInfo},
+            io::{ClockDisruptionEvent, ntp::DaemonInfo, stats::IOStatsSnapshot},
             logging::sources::SNAPSHOT_PERIOD_SECS as SOURCES_SNAPSHOT_PERIOD_SECS,
             message::Dns as DnsMessage,
             receiver_stream::{ReceiverStream, RoutableEvent},
@@ -302,7 +304,30 @@ impl Daemon {
 
     /// Emit a point-in-time snapshot of every source to `sources.log`.
     fn emit_sources_snapshot(&self) {
-        logging::sources::log_sources_snapshot(&self.clock_sync_algorithm.sources_snapshot());
+        logging::sources::log_sources_snapshot(&self.sources_snapshot());
+    }
+
+    /// A snapshot of every configured source, with the request and response counters of the IO
+    /// task serving each one.
+    fn sources_snapshot(&self) -> logging::sources::SourceSnapshotData {
+        let mut snapshot = self.clock_sync_algorithm.sources_snapshot();
+        // TODO: cleanup the shape of this type so it doesn't require overwriting the IO fields.
+        for source in &mut snapshot.sources {
+            if let Some(io_stats) = self.io_stats_of(&source.source_info) {
+                source.requests = io_stats.requests;
+                source.responses = io_stats.responses;
+            }
+        }
+        snapshot
+    }
+
+    /// The request and response counters of the IO task serving a source, if it has one.
+    fn io_stats_of(&self, source_info: &SourceInfo) -> Option<IOStatsSnapshot> {
+        match source_info {
+            SourceInfo::AmazonTimeSync(..) => self.io_front_end.amazon_time_sync_io_stats(),
+            SourceInfo::NtpSource(address, _) => self.io_front_end.ntp_io_stats(address),
+            SourceInfo::Phc(_) => self.io_front_end.phc_io_stats(),
+        }
     }
 
     fn handle_event(&mut self, routable_event: RoutableEvent) {
@@ -414,8 +439,9 @@ mod tests {
     use super::{DAEMON_MESSAGE_CAPACITY, Daemon, RunLoopControl};
     use crate::daemon::{
         async_ring_buffer,
-        clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector},
+        clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector, SourceInfo},
         config::SourcesConfig,
+        event::Stratum,
         io::SourceIO,
         io::dns::resolver::{Message as ResolverMessage, Resolver},
         io::ntp::DaemonInfo,
@@ -499,6 +525,41 @@ mod tests {
 
     fn test_addr() -> SocketAddr {
         SocketAddr::from_str("192.0.2.1:123").unwrap()
+    }
+
+    /// Each kind of source is matched to the counters of the IO task serving it.
+    #[rstest]
+    #[tokio::test]
+    async fn io_counters_are_found_for_the_source_each_task_serves(test_daemon: TestDaemon) {
+        let TestDaemon { mut daemon, .. } = test_daemon;
+        {
+            let mut mutator = SourceMutator::new(
+                &mut daemon.io_front_end,
+                &mut daemon.clock_sync_algorithm,
+                &mut daemon.receiver_stream,
+            );
+            let ff_sync_params = FfSyncParams::default();
+            mutator.set_amazon_time_sync(&ff_sync_params);
+            mutator.add_ntp_source(test_addr(), &ff_sync_params);
+        }
+
+        let snapshot = daemon.clock_sync_algorithm.sources_snapshot();
+        assert_eq!(snapshot.sources.len(), 2);
+        for source in &snapshot.sources {
+            assert!(
+                daemon.io_stats_of(&source.source_info).is_some(),
+                "no counters for {:?}",
+                source.source_info
+            );
+        }
+
+        // Sources that were never created have no counters.
+        let unknown_ntp = SourceInfo::NtpSource("192.0.2.99:123".parse().unwrap(), Stratum::TWO);
+        assert_eq!(daemon.io_stats_of(&unknown_ntp), None);
+        assert_eq!(
+            daemon.io_stats_of(&SourceInfo::Phc("/dev/ptp0".into())),
+            None
+        );
     }
 
     /// A daemon with only a pool (no resolved address) has no time sources.

@@ -1,5 +1,6 @@
 //! Module for collecting the phc samples and selecting the best sample
 
+use super::stats::IOStats;
 use super::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
@@ -146,6 +147,8 @@ pub struct Phc {
     clock_error_bound_reader: PhcClockErrorBoundReader,
     /// Path to the PHC device.
     device_path: String,
+    /// Request and response counters, shared with the daemon.
+    io_stats: IOStats,
 }
 
 impl Phc {
@@ -158,6 +161,7 @@ impl Phc {
         event_sender: async_ring_buffer::Sender<event::Phc>,
         ctrl_receiver: mpsc::Receiver<ControlRequest>,
         clock_disruption_receiver: watch::Receiver<ClockDisruptionEvent>,
+        io_stats: IOStats,
     ) -> Result<Self, PhcError> {
         let (phc_reader, phc_clock_error_bound_reader, device_path) =
             Self::autoconfigure_phc_readers().await?;
@@ -172,6 +176,7 @@ impl Phc {
             reader: phc_reader,
             clock_error_bound_reader: phc_clock_error_bound_reader,
             device_path,
+            io_stats,
         })
     }
 
@@ -434,6 +439,7 @@ impl Phc {
     /// Creates a `event::Phc` by reading from the PHC `NUM_SAMPLES_PER_POLL`
     /// times and retaining the best sample.
     async fn sample(&mut self) -> Result<event::Phc, PhcError> {
+        self.io_stats.record_request();
         let mut last_phc_error: Option<PhcError> = None;
         let mut best_sample: Option<event::Phc> = None;
         let mut best_sample_i: u32 = 0;
@@ -469,6 +475,7 @@ impl Phc {
 
         if let Some(best_sample) = best_sample {
             trace!(?best_sample_i, ?best_sample, "Selected best PHC sample.");
+            self.io_stats.record_response();
             Ok(best_sample)
         } else if let Some(last_phc_error) = last_phc_error {
             Err(last_phc_error)
@@ -596,6 +603,7 @@ impl Phc {
             reader: _,
             clock_error_bound_reader: _,
             device_path: _,
+            io_stats: _,
         } = self;
         // so interval immediately fires
         interval.reset();

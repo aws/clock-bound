@@ -48,6 +48,7 @@ use clock_bound::daemon::event;
 use clock_bound::daemon::io::dns::ntp_source::NtpSource;
 use clock_bound::daemon::io::dns::resolver;
 use clock_bound::daemon::io::ntp::DaemonInfo;
+use clock_bound::daemon::io::stats::IOStats;
 use clock_bound::daemon::io::{ClockDisruptionEvent, ControlRequest, SourceIO};
 use clock_bound::daemon::message::Dns as DnsMessage;
 use clock_bound::daemon::receiver_stream::{ReceiverStream, RoutableEvent};
@@ -483,6 +484,7 @@ async fn test_ipv6_source_sends_events() {
         selected_clock,
         daemon_info,
         resolver_tx,
+        IOStats::empty(),
     );
 
     // Spawn the resolver-side drain so `register_with_resolver` and any later

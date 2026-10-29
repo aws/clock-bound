@@ -13,6 +13,7 @@ use tracing::{debug, error, info};
 
 use super::resolver;
 use crate::daemon::io::ntp::{DaemonInfo, ExtensionField, Ntp, NtpIoError};
+use crate::daemon::io::stats::IOStats;
 use crate::daemon::io::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{async_ring_buffer, event, selected_clock::SelectedClockSource};
 
@@ -64,6 +65,7 @@ impl NtpSource {
         selected_clock: Arc<SelectedClockSource>,
         daemon_info: DaemonInfo,
         resolver_tx: mpsc::Sender<resolver::Message>,
+        io_stats: IOStats,
     ) -> Self {
         let extensions = vec![ExtensionField::Fec2V1(daemon_info)];
         let ntp = Ntp::builder()
@@ -71,6 +73,7 @@ impl NtpSource {
             .ctrl_receiver(ctrl_receiver)
             .clock_disruption_receiver(clock_disruption_receiver)
             .selected_clock(selected_clock)
+            .io_stats(io_stats)
             .extensions(extensions)
             .socket_address(address)
             .timeout(SAMPLE_TIMEOUT)
@@ -273,6 +276,7 @@ mod tests {
             selected_clock,
             daemon_info,
             resolver_tx,
+            IOStats::empty(),
         );
         (source, event_receiver, resolver_rx)
     }
