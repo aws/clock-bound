@@ -43,5 +43,9 @@ pub mod test_utils {
     };
 }
 
+// Re-export nix for convenience, so clients don't need to specify it in their Cargo.toml.
+// `nix` is part of our public interface via `TimeWindow`.
+pub use nix;
+
 #[cfg(any(feature = "daemon", feature = "algorithm"))]
 pub mod daemon;
