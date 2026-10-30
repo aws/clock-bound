@@ -24,8 +24,12 @@ struct Cli {
 enum Command {
     /// Wait for the ClockBound daemon to synchronize the system clock.
     ///
-    /// Polls the ClockBound daemon once per second, for up to `--timeout-seconds` seconds, until
-    /// the clock status is Synchronized. A timeout of 0 waits indefinitely.
+    /// Polls once per second, for up to `--timeout-seconds` seconds, until the clock status in the
+    /// ClockBound daemon shared memory segment is Synchronized. A timeout of 0 waits indefinitely.
+    ///
+    /// With `--system-clock`, also waits for the system clock (`CLOCK_REALTIME`) to be within the
+    /// tolerance window: the ClockBound time window, widened equally on both sides to be at least
+    /// 2 ms wide.
     Waitsync(waitsync::WaitsyncArgs),
 
     /// Display the state of the time sources configured with the ClockBound daemon.
@@ -89,6 +93,39 @@ mod test {
             panic!("expected the waitsync command");
         };
         assert_eq!(args.timeout_seconds, 0);
+    }
+
+    /// Assert that `--system-clock` is optional and off by default.
+    #[test]
+    fn cli_parse_waitsync_default_system_clock_is_off() {
+        let cli = Cli::parse_from(["cbctl", "waitsync"]);
+        let Command::Waitsync(args) = cli.command else {
+            panic!("expected the waitsync command");
+        };
+        assert!(!args.system_clock);
+    }
+
+    /// Assert that the `--system-clock` flag parses.
+    #[test]
+    fn cli_parse_waitsync_system_clock() {
+        let cli = Cli::parse_from(["cbctl", "waitsync", "--system-clock"]);
+        let Command::Waitsync(args) = cli.command else {
+            panic!("expected the waitsync command");
+        };
+        assert!(args.system_clock);
+        assert_eq!(args.timeout_seconds, 60);
+    }
+
+    /// Assert that `--system-clock` combines with other flags in any order.
+    #[test]
+    fn cli_parse_waitsync_system_clock_with_other_flags() {
+        let cli = Cli::parse_from(["cbctl", "waitsync", "-t", "30", "--system-clock", "-v"]);
+        let Command::Waitsync(args) = cli.command else {
+            panic!("expected the waitsync command");
+        };
+        assert!(args.system_clock);
+        assert_eq!(args.timeout_seconds, 30);
+        assert!(args.verbose);
     }
 
     /// Assert that negative and non-numeric timeout values are rejected at parse time.
