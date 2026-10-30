@@ -348,7 +348,6 @@ mod t_vmclock_shm_header {
     use byteorder::{LittleEndian, WriteBytesExt};
     use std::fs::{File, OpenOptions};
     use std::io::Read;
-    use std::path::Path;
     /// We make use of tempfile::NamedTempFile to ensure that
     /// local files that are created during a test get removed
     /// afterwards.
@@ -380,17 +379,6 @@ mod t_vmclock_shm_header {
                 .expect("Write failed seq_count");
             $file.sync_all().expect("Sync to disk failed");
         };
-    }
-
-    fn remove_path_if_exists(path_shm: &str) {
-        let path = Path::new(path_shm);
-        if path.exists() {
-            if path.is_dir() {
-                std::fs::remove_dir_all(path_shm).expect("failed to remove file");
-            } else {
-                std::fs::remove_file(path_shm).expect("failed to remove file");
-            }
-        }
     }
 
     /// Assert that a file containing a valid header produces a valid VMClockShmHeader

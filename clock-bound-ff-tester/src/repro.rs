@@ -20,7 +20,7 @@ use clock_bound::daemon::{
 
 /// Events fed into the `ClockSyncAlgorithm`
 ///
-/// Serialization is delegated to [`ReproEventLog`], which composes the
+/// Serialization is delegated to `ReproEventLog`, which composes the
 /// log-owned mirror types so the on-disk schema stays byte-identical to the
 /// `ffevents.log` `feed` payload.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

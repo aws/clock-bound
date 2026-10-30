@@ -325,7 +325,7 @@ impl Daemon {
     fn io_stats_of(&self, source_info: &SourceInfo) -> Option<IOStatsSnapshot> {
         match source_info {
             SourceInfo::AmazonTimeSync(..) => self.io_front_end.amazon_time_sync_io_stats(),
-            SourceInfo::NtpSource(address, _) => self.io_front_end.ntp_io_stats(address),
+            SourceInfo::NtpSource(address) => self.io_front_end.ntp_io_stats(address),
             SourceInfo::Phc(_) => self.io_front_end.phc_io_stats(),
         }
     }
@@ -441,7 +441,6 @@ mod tests {
         async_ring_buffer,
         clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector, SourceInfo},
         config::SourcesConfig,
-        event::Stratum,
         io::SourceIO,
         io::dns::resolver::{Message as ResolverMessage, Resolver},
         io::ntp::DaemonInfo,
@@ -554,7 +553,7 @@ mod tests {
         }
 
         // Sources that were never created have no counters.
-        let unknown_ntp = SourceInfo::NtpSource("192.0.2.99:123".parse().unwrap(), Stratum::TWO);
+        let unknown_ntp = SourceInfo::NtpSource("192.0.2.99:123".parse().unwrap());
         assert_eq!(daemon.io_stats_of(&unknown_ntp), None);
         assert_eq!(
             daemon.io_stats_of(&SourceInfo::Phc("/dev/ptp0".into())),

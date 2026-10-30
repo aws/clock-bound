@@ -345,6 +345,8 @@ mod tests {
             poll_interval: Duration::from_secs(16),
             tenure,
             skm: SkmSummary::default(),
+            requests: 0,
+            responses: 0,
         };
         let data = SourceSnapshotData {
             sources: vec![

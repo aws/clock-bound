@@ -263,7 +263,7 @@ pub fn canonical(params: &FfSyncParams) -> String {
     out
 }
 
-/// First [`HASH_HEX_LEN`] hex digits of the SHA-256 of [`canonical`].
+/// First `HASH_HEX_LEN` hex digits of the SHA-256 of [`canonical`].
 pub fn hash(params: &FfSyncParams) -> String {
     let digest = Sha256::digest(canonical(params).as_bytes());
     let mut hex = String::with_capacity(HASH_HEX_LEN);
