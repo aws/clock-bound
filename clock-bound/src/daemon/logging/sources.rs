@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 
-use super::{ClockStatusName, LogEvent, SourceType, StructuredLog, emit_event, format_log_instant};
+use super::{LogEvent, SourceType, StructuredLog, emit_event, format_log_instant};
 use crate::daemon::clock_sync_algorithm::ff::{SkmSummary, StatSummary};
 use crate::daemon::clock_sync_algorithm::{SourceInfo, Tenure};
 use crate::daemon::time::Duration;
@@ -44,6 +44,19 @@ pub struct SourceData {
     pub skm: SkmSummary,
     pub requests: u64,
     pub responses: u64,
+    pub status: SourceStatus,
+}
+
+/// What the daemon can tell about a source's current state from how it has been answering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SourceStatus {
+    /// The source has no recent response, or the response is not enough to tell.
+    Unknown,
+    /// The source has recently answered that it is synchronized.
+    Synchronized,
+    /// The source has recently answered that it is unsynchronized.
+    FreeRunning,
 }
 
 /// Body of a `sources_snapshot` event.
@@ -83,7 +96,7 @@ struct SourceRow {
 
 impl From<&SourceData> for SourceRow {
     fn from(data: &SourceData) -> Self {
-        // TODO: populate health and stats as they are wired in.
+        // TODO: populate the selection history as it is wired in.
         Self {
             source_type: SourceType::from(&data.source_info),
             identifier: data.source_info.identifier(),
@@ -96,7 +109,7 @@ impl From<&SourceData> for SourceRow {
                     .tenure
                     .and_then(|tenure| tenure.deselected_at)
                     .map(format_log_instant),
-                status: ClockStatusName::Unknown,
+                status: data.status,
             },
             stats: Stats::new(&data.skm, data.requests, data.responses),
         }
@@ -112,7 +125,7 @@ struct Health {
     /// When the source's last selection tenure ended, or `None` if currently
     /// selected or never selected.
     deselected_at: Option<String>,
-    status: ClockStatusName,
+    status: SourceStatus,
 }
 
 /// A min/median/max summary for log output, in nanoseconds.
@@ -210,6 +223,7 @@ mod tests {
                     skm: SkmSummary::default(),
                     requests: 0,
                     responses: 0,
+                    status: SourceStatus::Unknown,
                 },
                 SourceData {
                     source_info: SourceInfo::Phc("/dev/ptp0".into()),
@@ -218,6 +232,7 @@ mod tests {
                     skm: SkmSummary::default(),
                     requests: 0,
                     responses: 0,
+                    status: SourceStatus::Unknown,
                 },
             ],
         };
@@ -298,6 +313,7 @@ mod tests {
                 },
                 requests: 12,
                 responses: 11,
+                status: SourceStatus::Unknown,
             }],
         };
 
@@ -347,6 +363,7 @@ mod tests {
             skm: SkmSummary::default(),
             requests: 0,
             responses: 0,
+            status: SourceStatus::Unknown,
         };
         let data = SourceSnapshotData {
             sources: vec![

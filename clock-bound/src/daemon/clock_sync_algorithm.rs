@@ -18,8 +18,8 @@ use std::{net::SocketAddr, sync::Arc};
 pub use ring_buffer::RingBuffer;
 
 use crate::daemon::{
-    clock_parameters::ClockParameters, event, logging, receiver_stream::RoutableEvent,
-    selected_clock::SelectedClockSource,
+    clock_parameters::ClockParameters, event, logging, logging::sources::SourceStatus,
+    receiver_stream::RoutableEvent, selected_clock::SelectedClockSource,
 };
 
 pub mod source;
@@ -170,6 +170,7 @@ impl ClockSyncAlgorithm {
                 skm: phc.skm_summary(window, period),
                 requests: 0,
                 responses: 0,
+                status: SourceStatus::Unknown,
             });
         }
 
@@ -182,6 +183,7 @@ impl ClockSyncAlgorithm {
                 skm: amazon_time_sync.skm_summary(window, period),
                 requests: 0,
                 responses: 0,
+                status: SourceStatus::Unknown,
             });
         }
 
@@ -194,6 +196,7 @@ impl ClockSyncAlgorithm {
                 skm: ntp.skm_summary(window, period),
                 requests: 0,
                 responses: 0,
+                status: SourceStatus::Unknown,
             });
         }
 

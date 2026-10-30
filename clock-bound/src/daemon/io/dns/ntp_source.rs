@@ -276,7 +276,7 @@ mod tests {
             selected_clock,
             daemon_info,
             resolver_tx,
-            IOStats::empty(),
+            IOStats::new(),
         );
         (source, event_receiver, resolver_rx)
     }
@@ -365,9 +365,10 @@ mod tests {
         // unsynchronized) is treated like a timeout: it drives the consecutive
         // failure budget toward source replacement.
         for expected_count in 1..MAX_CONSECUTIVE_UNREACHABLE_OR_UNUSABLE {
-            let err = NtpIoError::UnusableNtpResponse(
-                crate::daemon::io::ntp::UnusableNtpResponse::Unsynchronized,
-            );
+            let err = NtpIoError::UnusableNtpResponse {
+                source: crate::daemon::io::ntp::UnusableNtpResponse::Unsynchronized,
+                received_at: 1,
+            };
             source.handle_ntp_sample_result(Err(err)).await;
             assert_eq!(
                 source.consecutive_unreachable_or_unusable_count,

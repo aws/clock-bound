@@ -122,7 +122,7 @@ impl SourceIO {
             self.amazon_time_sync = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
                 let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
-                let io_stats = IOStats::empty();
+                let io_stats = IOStats::new();
 
                 let amazon_time_sync = AmazonTimeSync::construct(
                     event_sender,
@@ -154,7 +154,7 @@ impl SourceIO {
         if !self.ip_addr_sources.contains_key(&server_address) {
             let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
             let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
-            let io_stats = IOStats::empty();
+            let io_stats = IOStats::new();
 
             let ip_addr_source = IpAddrSource::construct(
                 server_address,
@@ -242,6 +242,7 @@ impl SourceIO {
         self.partition_resolver = Some(Source {
             state: SourceState::Initialized(partition_resolver),
             ctrl_sender,
+            io_stats: None,
         });
         info!("Partition resolver registered.");
     }
@@ -290,7 +291,7 @@ impl SourceIO {
         let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
         let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
         let resolver_tx = pool.resolver_message_sender();
-        let io_stats = IOStats::empty();
+        let io_stats = IOStats::new();
 
         let ntp_source = dns::ntp_source::NtpSource::construct(
             pool_domain.to_owned(),
@@ -350,7 +351,7 @@ impl SourceIO {
             self.phc = {
                 let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
                 let clock_disruption_receiver = self.clock_disruption_channels.sender.subscribe();
-                let io_stats = IOStats::empty();
+                let io_stats = IOStats::new();
                 match Phc::construct(
                     event_sender,
                     ctrl_receiver,
@@ -571,6 +572,7 @@ impl SourceIO {
         if let Some(Source {
             state,
             ctrl_sender: _,
+            io_stats: _,
         }) = &mut self.partition_resolver
         {
             if let SourceState::Initialized(mut partition_resolver) = state.transition_to_running()
@@ -660,6 +662,7 @@ impl SourceIO {
         if let Some(Source {
             state: _,
             ctrl_sender,
+            io_stats: _,
         }) = &mut self.partition_resolver
         {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
@@ -766,7 +769,7 @@ mod tests {
             ctrl_receiver,
             clock_disruption_receiver,
             Arc::new(SelectedClockSource::default()),
-            IOStats::empty(),
+            IOStats::new(),
         );
         let current_state = SourceState::Initialized(amazon_time_sync);
         assert!(current_state.is_initialized())
@@ -831,7 +834,8 @@ mod tests {
             source_io.amazon_time_sync_io_stats(),
             Some(IOStatsSnapshot {
                 requests: 0,
-                responses: 0
+                responses: 0,
+                last_response: None,
             })
         );
     }
@@ -849,7 +853,8 @@ mod tests {
             source_io.ntp_io_stats(&created),
             Some(IOStatsSnapshot {
                 requests: 0,
-                responses: 0
+                responses: 0,
+                last_response: None,
             })
         );
         assert_eq!(source_io.ntp_io_stats(&other), None);

@@ -1,6 +1,6 @@
 //! Module for collecting the phc samples and selecting the best sample
 
-use super::stats::IOStats;
+use super::stats::{IOStats, LastResponse, ResponseKind};
 use super::tsc::{read_timestamp_counter_begin, read_timestamp_counter_end};
 use super::{ClockDisruptionEvent, ControlRequest};
 use crate::daemon::{
@@ -475,7 +475,10 @@ impl Phc {
 
         if let Some(best_sample) = best_sample {
             trace!(?best_sample_i, ?best_sample, "Selected best PHC sample.");
-            self.io_stats.record_response();
+            self.io_stats.record_response(LastResponse {
+                at: best_sample.counter_post(),
+                kind: ResponseKind::Synchronized,
+            });
             Ok(best_sample)
         } else if let Some(last_phc_error) = last_phc_error {
             Err(last_phc_error)
@@ -603,12 +606,13 @@ impl Phc {
             reader: _,
             clock_error_bound_reader: _,
             device_path: _,
-            io_stats: _,
+            io_stats,
         } = self;
         // so interval immediately fires
         interval.reset();
         // and clean up disruption from sender side
         event_sender.handle_disruption();
+        io_stats.handle_disruption();
         tracing::debug!("PHC IO handled disruption.");
     }
 }

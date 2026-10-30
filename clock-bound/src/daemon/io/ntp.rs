@@ -22,7 +22,7 @@ use crate::daemon::{
     event::{self, NtpData},
     io::{
         ClockDisruptionEvent, ControlRequest,
-        stats::IOStats,
+        stats::{IOStats, LastResponse},
         tsc::{read_timestamp_counter_begin, read_timestamp_counter_end},
     },
     selected_clock::SelectedClockSource,
@@ -42,8 +42,12 @@ pub enum NtpIoError {
     Timeout(#[from] time::error::Elapsed),
     #[error("TSC order failure. tsc_pre: {pre}. tsc_post: {post}")]
     TscOrder { pre: u64, post: u64 },
-    #[error("Server responded but the sample is unusable for synchronization: {0}")]
-    UnusableNtpResponse(#[source] UnusableNtpResponse),
+    #[error("Server responded but the sample is unusable for synchronization: {source}")]
+    UnusableNtpResponse {
+        source: UnusableNtpResponse,
+        /// TSC reading taken when the response was received.
+        received_at: u64,
+    },
 }
 
 impl NtpIoError {
@@ -69,7 +73,7 @@ impl NtpIoError {
     /// and never retires the source, so a transient kernel hiccup cannot thrash the whole pool.
     pub fn indicates_unreachable_or_unusable_source(&self) -> bool {
         match self {
-            NtpIoError::Timeout(_) | NtpIoError::UnusableNtpResponse(_) => true,
+            NtpIoError::Timeout(_) | NtpIoError::UnusableNtpResponse { .. } => true,
             NtpIoError::Bind(e) | NtpIoError::SampleIo(e) => is_unreachable_io_error(e),
             NtpIoError::TscOrder { .. } => false,
         }
@@ -83,20 +87,9 @@ impl NtpIoError {
         match self {
             NtpIoError::Bind(e) | NtpIoError::SampleIo(e) => is_unreachable_io_error(e),
             NtpIoError::Timeout(_)
-            | NtpIoError::UnusableNtpResponse(_)
+            | NtpIoError::UnusableNtpResponse { .. }
             | NtpIoError::TscOrder { .. } => false,
         }
-    }
-}
-
-/// Whether the outcome of a sample counts as a response from the source.
-///
-/// Any reply that matched our request is a response, whether or not it turned out to be usable.
-/// Failing to get a reply, because of a socket error or a timeout, is not.
-fn is_response(result: &Result<event::Ntp, NtpIoError>) -> bool {
-    match result {
-        Ok(_) | Err(NtpIoError::UnusableNtpResponse(_) | NtpIoError::TscOrder { .. }) => true,
-        Err(NtpIoError::SampleIo(_) | NtpIoError::Bind(_) | NtpIoError::Timeout(_)) => false,
     }
 }
 
@@ -312,8 +305,8 @@ impl Ntp {
         if request_sent {
             self.io_stats.record_request();
         }
-        if is_response(&result) {
-            self.io_stats.record_response();
+        if let Ok(last_response) = LastResponse::try_from(&result) {
+            self.io_stats.record_response(last_response);
         }
         let ntp_event = result.inspect_err(|error| {
             if let NtpIoError::TscOrder { .. } = error {
@@ -330,7 +323,8 @@ impl Ntp {
     /// Handles a clock disruption event.
     ///
     /// Checks whether a disruption marker is present. If so, notifies the event sender
-    /// to clear its buffer and enters burst mode (if burst is configured).
+    /// to clear its buffer, clears the last response from the source's stats, and enters burst
+    /// mode (if burst is configured).
     /// Returns `true` if a disruption was present, `false` otherwise.
     pub fn handle_disruption(&mut self) -> bool {
         // Destructure all fields so adding a new field forces a compiler error here.
@@ -342,7 +336,7 @@ impl Ntp {
             normal_interval: _,
             buffer: _,
             selected_clock: _,
-            io_stats: _,
+            io_stats,
             transmit_counter: _,
             extensions: _,
             socket_address: _,
@@ -352,6 +346,7 @@ impl Ntp {
         let val = clock_disruption_receiver.borrow_and_update().clone();
         if val.disruption_marker.is_some() {
             event_sender.handle_disruption();
+            io_stats.handle_disruption();
             if let Some(burst_state) = burst {
                 burst_state.mode = Mode::burst();
                 *interval = tokio::time::interval(burst_state.config.interval);
@@ -502,8 +497,14 @@ async fn sample_packet(
     let (send_timestamp, ntp_data, received_timestamp) = match fut.await? {
         Ok(sample) => sample,
         Err(InnerSamplePacketError::Io(e)) => return Err(NtpIoError::SampleIo(e)),
-        Err(InnerSamplePacketError::UnusableNtpResponse(e)) => {
-            return Err(NtpIoError::UnusableNtpResponse(e));
+        Err(InnerSamplePacketError::UnusableNtpResponse {
+            source,
+            received_at,
+        }) => {
+            return Err(NtpIoError::UnusableNtpResponse {
+                source,
+                received_at,
+            });
         }
     };
 
@@ -582,9 +583,12 @@ async fn inner_timeout(
 
         match NtpData::try_from(ntp_packet) {
             Ok(ntp_data) => return Ok((send_timestamp, ntp_data, received_timestamp)),
-            Err(e) => {
-                trace!(error = ?e, "Server responded with an unusable NTP sample.");
-                return Err(InnerSamplePacketError::UnusableNtpResponse(e));
+            Err(source) => {
+                trace!(error = ?source, "Server responded with an unusable NTP sample.");
+                return Err(InnerSamplePacketError::UnusableNtpResponse {
+                    source,
+                    received_at: received_timestamp,
+                });
             }
         }
     }
@@ -598,8 +602,12 @@ async fn inner_timeout(
 enum InnerSamplePacketError {
     #[error("IO failure.")]
     Io(#[from] io::Error),
-    #[error("Server responded with an unusable sample: {0}")]
-    UnusableNtpResponse(#[from] UnusableNtpResponse),
+    #[error("Server responded with an unusable sample: {source}")]
+    UnusableNtpResponse {
+        source: UnusableNtpResponse,
+        /// TSC reading taken when the response was received.
+        received_at: u64,
+    },
 }
 
 #[cfg(test)]
@@ -682,7 +690,10 @@ mod tests {
 
     #[test]
     fn indicates_unreachable_or_unusable_source_for_unusable_response() {
-        let error = NtpIoError::UnusableNtpResponse(UnusableNtpResponse::Unsynchronized);
+        let error = NtpIoError::UnusableNtpResponse {
+            source: UnusableNtpResponse::Unsynchronized,
+            received_at: 1,
+        };
         assert!(
             error.indicates_unreachable_or_unusable_source(),
             "An unusable response (reachable but useless) should retire the source like a timeout"
@@ -757,63 +768,6 @@ mod tests {
             !error.indicates_local_routing_failure(),
             "Timeout should not indicate a local routing failure"
         );
-    }
-
-    fn ntp_event() -> event::Ntp {
-        event::Ntp::builder()
-            .counter_pre(TscCount::new(1_000))
-            .counter_post(TscCount::new(2_000))
-            .ntp_data(NtpData {
-                server_recv_time: crate::daemon::time::Instant::from_secs(10),
-                server_send_time: crate::daemon::time::Instant::from_secs(11),
-                root_delay: crate::daemon::time::Duration::from_micros(100),
-                root_dispersion: crate::daemon::time::Duration::from_micros(50),
-                stratum: event::Stratum::ONE,
-            })
-            .build()
-            .expect("valid NTP event")
-    }
-
-    // Any reply to our request is a response; failing to get a reply is not.
-    #[rstest]
-    #[case::usable(Ok(ntp_event()), true)]
-    #[case::unsynchronized(
-        Err(NtpIoError::UnusableNtpResponse(UnusableNtpResponse::Unsynchronized)),
-        true
-    )]
-    #[case::kiss_o_death(
-        Err(NtpIoError::UnusableNtpResponse(UnusableNtpResponse::KissODeath([0; 4]))),
-        true
-    )]
-    #[case::bad_timestamps(
-        Err(NtpIoError::UnusableNtpResponse(UnusableNtpResponse::BadTimestamps)),
-        true
-    )]
-    #[case::tsc_order(Err(NtpIoError::TscOrder { pre: 2, post: 1 }), true)]
-    #[case::sample_io(
-        Err(NtpIoError::SampleIo(io::Error::from(ErrorKind::ConnectionRefused))),
-        false
-    )]
-    #[case::bind(
-        Err(NtpIoError::Bind(io::Error::from(ErrorKind::AddrNotAvailable))),
-        false
-    )]
-    fn is_response_counts_any_reply_to_our_request(
-        #[case] result: Result<event::Ntp, NtpIoError>,
-        #[case] expected: bool,
-    ) {
-        assert_eq!(is_response(&result), expected);
-    }
-
-    #[tokio::test]
-    async fn timeout_is_not_a_response() {
-        // `time::error::Elapsed` has a private constructor, so obtain one by
-        // actually timing out a pending future.
-        let elapsed =
-            tokio::time::timeout(Duration::from_nanos(1), futures::future::pending::<()>())
-                .await
-                .unwrap_err();
-        assert!(!is_response(&Err(NtpIoError::Timeout(elapsed))));
     }
 
     #[test]

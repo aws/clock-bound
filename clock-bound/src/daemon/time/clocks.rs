@@ -63,8 +63,7 @@ mod daemon_clocks {
         fn get_time(&self) -> Instant {
             let current_tsc = TscCount::new(self.read_tsc.read_tsc() as i64);
             // TODO: disregarding overflow of TSC, that will take a while, but worth thinking of
-            self.clock_parameters.time
-                + ((current_tsc - self.clock_parameters.tsc_count) * self.clock_parameters.period)
+            self.clock_parameters.time_at(current_tsc)
         }
     }
 

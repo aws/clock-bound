@@ -32,6 +32,11 @@ pub struct ClockParameters {
 }
 
 impl ClockParameters {
+    /// The time at `tsc`, extrapolated from these parameters.
+    pub fn time_at(&self, tsc: TscCount) -> Instant {
+        self.time + (tsc - self.tsc_count) * self.period
+    }
+
     /// Compare another `ClockParameter`
     ///
     /// Returns true if `self` is more accurate than `rhs` clock parameters
@@ -81,6 +86,27 @@ mod test {
     use super::*;
     use crate::daemon::event::{self, Stratum, TscRtt};
     use rstest::rstest;
+
+    #[test]
+    fn time_at_extrapolates_from_the_parameters() {
+        let parameters = ClockParameters {
+            tsc_count: TscCount::new(1_000),
+            time: Instant::from_days(1),
+            clock_error_bound: Duration::from_nanos(0),
+            period: Period::from_seconds(1e-9),
+            period_max_error: Period::from_seconds(0.0),
+            as_of_monotonic: Instant::from_days(1),
+        };
+
+        assert_eq!(
+            parameters.time_at(TscCount::new(3_000)),
+            Instant::from_days(1) + Duration::from_nanos(2_000)
+        );
+        assert_eq!(
+            parameters.time_at(TscCount::new(500)),
+            Instant::from_days(1) - Duration::from_nanos(500)
+        );
+    }
 
     #[rstest]
     #[case::same_events_zero_skew(

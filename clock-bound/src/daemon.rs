@@ -54,12 +54,20 @@ use {
                 ClockSyncAlgorithm, FfSyncParams, Selector, SourceInfo, SyncParameters,
             },
             config::{Host, SourcesConfig},
-            io::{ClockDisruptionEvent, ntp::DaemonInfo, stats::IOStatsSnapshot},
-            logging::sources::SNAPSHOT_PERIOD_SECS as SOURCES_SNAPSHOT_PERIOD_SECS,
+            io::{
+                ClockDisruptionEvent,
+                ntp::DaemonInfo,
+                stats::{IOStatsSnapshot, RESPONSE_VALID_AGE},
+                tsc::read_timestamp_counter_begin,
+            },
+            logging::sources::{
+                SNAPSHOT_PERIOD_SECS as SOURCES_SNAPSHOT_PERIOD_SECS, SourceStatus,
+            },
             message::Dns as DnsMessage,
             receiver_stream::{ReceiverStream, RoutableEvent},
             selected_clock::SelectedClockSource,
             source_mutator::SourceMutator,
+            time::TscCount,
         },
         shm::ClockStatus,
     },
@@ -307,15 +315,29 @@ impl Daemon {
         logging::sources::log_sources_snapshot(&self.sources_snapshot());
     }
 
-    /// A snapshot of every configured source, with the request and response counters of the IO
-    /// task serving each one.
+    /// A snapshot of every configured source, with the request and response counters and the
+    /// status of the IO task serving each one.
     fn sources_snapshot(&self) -> logging::sources::SourceSnapshotData {
         let mut snapshot = self.clock_sync_algorithm.sources_snapshot();
+        // The status of a source is measured against the selected clock
+        let clock = self
+            .clock_sync_algorithm
+            .current_source_params()
+            .map(|source_params| &source_params.clock_parameters);
+        #[allow(clippy::cast_possible_wrap)]
+        let now = TscCount::new(read_timestamp_counter_begin() as i64);
+        let oldest_response = clock.map(|clock| clock.time_at(now) - RESPONSE_VALID_AGE);
         // TODO: cleanup the shape of this type so it doesn't require overwriting the IO fields.
         for source in &mut snapshot.sources {
             if let Some(io_stats) = self.io_stats_of(&source.source_info) {
                 source.requests = io_stats.requests;
                 source.responses = io_stats.responses;
+                source.status = match (clock, oldest_response) {
+                    (Some(clock), Some(oldest_response)) => {
+                        io_stats.status(oldest_response, |tsc| clock.time_at(tsc))
+                    }
+                    _ => SourceStatus::Unknown,
+                };
             }
         }
         snapshot

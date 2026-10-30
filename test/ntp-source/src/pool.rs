@@ -670,7 +670,7 @@ async fn test_ipv6_source_sends_events(domain: &str) {
         selected_clock,
         daemon_info,
         resolver_tx,
-        IOStats::empty(),
+        IOStats::new(),
     );
 
     // Spawn the resolver-side drain so `register_with_resolver` and any later

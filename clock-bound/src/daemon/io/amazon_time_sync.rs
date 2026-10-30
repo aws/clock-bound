@@ -220,7 +220,7 @@ mod tests {
                 ctrl_receiver,
                 clock_disruption_receiver,
                 selected_clock.clone(),
-                IOStats::empty(),
+                IOStats::new(),
             ),
             clock_disruption_sender,
             selected_clock,
