@@ -4,15 +4,16 @@
 //! cbctl waitsync [--system-clock] [--timeout-seconds SECONDS] [--verbose]
 //! ```
 //!
-//! The command polls once per second, for up to `--timeout-seconds` seconds (60 by default),
-//! until the clock is ready. A timeout of 0 waits indefinitely. It enables activation scripts
-//! that block until the clock is synchronized. The clock is ready when:
+//! The command polls once per second until the clock is ready. By default it waits indefinitely;
+//! `--timeout-seconds` sets a limit in seconds, and a timeout of 0 also waits indefinitely. It
+//! enables activation scripts that block until the clock is synchronized. The clock is ready when:
 //!
 //! - by default: the clock status read from the ClockBound daemon shared memory segment is
 //!   `Synchronized`.
 //! - with `--system-clock`: additionally, the system clock (`CLOCK_REALTIME`), read right after
 //!   the shared memory segment, is within the tolerance window. The tolerance window is the
-//!   ClockBound time window, widened equally on both sides to be at least 2 milliseconds wide.
+//!   ClockBound time window, widened equally on both sides if needed so that it is at least
+//!   2 milliseconds wide in total.
 //!
 //! Before polling, the command validates the environment: on a virtualized (non-metal) EC2
 //! instance the VMClock device is expected to exist. If it is missing, the clock error bound can
@@ -59,12 +60,13 @@ const SYSTEM_CLOCK_MIN_TOLERANCE_NS: CBDuration = CBDuration::from_millis(1);
 #[derive(Debug, Args)]
 pub struct WaitsyncArgs {
     /// Also wait for the system clock (`CLOCK_REALTIME`) to be within the tolerance window: the
-    /// ClockBound time window, widened equally on both sides to be at least 2 ms wide.
+    /// ClockBound time window, widened equally on both sides if needed so that it is at least
+    /// 2 milliseconds wide in total.
     #[arg(long)]
     pub system_clock: bool,
 
     /// Maximum time to wait for the clock to synchronize, in seconds. 0 waits indefinitely.
-    #[arg(short = 't', long, default_value_t = 60, value_name = "SECONDS")]
+    #[arg(short = 't', long, default_value_t = 0, value_name = "SECONDS")]
     pub timeout_seconds: u64,
 
     /// Print the clock status of each polling attempt while waiting.

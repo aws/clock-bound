@@ -25,12 +25,13 @@ struct Cli {
 enum Command {
     /// Wait for the ClockBound daemon to synchronize the system clock.
     ///
-    /// Polls once per second, for up to `--timeout-seconds` seconds, until the clock status in the
-    /// ClockBound daemon shared memory segment is Synchronized. A timeout of 0 waits indefinitely.
+    /// Polls once per second until the clock status in the ClockBound daemon shared memory segment
+    /// is Synchronized. By default it waits indefinitely; `--timeout-seconds` sets a limit, and 0
+    /// also waits indefinitely.
     ///
     /// With `--system-clock`, also waits for the system clock (`CLOCK_REALTIME`) to be within the
-    /// tolerance window: the ClockBound time window, widened equally on both sides to be at least
-    /// 2 ms wide.
+    /// tolerance window: the ClockBound time window, widened equally on both sides if needed so
+    /// that it is at least 2 milliseconds wide in total.
     Waitsync(waitsync::WaitsyncArgs),
 
     /// Display the state of the time sources configured with the ClockBound daemon.
@@ -93,14 +94,14 @@ mod test {
         assert_eq!(args.timeout_seconds, 30);
     }
 
-    /// Assert that `--timeout-seconds` is optional and defaults to 60 seconds.
+    /// Assert that `--timeout-seconds` is optional and defaults to 0, waiting indefinitely.
     #[test]
     fn cli_parse_waitsync_default_timeout_seconds() {
         let cli = Cli::parse_from(["cbctl", "waitsync"]);
         let Command::Waitsync(args) = cli.command else {
             panic!("expected the waitsync command");
         };
-        assert_eq!(args.timeout_seconds, 60);
+        assert_eq!(args.timeout_seconds, 0);
     }
 
     /// Assert that a zero timeout is accepted, meaning wait indefinitely.
@@ -131,7 +132,7 @@ mod test {
             panic!("expected the waitsync command");
         };
         assert!(args.system_clock);
-        assert_eq!(args.timeout_seconds, 60);
+        assert_eq!(args.timeout_seconds, 0);
     }
 
     /// Assert that `--system-clock` combines with other flags in any order.

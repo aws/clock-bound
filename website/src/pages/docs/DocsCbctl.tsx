@@ -136,22 +136,37 @@ export default function DocsCbctl() {
       <AnchorHeading level={2} id="waitsync">cbctl waitsync</AnchorHeading>
       <TerminalWindow
         title="bash"
-        code={`cbctl waitsync [--timeout-seconds SECONDS] [--verbose]`}
+        code={`cbctl waitsync [--system-clock] [--timeout-seconds SECONDS] [--verbose]`}
       />
       <p>
-        Waits for the ClockBound daemon to synchronize the system clock. This is
-        useful in startup scripts and health checks. The command polls the shared
-        memory segment once per second, for up to{' '}
-        <code>--timeout-seconds</code> seconds (60 by default), until the clock
-        status is Synchronized. A timeout of 0 waits indefinitely.
+        Waits for the ClockBound daemon to synchronize the clock. By default it
+        waits indefinitely. This is useful in startup scripts and health checks.
       </p>
+      <p>Options:</p>
+      <ul>
+        <li>
+          <code>--system-clock</code>: also wait for the system clock
+          (<code>CLOCK_REALTIME</code>) to be within the tolerance window. The
+          tolerance window is the ClockBound time window, widened equally on
+          both sides if needed so that it is at least 2 milliseconds wide in
+          total.
+        </li>
+        <li>
+          <code>-t</code>, <code>--timeout-seconds SECONDS</code>: the maximum
+          time to wait, in seconds. The default, 0, waits indefinitely.
+        </li>
+        <li>
+          <code>-v</code>, <code>--verbose</code>: print the status of each
+          polling attempt while waiting. The command polls once per second.
+        </li>
+      </ul>
       <p>Exit codes:</p>
       <ul>
         <li>
-          <code>0</code>: the clock is synchronized.
+          <code>0</code>: the clock is ready.
         </li>
         <li>
-          <code>1</code>: the clock did not synchronize within the timeout.
+          <code>1</code>: the clock did not become ready within the timeout.
         </li>
         <li>
           <code>2</code>: waiting can never succeed, for example on a
