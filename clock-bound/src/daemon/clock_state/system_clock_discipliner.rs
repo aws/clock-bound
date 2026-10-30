@@ -127,7 +127,7 @@ mod test {
 
         let mut adjuster = SystemClockDiscipliner::new(Box::new(mock));
         assert!(matches!(adjuster.state, State::Initializing(_)));
-        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
+        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(10)));
         assert!(matches!(adjuster.state, State::Running(_)));
     }
 
@@ -139,9 +139,9 @@ mod test {
             .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
         let mut adjuster = SystemClockDiscipliner::new(Box::new(mock));
-        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
-        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
-        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(100)));
+        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(10)));
+        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(10)));
+        adjuster.handle_clock_parameters(&clock_params_with_offset(Duration::from_millis(10)));
         assert!(matches!(adjuster.state, State::Running(_)));
     }
 

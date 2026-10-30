@@ -3,7 +3,7 @@
 //! On initialization (when we receive valid `ClockParameters`), the adjuster measures the
 //! phase offset between `CLOCK_REALTIME` and the `ClockBound` internal clock.
 //!
-//! - If `|offset| > Timex::MAX_PHASE_OFFSET` (500 ms), the clock is stepped
+//! - If `|offset| > Timex::MAX_PHASE_OFFSET` (100 ms), the clock is stepped
 //!   (`apply_phase_correction_step`). This handles stale RTCs and booting to the Unix epoch.
 //! - Otherwise the offset is fed into the kernel PLL (`apply_phase_correction_smooth`)
 //!   for a slew. This covers the possible case of a daemon restart where the
@@ -202,7 +202,7 @@ mod test {
             .returning(|_, _| Ok(crate::daemon::time::timex::Timex::retrieve()));
 
         let (state, correction) = Initializing::new()
-            .to_running(&mock, &clock_params_with_offset(Duration::from_millis(100)));
+            .to_running(&mock, &clock_params_with_offset(Duration::from_millis(10)));
         let state = State::from(state);
         assert!(matches!(state, State::Running(..)));
         assert!(

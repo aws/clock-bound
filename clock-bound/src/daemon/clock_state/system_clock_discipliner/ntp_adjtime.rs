@@ -110,6 +110,8 @@ pub trait NtpAdjTimeExt: NtpAdjTime + Send + Sync {
         error_bound: Duration,
     ) -> Result<Timex, NtpAdjTimeError> {
         let mut tx = Timex::from_phase_correction(phase_correction, error_bound);
+        // happens if phase_correction is too large
+        let expect_unsync = tx.is_unsync();
         debug!(
             ?phase_correction,
             ?error_bound,
@@ -117,9 +119,9 @@ pub trait NtpAdjTimeExt: NtpAdjTime + Send + Sync {
         );
         match self.ntp_adjtime(&mut tx) {
             TIME_OK => Ok(tx),
-            cs @ (TIME_ERROR | TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => {
-                Err(NtpAdjTimeError::BadState(cs))
-            }
+            cs @ (TIME_INS | TIME_DEL | TIME_OOP | TIME_WAIT) => Err(NtpAdjTimeError::BadState(cs)),
+            TIME_ERROR if expect_unsync => Ok(tx),
+            TIME_ERROR => Err(NtpAdjTimeError::BadState(TIME_ERROR)),
             -1 => Err(NtpAdjTimeError::Failure(errno::errno())),
             unexpected => Err(NtpAdjTimeError::InvalidState(unexpected)),
         }
@@ -192,6 +194,30 @@ mod test {
             mock.apply_phase_correction_smooth(Duration::from_nanos(500), Duration::from_millis(1))
                 .unwrap_err(),
             NtpAdjTimeError::Failure(_)
+        ));
+    }
+
+    #[rstest]
+    #[case::positive(Timex::MAX_PHASE_OFFSET + Duration::from_millis(1))]
+    #[case::negative(-Timex::MAX_PHASE_OFFSET - Duration::from_millis(1))]
+    fn apply_phase_correction_smooth_clamped_accepts_time_error(
+        #[case] phase_correction: Duration,
+    ) {
+        // A clamped offset sets STA_UNSYNC, so the kernel reports TIME_ERROR.
+        let mut mock = MockNtpAdjTime::new();
+        mock.expect_ntp_adjtime().times(1).return_const(TIME_ERROR);
+        mock.apply_phase_correction_smooth(phase_correction, Duration::from_millis(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn apply_phase_correction_smooth_unclamped_rejects_time_error() {
+        let mut mock = MockNtpAdjTime::new();
+        mock.expect_ntp_adjtime().times(1).return_const(TIME_ERROR);
+        assert!(matches!(
+            mock.apply_phase_correction_smooth(Duration::from_nanos(500), Duration::from_millis(1))
+                .unwrap_err(),
+            NtpAdjTimeError::BadState(TIME_ERROR)
         ));
     }
 

@@ -5,7 +5,7 @@ use bon::bon;
 use libc::timeval;
 use libc::{
     ADJ_SETOFFSET, MOD_ESTERROR, MOD_MAXERROR, MOD_NANO, MOD_OFFSET, MOD_STATUS, MOD_TIMECONST,
-    STA_NANO, STA_PLL, timex,
+    STA_NANO, STA_PLL, STA_UNSYNC, timex,
 };
 use tracing::warn;
 
@@ -19,10 +19,19 @@ pub struct Timex(timex);
 #[bon]
 impl Timex {
     /// Maximum phase offset that can be submitted to the kernel PLL in a single
-    /// `adjtimex` call. Offsets larger than this are clamped by the `Timex`
-    /// constructors. The state machine also uses this value as the threshold above
-    /// which a step correction is preferred over a smooth slew.
-    pub const MAX_PHASE_OFFSET: Duration = Duration::from_millis(500);
+    /// `adjtimex` call. While the kernel itself clamps offsets to 500ms (`MAXPHASE`) in
+    /// `ntp_adjtime` calls, stability calls for slewing less aggressively. This is because
+    /// drastically changing the frequency can cause the monotonic clocks to speed
+    /// up aggressively
+    ///
+    /// Using a value of 100 ms as the maximum phase offset. This correlates
+    /// with a 25,000 ppm (or 2.5%) frequency offset.
+    ///
+    /// ref: <https://github.com/torvalds/linux/blob/master/kernel/time/ntp.c#L297-L344>
+    ///
+    /// The state machine also uses this value as the threshold above
+    /// which a step correction is preferred over a smooth slew during startup
+    pub const MAX_PHASE_OFFSET: Duration = Duration::from_millis(100);
 
     /// Expose a mutable reference to the inner `libc::timex`.
     pub fn expose(&mut self) -> *mut timex {
@@ -62,10 +71,14 @@ impl Timex {
         Skew::from_timex_freq(self.0.freq)
     }
 
+    /// Returns true if the `STA_UNSYNC` status bit is set.
+    pub fn is_unsync(&self) -> bool {
+        self.0.status & STA_UNSYNC != 0
+    }
+
     /// Construct a [`Timex`] struct to be passed into `ntp_adjtime`
     ///
     /// A couple notes on how it constructs
-    /// - the `STA_UNSYNC` status will never be set. We only apply correction when the app is synchronized.
     /// - `maxerror` set to the clock error bound. Without setting, kernel will mark unsynced
     /// - `esterror` set to the clock error bound.
     #[allow(
@@ -73,18 +86,19 @@ impl Timex {
         reason = "offset is clamped then converted so no truncation"
     )]
     pub fn from_phase_correction(mut offset: Duration, error_bound: Duration) -> Self {
+        // When the offset is within bounds, this marks the clock as synchronized within the
+        // kernel, assuming the clock error bound is < 16 seconds (`NTP_PHASE_LIMIT` in the kernel).
+        let mut status = STA_PLL;
+
         if offset > Self::MAX_PHASE_OFFSET || offset < -Self::MAX_PHASE_OFFSET {
             warn!(
-                "Offset of {}ns is outside of bounds +/-{}ns. Clamping the value.",
-                offset.as_nanos(),
-                Self::MAX_PHASE_OFFSET.as_nanos()
+                offset_ns = offset.as_nanos(),
+                max_phase_offset_ns = Self::MAX_PHASE_OFFSET.as_nanos(),
+                "Phase offset out of bounds, clamping and marking STA_UNSYNC"
             );
             offset = offset.clamp(-Self::MAX_PHASE_OFFSET, Self::MAX_PHASE_OFFSET);
+            status |= STA_UNSYNC;
         }
-
-        // note, this does NOT have STA_UNSYNC set. It will mark as synchronized within the kernel,
-        // assuming the clock error bound is < 16 seconds (`NTP_PHASE_LIMIT` in the kernel)
-        let status = STA_PLL;
 
         Self(timex {
             modes: MOD_OFFSET | MOD_TIMECONST | MOD_NANO | MOD_STATUS | MOD_MAXERROR | MOD_ESTERROR,
@@ -449,5 +463,45 @@ mod test {
         assert_ne!(inner.status & STA_PLL, 0, "STA_PLL should stay set");
         assert_eq!(inner.maxerror, error_bound.as_micros());
         assert_eq!(inner.esterror, error_bound.as_micros());
+        assert!(!tx.is_unsync());
+    }
+
+    #[rstest]
+    #[case::at_positive_bound(Timex::MAX_PHASE_OFFSET)]
+    #[case::at_negative_bound(-Timex::MAX_PHASE_OFFSET)]
+    fn from_phase_correction_at_bound_is_not_clamped(#[case] offset: Duration) {
+        let tx = Timex::from_phase_correction(offset, Duration::from_millis(5));
+        let inner = tx.as_ref();
+
+        assert_eq!(inner.offset, offset.as_nanos_trunc());
+        assert_eq!(inner.status, STA_PLL);
+        assert!(!tx.is_unsync());
+    }
+
+    #[rstest]
+    #[case::positive(
+        Timex::MAX_PHASE_OFFSET + Duration::from_millis(50),
+        Timex::MAX_PHASE_OFFSET
+    )]
+    #[case::negative(
+        -Timex::MAX_PHASE_OFFSET - Duration::from_millis(50),
+        -Timex::MAX_PHASE_OFFSET
+    )]
+    #[case::far_positive(Duration::from_secs(10), Timex::MAX_PHASE_OFFSET)]
+    fn from_phase_correction_out_of_bounds_clamps_and_sets_unsync(
+        #[case] offset: Duration,
+        #[case] expected: Duration,
+    ) {
+        let tx = Timex::from_phase_correction(offset, Duration::from_millis(5));
+        let inner = tx.as_ref();
+
+        assert_eq!(inner.offset, expected.as_nanos_trunc());
+        assert_ne!(
+            inner.status & STA_PLL,
+            0,
+            "STA_PLL must stay set to keep slewing"
+        );
+        assert_ne!(inner.status & STA_UNSYNC, 0, "STA_UNSYNC should be set");
+        assert!(tx.is_unsync());
     }
 }
