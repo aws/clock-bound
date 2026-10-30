@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod render;
 mod waitsync;
 
 /// ClockBound control command line utility.
