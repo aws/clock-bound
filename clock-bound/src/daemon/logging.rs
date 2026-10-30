@@ -210,13 +210,30 @@ pub(crate) fn format_log_instant(instant: Instant) -> String {
 /// Log-specific representation of clock status for serialization.
 ///
 /// Avoids deriving `Serialize` on the actual [`ClockStatus`] enum.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-enum ClockStatusName {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClockStatusName {
     Unknown,
     Synchronized,
     FreeRunning,
     Disrupted,
+}
+
+impl ClockStatusName {
+    /// The status token, as written in the logs: `SYNCHRONIZED`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unknown => "UNKNOWN",
+            Self::Synchronized => "SYNCHRONIZED",
+            Self::FreeRunning => "FREE_RUNNING",
+            Self::Disrupted => "DISRUPTED",
+        }
+    }
+}
+
+impl Serialize for ClockStatusName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 impl From<ClockStatus> for ClockStatusName {

@@ -1,13 +1,5 @@
 //! Value rendering for `cbctl status`
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by `cbctl status`, wired up in the next change"
-    )
-)]
-
 use clock_bound::daemon::time::tsc::{Frequency, Period, Skew};
 use clock_bound::daemon::time::{Duration, Instant};
 

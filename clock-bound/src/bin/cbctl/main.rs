@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 
 mod render;
 mod sources;
+mod status;
 mod waitsync;
 
 /// ClockBound control command line utility.
@@ -40,12 +41,29 @@ enum Command {
     /// Ages in the SELECTED column are rounded down to the second under a minute, and to the
     /// minute (or coarser) beyond, so sources deselected close together can show the same age.
     Sources(sources::SourcesArgs),
+    /// Print the clock status.
+    ///
+    /// Shows the current time, its clock error bound, and details about the last clock
+    /// synchronization event.
+    ///
+    /// The clock status is SYNCHRONIZED, FREE_RUNNING, DISRUPTED, or UNKNOWN. Under
+    /// the last two, the current time and its clock error bound cannot be trusted
+    /// and print "-".
+    ///
+    /// See the ClockBound documentation for additional details.
+    #[command(about = "Print the clock status", verbatim_doc_comment)]
+    #[expect(
+        clippy::doc_markdown,
+        reason = "this comment is the `--help` text, which shows the status tokens verbatim"
+    )]
+    Status,
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Waitsync(args) => waitsync::run(&args),
         Command::Sources(args) => sources::run(&args),
+        Command::Status => status::run(),
     }
 }
 
