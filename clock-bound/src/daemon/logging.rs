@@ -8,7 +8,7 @@
 //! - The tracing [`subscriber`] setup that wires everything together
 //! - The [`ffevents`] module for typed feed-forward event emission
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::daemon::clock_parameters::ClockParameters;
 use crate::daemon::clock_sync_algorithm::SourceInfo;
@@ -231,9 +231,9 @@ impl From<ClockStatus> for ClockStatusName {
 }
 
 /// Synchronization protocol of a clock source, for log output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum SourceType {
+pub enum SourceType {
     Ntp,
     Phc,
 }

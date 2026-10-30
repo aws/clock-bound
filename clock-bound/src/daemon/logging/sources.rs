@@ -12,7 +12,7 @@
 //! log_sources_snapshot(&sources_snapshot_data);
 //! ```
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{LogEvent, SourceType, StructuredLog, emit_event, format_log_instant};
 use crate::daemon::clock_sync_algorithm::ff::{SkmSummary, StatSummary};
@@ -48,7 +48,7 @@ pub struct SourceData {
 }
 
 /// What the daemon can tell about a source's current state from how it has been answering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SourceStatus {
     /// The source has no recent response, or the response is not enough to tell.
@@ -60,9 +60,9 @@ pub enum SourceStatus {
 }
 
 /// Body of a `sources_snapshot` event.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct SourcesSnapshot {
-    sources: Vec<SourceRow>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourcesSnapshot {
+    pub sources: Vec<SourceRow>,
 }
 
 impl LogEvent for SourcesSnapshot {
@@ -82,16 +82,16 @@ impl From<&SourceSnapshotData> for SourcesSnapshot {
 ///
 /// Every field is always present; absent data is `null` within a field, never a
 /// missing key, so all rows share one schema regardless of warm-up.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct SourceRow {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceRow {
     #[serde(rename = "type")]
-    source_type: SourceType,
+    pub source_type: SourceType,
     /// Address (`ip:port`) or device path (`/dev/ptp0`).
-    identifier: String,
+    pub identifier: String,
     /// Configured poll interval, in seconds.
-    poll_interval_sec: f64,
-    health: Health,
-    stats: Stats,
+    pub poll_interval_sec: f64,
+    pub health: Health,
+    pub stats: Stats,
 }
 
 impl From<&SourceData> for SourceRow {
@@ -117,23 +117,23 @@ impl From<&SourceData> for SourceRow {
 }
 
 /// A source's selection history and current responsiveness.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct Health {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Health {
     /// When the source began its current (or most recent) selection tenure, or
     /// `None` if never selected.
-    selected_at: Option<String>,
+    pub selected_at: Option<String>,
     /// When the source's last selection tenure ended, or `None` if currently
     /// selected or never selected.
-    deselected_at: Option<String>,
-    status: SourceStatus,
+    pub deselected_at: Option<String>,
+    pub status: SourceStatus,
 }
 
 /// A min/median/max summary for log output, in nanoseconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-struct StatSummaryNs {
-    min: i64,
-    median: i64,
-    max: i64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatSummaryNs {
+    pub min: i64,
+    pub median: i64,
+    pub max: i64,
 }
 
 impl From<StatSummary<Duration>> for StatSummaryNs {
@@ -147,18 +147,18 @@ impl From<StatSummary<Duration>> for StatSummaryNs {
 }
 
 /// Aggregates computed over a source's sample buffer at snapshot time.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct Stats {
-    requests: u64,
-    responses: u64,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Stats {
+    pub requests: u64,
+    pub responses: u64,
     /// Measurement latency distribution over the window, or `None` if empty or
     /// no period is available to scale it.
-    latency_ns: Option<StatSummaryNs>,
+    pub latency_ns: Option<StatSummaryNs>,
     /// Source-reported error bound distribution over the window, or `None` if
     /// empty.
-    source_clock_error_bound_ns: Option<StatSummaryNs>,
+    pub source_clock_error_bound_ns: Option<StatSummaryNs>,
     /// Duration the stats window spans, in seconds.
-    window_duration_sec: u64,
+    pub window_duration_sec: u64,
 }
 
 impl Stats {
