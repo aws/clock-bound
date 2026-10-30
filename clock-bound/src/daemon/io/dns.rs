@@ -6,6 +6,9 @@ pub mod resolver;
 // IO task which performs NTP requests to a DNS-resolved address
 pub mod ntp_source;
 
+// One-shot task which detects the AWS partition and requests the public Amazon Time Sync pool
+pub(super) mod partition_resolver;
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
@@ -85,6 +88,12 @@ impl Pool {
             SourceState::Initialized(resolver) => resolver.in_use_ip_addrs_snapshot(),
             SourceState::Running => panic!("resolver already spawned"),
         }
+    }
+
+    /// Test-only: whether this pool's resolver task has been spawned.
+    #[cfg(test)]
+    pub(crate) fn resolver_is_running(&self) -> bool {
+        self.resolver.state.is_running()
     }
 
     /// Inserts a running NTP source into the pool.

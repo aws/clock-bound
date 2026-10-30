@@ -32,7 +32,10 @@ jobs:
   Pool_Tests:
     name: Pool tests
     needs: build
-    runs-on: ubuntu-latest
+    # partition resolver requires imds
+    runs-on:
+      - codebuild-${{ vars.PHC_X86_FLEET }}-${{ github.run_id }}-${{ github.run_attempt }}
+        buildspec-override:true
 
     steps:
       - name: Download pool-test artifact
@@ -43,4 +46,4 @@ jobs:
       - run: echo "Change permissions of artifact."
       - run: chmod 755 pool-test
       - run: echo "Run DNS pool test!"
-      - run: ./pool-test
+      - run: ./pool-test --partition-resolver time.aws.com

@@ -39,6 +39,7 @@ toml = { version = "1.1", default-features = false, features = [
 ], optional = true }
 tokio = { version = "1.47.1", features = [
   "fs",
+  "io-util",
   "net",
   "macros",
   "rt",
@@ -69,6 +70,7 @@ rstest = "0.26"
 tempfile = "3.13"
 tokio = { version = "1.47.1", features = [
   "fs",
+  "io-util",
   "net",
   "macros",
   "rt",
@@ -78,6 +80,7 @@ tokio = { version = "1.47.1", features = [
   "test-util",
 ] }
 tracing-test = "0.2.5"
+wiremock = "0.6.5"
 
 [features]
 daemon = [

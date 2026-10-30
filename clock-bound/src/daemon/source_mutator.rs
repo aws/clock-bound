@@ -16,10 +16,15 @@ use crate::daemon::io::SourceIO;
 use crate::vmclock::shm::VMCLOCK_DEFAULT_PATH;
 use tracing::info;
 
+/// Maximum healthy sources maintained for a multi-source pool.
+const POOL_MAX_SOURCES: usize = 5;
+
 /// Mutate the sources in the app
 ///
-/// For right now, all mutating actions need to happen before calling [`SourceIO::spawn_all`].
-/// However, allowing this to work during runtime will be relatively easy in a future commit.
+/// Most mutating actions need to happen before calling [`SourceIO::spawn_all`]. The
+/// exceptions are runtime-driven: [`spawn_pool`](Self::spawn_pool) adds and spawns a pool,
+/// and [`add_pool_source`](Self::add_pool_source) / [`remove_pool_source`](Self::remove_pool_source)
+/// follow the pool resolvers.
 pub struct SourceMutator<'a> {
     io_front_end: &'a mut SourceIO,
     clock_sync_algorithm: &'a mut ClockSyncAlgorithm,
@@ -143,9 +148,36 @@ impl<'a> SourceMutator<'a> {
     /// For a domain that should back only a single NTP source, use
     /// [`add_domain_host`](Self::add_domain_host).
     pub fn add_pool(&mut self, pool_domain: String) {
-        /// Maximum healthy sources maintained for a multi-source pool.
-        const MAX_SOURCES: usize = 5;
-        self.io_front_end.create_pool(pool_domain, MAX_SOURCES);
+        self.io_front_end.create_pool(pool_domain, POOL_MAX_SOURCES);
+    }
+
+    /// Add a multi-source NTP pool to the daemon and spawn its resolver immediately.
+    ///
+    /// For pools added after [`SourceIO::spawn_all`], e.g. when handling `Dns::AddPool`.
+    /// Like [`add_pool`](Self::add_pool), this only touches IO; resolved sources are added
+    /// later via [`add_pool_source`](Self::add_pool_source). A pool that already exists is
+    /// left untouched.
+    pub fn spawn_pool(&mut self, pool_domain: String) {
+        self.io_front_end.spawn_pool(pool_domain, POOL_MAX_SOURCES);
+    }
+
+    /// Add the default public Amazon Time Sync pool to the daemon.
+    ///
+    /// On Amazon EC2 (Nitro or Xen) this registers the partition resolver task, which
+    /// detects the AWS partition via `IMDSv2` once running and adds the pool at runtime via
+    /// `Dns::AddPool`: `time.amazonaws.cn` in `aws-cn`, `time.aws.com` otherwise, and
+    /// `time.aws.com` if the partition is still unknown after 10 minutes. Non-Amazon hosts
+    /// (including autodetect failures, which map to `Other`) add the `time.aws.com` pool
+    /// immediately.
+    pub fn add_default_public_pool(&mut self, autodetect: &Autodetect) {
+        match autodetect {
+            Autodetect::Amazon(_) => {
+                self.io_front_end.create_partition_resolver();
+            }
+            Autodetect::Other => {
+                self.add_pool(String::from("time.aws.com"));
+            }
+        }
     }
 
     /// Add a single-host NTP source addressed by domain name.
@@ -195,9 +227,11 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
 
+    use rstest::rstest;
     use tokio::sync::mpsc;
 
     use crate::daemon::ClockSyncAlgorithm;
+    use crate::daemon::autodetect::{Amazon, Autodetect};
     use crate::daemon::clock_sync_algorithm::FfSyncParams;
     use crate::daemon::clock_sync_algorithm::Selector;
     use crate::daemon::io::SourceIO;
@@ -289,5 +323,48 @@ mod tests {
 
         // Verify pool exists in IO
         assert!(io.pools().contains_key(&pool_domain));
+    }
+
+    /// On Amazon EC2 (Nitro or Xen) the pool is deferred to the partition resolver.
+    #[rstest]
+    #[case::nitro(Autodetect::Amazon(Amazon::Nitro("m5.large".to_string())))]
+    #[case::xen(Autodetect::Amazon(Amazon::Xen))]
+    fn add_default_public_pool_amazon_registers_partition_resolver(#[case] autodetect: Autodetect) {
+        let (mut io, mut csa, mut rs) = setup();
+
+        let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
+        mutator.add_default_public_pool(&autodetect);
+
+        assert!(io.has_partition_resolver());
+        assert!(io.pools().is_empty());
+    }
+
+    /// Non-Amazon hosts add the `time.aws.com` pool immediately.
+    #[test]
+    fn add_default_public_pool_other_adds_time_aws_com() {
+        let (mut io, mut csa, mut rs) = setup();
+
+        let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
+        mutator.add_default_public_pool(&Autodetect::Other);
+
+        assert!(!io.has_partition_resolver());
+        assert_eq!(io.pools().len(), 1);
+        assert!(io.pools().contains_key("time.aws.com"));
+    }
+
+    #[tokio::test]
+    async fn spawn_pool_populates_io_only() {
+        let (mut io, mut csa, mut rs) = setup();
+        io.spawn_all();
+
+        let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut rs);
+        mutator.spawn_pool("localhost".to_string());
+
+        let pool = io.pools().get("localhost").expect("pool exists");
+        assert!(pool.resolver_is_running());
+        assert!(csa.ntp_sources().is_empty());
+        assert!(rs.is_empty());
+
+        io.shutdown_all().await;
     }
 }

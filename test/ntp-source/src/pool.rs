@@ -36,13 +36,32 @@
 //! spawned, not just to a lucky few. If either condition is not met within
 //! `TIMEOUT`, the test panics with the per-source response counts so the
 //! failing sources are obvious.
+//!
+//! # Opt-in partition resolver test
+//!
+//! `--partition-resolver <EXPECTED_DOMAIN>` additionally runs the pool
+//! lifecycle through `SourceMutator::add_default_public_pool` on a (forced)
+//! Amazon EC2 host. That registers the `PartitionResolver` task, which detects the
+//! AWS partition via `IMDSv2` and sends a single `AddPool`. The harness handles
+//! `AddPool` like the daemon does (add the pool and spawn its resolver). On top
+//! of the pool test's pass criteria, the `AddPool` and every `AddPoolAddr` must
+//! carry `pool_domain == EXPECTED_DOMAIN`, and each `AddPoolAddr` an IP that
+//! `EXPECTED_DOMAIN` resolves to. This only works on an EC2 host (Nitro or Xen)
+//! with IMDS reachable; elsewhere the resolver only falls back to `time.aws.com` after
+//! 10 minutes, well past `TIMEOUT`. To verify the China partition manually, run
+//! on an instance in `aws-cn`:
+//!
+//! ```text
+//! pool-test --partition-resolver time.amazonaws.cn
+//! ```
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use clock_bound::daemon::async_ring_buffer;
+use clock_bound::daemon::autodetect::{Amazon, Autodetect};
 use clock_bound::daemon::clock_sync_algorithm::{ClockSyncAlgorithm, FfSyncParams, Selector};
 use clock_bound::daemon::event;
 use clock_bound::daemon::io::dns::ntp_source::NtpSource;
@@ -60,7 +79,9 @@ use rand::{RngCore, rng};
 use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
 
-/// Pool domain to test against — same as the daemon uses in production.
+/// Default pool domain to test against — same as the daemon uses in production.
+///
+/// Overridden by `--partition-resolver <EXPECTED_DOMAIN>` for every test.
 const POOL_DOMAIN: &str = "time.aws.com";
 
 /// Maximum time to wait before declaring the test failed.
@@ -86,6 +107,14 @@ struct Args {
     /// Use on hosts with working IPv6 connectivity
     #[clap(long)]
     run_ipv6_tests: bool,
+
+    /// Run the partition resolver test, expecting the pool for `EXPECTED_DOMAIN`
+    /// (e.g. time.aws.com, or time.amazonaws.cn in aws-cn).
+    ///
+    /// Requires an EC2 host (Nitro or Xen) with IMDS reachable. Without IMDS the resolver
+    /// only falls back to time.aws.com after 10 minutes, beyond this test's timeout.
+    #[clap(long, value_name = "EXPECTED_DOMAIN")]
+    partition_resolver: Option<String>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -96,12 +125,21 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    test_pool_source_creation_lifecycle().await;
-    test_single_host_lifecycle().await;
+    // Exercise the partition's domain (e.g. time.amazonaws.cn in aws-cn) when given,
+    // otherwise the production default.
+    let domain = args.partition_resolver.as_deref().unwrap_or(POOL_DOMAIN);
+
+    test_pool_source_creation_lifecycle(domain).await;
+    test_single_host_lifecycle(domain).await;
     if args.run_ipv6_tests {
-        test_ipv6_source_sends_events().await;
+        test_ipv6_source_sends_events(domain).await;
     } else {
         println!("Skipping IPv6 tests (no --run-ipv6-tests flag)");
+    }
+    if let Some(domain) = args.partition_resolver.as_deref() {
+        test_partition_resolver_lifecycle(domain).await;
+    } else {
+        println!("Skipping partition resolver test (no --partition-resolver flag)");
     }
 }
 
@@ -120,10 +158,15 @@ enum PoolKind {
     Pool,
     /// Single-host domain via `SourceMutator::add_domain_host`.
     SingleHost,
+    /// Partition resolver via `SourceMutator::add_default_public_pool` on Amazon EC2.
+    PartitionResolver,
 }
 
 /// Construct all components and wire up the pool.
-fn setup(kind: PoolKind) -> TestHarness {
+///
+/// `domain` is installed for [`PoolKind::Pool`] and [`PoolKind::SingleHost`]; the
+/// partition resolver picks its own domain.
+fn setup(kind: PoolKind, domain: &str) -> TestHarness {
     let selected_clock = Arc::new(SelectedClockSource::default());
     let daemon_info = DaemonInfo {
         major_version: 2,
@@ -144,8 +187,13 @@ fn setup(kind: PoolKind) -> TestHarness {
     // Install the pool domain via the requested mutator entry point.
     let mut mutator = SourceMutator::new(&mut io, &mut csa, &mut receiver_stream);
     match kind {
-        PoolKind::Pool => mutator.add_pool(POOL_DOMAIN.to_string()),
-        PoolKind::SingleHost => mutator.add_domain_host(POOL_DOMAIN.to_string()),
+        PoolKind::Pool => mutator.add_pool(domain.to_string()),
+        PoolKind::SingleHost => mutator.add_domain_host(domain.to_string()),
+        // Force an Amazon platform so the partition resolver is registered. Any
+        // `Amazon` variant (Nitro or Xen) takes the same path.
+        PoolKind::PartitionResolver => mutator.add_default_public_pool(&Autodetect::Amazon(
+            Amazon::Nitro(String::from("pool-test")),
+        )),
     }
 
     TestHarness {
@@ -157,15 +205,15 @@ fn setup(kind: PoolKind) -> TestHarness {
 }
 
 /// Test the full pool lifecycle: DNS resolution → source spawning → NTP events.
-async fn test_pool_source_creation_lifecycle() {
-    println!("Testing DNS pool lifecycle with domain: {POOL_DOMAIN}");
+async fn test_pool_source_creation_lifecycle(domain: &str) {
+    println!("Testing DNS pool lifecycle with domain: {domain}");
 
     println!(
-        "config: pool_domain={POOL_DOMAIN}, timeout={TIMEOUT:?}, \
+        "config: pool_domain={domain}, timeout={TIMEOUT:?}, \
          expected_sources={EXPECTED_SOURCES}, min_responses_per_source={MIN_RESPONSES_PER_SOURCE}"
     );
 
-    let mut harness = setup(PoolKind::Pool);
+    let mut harness = setup(PoolKind::Pool, domain);
     harness.io.spawn_all();
 
     println!("Pool created and resolver spawned. Waiting for DNS resolution and NTP events...");
@@ -251,10 +299,10 @@ async fn test_pool_source_creation_lifecycle() {
 /// pool above a single concurrent source, and that the one source produces at
 /// least [`MIN_RESPONSES_PER_SOURCE`] NTP responses. This validates the
 /// `max_sources = 1` plumbing end-to-end rather than just that a source works.
-async fn test_single_host_lifecycle() {
-    println!("Testing single-host domain lifecycle with domain: {POOL_DOMAIN}");
+async fn test_single_host_lifecycle(domain: &str) {
+    println!("Testing single-host domain lifecycle with domain: {domain}");
 
-    let mut harness = setup(PoolKind::SingleHost);
+    let mut harness = setup(PoolKind::SingleHost, domain);
     harness.io.spawn_all();
 
     println!("Single-host domain created and resolver spawned. Waiting for NTP events...");
@@ -330,6 +378,134 @@ async fn test_single_host_lifecycle() {
     harness.io.shutdown_all().await;
 }
 
+/// Test the partition resolver: IMDS partition detection → `AddPool` → DNS
+/// resolution of the selected domain → source spawning → NTP events.
+///
+/// Only works on an EC2 host (Nitro or Xen) with IMDS reachable. Pass criteria are the
+/// same as [`test_pool_source_creation_lifecycle`], plus exactly one `AddPool`
+/// arrives, and it and every `AddPoolAddr` / `RemovePoolAddr` carry
+/// `expected_domain`; every `AddPoolAddr` IP is one `expected_domain` resolves
+/// to (at start or at assertion time, since the record set can rotate during
+/// the test).
+async fn test_partition_resolver_lifecycle(expected_domain: &str) {
+    println!("Testing partition resolver, expecting domain: {expected_domain}");
+
+    let initial_ips = resolve_ips(expected_domain).await;
+    println!("  {expected_domain} resolves to {initial_ips:?}");
+
+    let mut harness = setup(PoolKind::PartitionResolver, expected_domain);
+    harness.io.spawn_all();
+
+    println!("Partition resolver spawned. Waiting for AddPool and NTP events...");
+
+    let mut responses_per_source: HashMap<SocketAddr, usize> = HashMap::new();
+    let mut added_ips: HashSet<IpAddr> = HashSet::new();
+    let mut saw_add_pool = false;
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
+    heartbeat.tick().await; // consume the immediate first tick
+
+    loop {
+        if pool_ready(&responses_per_source) {
+            break;
+        }
+
+        let have_sources = !responses_per_source.is_empty();
+        tokio::select! {
+            msg = harness.dns_message_rx.recv() => {
+                match &msg {
+                    Some(DnsMessage::AddPool(add)) => {
+                        assert!(!saw_add_pool, "received more than one AddPool");
+                        assert_eq!(add.pool_domain, expected_domain);
+                        saw_add_pool = true;
+                    }
+                    Some(DnsMessage::AddPoolAddr(add)) => {
+                        assert_eq!(add.pool_domain, expected_domain);
+                        added_ips.insert(add.addr.ip());
+                    }
+                    Some(DnsMessage::RemovePoolAddr(remove)) => {
+                        assert_eq!(remove.pool_domain, expected_domain);
+                    }
+                    None => {}
+                }
+                handle_dns_message(msg, &mut harness, &mut responses_per_source, EXPECTED_SOURCES).await;
+            }
+            event = harness.receiver_stream.recv(), if have_sources => {
+                handle_event(event, &mut responses_per_source);
+            }
+            _ = heartbeat.tick() => {
+                let satisfied = responses_per_source
+                    .values()
+                    .filter(|c| **c >= MIN_RESPONSES_PER_SOURCE)
+                    .count();
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                println!(
+                    "  progress: sources={}/{EXPECTED_SOURCES}, satisfied={satisfied}, \
+                     time_left={remaining:?}, counts={responses_per_source:?}",
+                    responses_per_source.len(),
+                );
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                panic!(
+                    "TIMEOUT after {TIMEOUT:?}. \
+                     sources_added={}/{EXPECTED_SOURCES}, \
+                     responses_per_source={responses_per_source:?}, \
+                     require >= {MIN_RESPONSES_PER_SOURCE} responses each. \
+                     Is this an EC2 host with IMDS reachable?",
+                    responses_per_source.len(),
+                );
+            }
+        }
+    }
+
+    assert!(
+        saw_add_pool,
+        "no AddPool received from the partition resolver"
+    );
+    let sources_added = responses_per_source.len();
+    assert!(
+        sources_added >= EXPECTED_SOURCES,
+        "Expected at least {EXPECTED_SOURCES} sources, got {sources_added}"
+    );
+    let deficient: Vec<_> = responses_per_source
+        .iter()
+        .filter(|(_, count)| **count < MIN_RESPONSES_PER_SOURCE)
+        .collect();
+    assert!(
+        deficient.is_empty(),
+        "Sources below {MIN_RESPONSES_PER_SOURCE} responses: {deficient:?}"
+    );
+
+    let allowed: HashSet<IpAddr> = initial_ips
+        .union(&resolve_ips(expected_domain).await)
+        .copied()
+        .collect();
+    let unexpected: Vec<_> = added_ips.difference(&allowed).collect();
+    assert!(
+        unexpected.is_empty(),
+        "Sources not resolved from {expected_domain}: {unexpected:?} (allowed: {allowed:?})"
+    );
+
+    println!("Partition resolver test PASSED");
+    println!("  Expected domain: {expected_domain}");
+    println!("  Sources added: {sources_added}");
+    for (addr, count) in &responses_per_source {
+        println!("    {addr}: {count} responses");
+    }
+
+    harness.io.shutdown_all().await;
+}
+
+/// Resolve `domain:123` to its set of IP addresses.
+async fn resolve_ips(domain: &str) -> HashSet<IpAddr> {
+    tokio::net::lookup_host((domain, 123))
+        .await
+        .unwrap_or_else(|error| panic!("DNS resolution of {domain} failed: {error:?}"))
+        .map(|addr| addr.ip())
+        .collect()
+}
+
 /// The pool is ready once every expected source has been created and each
 /// created source has produced at least [`MIN_RESPONSES_PER_SOURCE`] responses.
 fn pool_ready(responses_per_source: &HashMap<SocketAddr, usize>) -> bool {
@@ -356,6 +532,16 @@ async fn handle_dns_message(
         );
     };
     match msg {
+        DnsMessage::AddPool(add) => {
+            // Same as the daemon: add the pool and spawn its resolver.
+            println!("  AddPool: {}", add.pool_domain);
+            let mut mutator = SourceMutator::new(
+                &mut harness.io,
+                &mut harness.csa,
+                &mut harness.receiver_stream,
+            );
+            mutator.spawn_pool(add.pool_domain);
+        }
         DnsMessage::AddPoolAddr(add) => {
             println!(
                 "  AddPoolAddr: {} (source {}/{})",
@@ -437,11 +623,11 @@ const IPV6_REQUIRED_EVENTS: usize = 2;
 /// `time.aws.com`, picks the first IPv6 answer, verifies the host can actually route to it,
 /// and then requires NTP events to flow. Failing loudly on these preconditions ensures the
 /// v6 send path is genuinely exercised and a regression cannot hide behind a silent skip.
-async fn test_ipv6_source_sends_events() {
-    println!("Testing IPv6 DNS NTP source with domain: {POOL_DOMAIN}");
+async fn test_ipv6_source_sends_events(domain: &str) {
+    println!("Testing IPv6 DNS NTP source with domain: {domain}");
 
-    let ipv6_addr = resolve_first_ipv6(POOL_DOMAIN).await.unwrap_or_else(|| {
-        panic!("{POOL_DOMAIN} did not resolve to any IPv6 address; IPv6 is required here");
+    let ipv6_addr = resolve_first_ipv6(domain).await.unwrap_or_else(|| {
+        panic!("{domain} did not resolve to any IPv6 address; IPv6 is required here");
     });
 
     let server_address = SocketAddr::new(ipv6_addr.into(), 123);
@@ -476,7 +662,7 @@ async fn test_ipv6_source_sends_events() {
     };
 
     let mut source = NtpSource::construct(
-        POOL_DOMAIN.to_string(),
+        domain.to_string(),
         server_address,
         event_sender,
         ctrl_receiver,

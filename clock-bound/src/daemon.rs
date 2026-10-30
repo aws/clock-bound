@@ -165,8 +165,8 @@ impl Daemon {
             .init_from_autodetect_results(&autodetect_result, &ff_sync_params)
             .await;
 
-        // Install default pool
-        source_mutator.add_pool(String::from("time.aws.com"));
+        // Install the default public pool (may be added later at runtime via `DnsMessage::AddPool`)
+        source_mutator.add_default_public_pool(&autodetect_result);
 
         // Install sources from the configuration file.
         Self::install_configured_sources(&mut source_mutator, &configured_sources, &ff_sync_params);
@@ -362,6 +362,7 @@ impl Daemon {
             &mut self.receiver_stream,
         );
         match dns_message {
+            DnsMessage::AddPool(msg) => source_mutator.spawn_pool(msg.pool_domain),
             DnsMessage::AddPoolAddr(msg) => {
                 source_mutator.add_pool_source(&msg.pool_domain, msg.addr, &self.ff_sync_params);
             }
@@ -444,7 +445,7 @@ mod tests {
         io::SourceIO,
         io::dns::resolver::{Message as ResolverMessage, Resolver},
         io::ntp::DaemonInfo,
-        message::{AddPoolAddr, Dns as DnsMessage},
+        message::{AddPool, AddPoolAddr, Dns as DnsMessage},
         receiver_stream::ReceiverStream,
         selected_clock::SelectedClockSource,
         source_mutator::SourceMutator,
@@ -911,5 +912,95 @@ mod tests {
         assert!(daemon.io_front_end.pools().contains_key("ntp.corp.example"));
         assert!(daemon.io_front_end.pools().contains_key("pool.ntp.example"));
         assert_eq!(daemon.io_front_end.pools().len(), 2);
+    }
+
+    /// Domain for runtime pools in tests: resolves from `/etc/hosts`, no external DNS.
+    const LOCAL_POOL_DOMAIN: &str = "localhost";
+
+    /// Cancel the daemon and drive `run_once` through a clean shutdown.
+    async fn shutdown(daemon: &mut Daemon) {
+        // The fixture's clock state tracker is open; `wait()` would hang otherwise.
+        daemon.clock_state_handle.task_tracker.close();
+        daemon.cancellation_token.cancel();
+        let control = tokio::time::timeout(std::time::Duration::from_secs(5), daemon.run_once())
+            .await
+            .expect("daemon shutdown did not complete");
+        assert_eq!(control, RunLoopControl::Exit);
+        assert_eq!(daemon.io_front_end.task_count(), 0);
+    }
+
+    /// A `Dns::AddPool` handled after `spawn_all` creates the pool AND spawns its
+    /// resolver. Without the spawn the pool would stay `Initialized` forever.
+    #[rstest]
+    #[tokio::test]
+    async fn add_pool_after_spawn_all_spawns_resolver(test_daemon: TestDaemon) {
+        let TestDaemon {
+            mut daemon,
+            dns_message_tx,
+        } = test_daemon;
+        daemon.io_front_end.spawn_all();
+        assert_eq!(daemon.io_front_end.task_count(), 0);
+
+        dns_message_tx
+            .send(DnsMessage::AddPool(AddPool {
+                pool_domain: LOCAL_POOL_DOMAIN.to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(daemon.run_once().await, RunLoopControl::Continue);
+
+        let pool = daemon
+            .io_front_end
+            .pools()
+            .get(LOCAL_POOL_DOMAIN)
+            .expect("pool added");
+        assert!(pool.resolver_is_running());
+        assert_eq!(pool.ntp_source_count(), 0);
+        assert_eq!(daemon.io_front_end.task_count(), 1);
+        assert!(daemon.clock_sync_algorithm.ntp_sources().is_empty());
+        assert!(daemon.receiver_stream.is_empty());
+
+        shutdown(&mut daemon).await;
+    }
+
+    /// A `Dns::AddPool` for a domain that already has a pool is a no-op.
+    #[rstest]
+    #[tokio::test]
+    async fn duplicate_add_pool_is_noop(test_daemon: TestDaemon) {
+        let TestDaemon {
+            mut daemon,
+            dns_message_tx,
+        } = test_daemon;
+        {
+            let mut mutator = SourceMutator::new(
+                &mut daemon.io_front_end,
+                &mut daemon.clock_sync_algorithm,
+                &mut daemon.receiver_stream,
+            );
+            mutator.add_pool(LOCAL_POOL_DOMAIN.to_string());
+        }
+        daemon.io_front_end.spawn_all();
+        assert_eq!(daemon.io_front_end.task_count(), 1);
+
+        dns_message_tx
+            .send(DnsMessage::AddPool(AddPool {
+                pool_domain: LOCAL_POOL_DOMAIN.to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(daemon.run_once().await, RunLoopControl::Continue);
+
+        assert_eq!(daemon.io_front_end.pools().len(), 1);
+        assert_eq!(daemon.io_front_end.task_count(), 1);
+        assert!(
+            daemon
+                .io_front_end
+                .pools()
+                .get(LOCAL_POOL_DOMAIN)
+                .unwrap()
+                .resolver_is_running()
+        );
+
+        shutdown(&mut daemon).await;
     }
 }

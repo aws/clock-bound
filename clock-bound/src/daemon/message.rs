@@ -5,6 +5,10 @@ use std::net::SocketAddr;
 /// Top level message by the daemon task from DNS resolvers
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dns {
+    /// Add and spawn a new DNS pool
+    ///
+    /// For more info see [`AddPool`]
+    AddPool(AddPool),
     /// Add a new NTP source to a pool
     ///
     /// For more info see [`AddPoolAddr`]
@@ -13,6 +17,17 @@ pub enum Dns {
     ///
     /// For more info see [`RemovePoolAddr`]
     RemovePoolAddr(RemovePoolAddr),
+}
+
+/// Add a new DNS pool to the daemon and spawn its resolver
+///
+/// Used to add a pool whose domain is only known at runtime. `pool_domain` is both the
+/// DNS name resolved and the pool key used in [`AddPoolAddr`] / [`RemovePoolAddr`]. A
+/// pool that already exists is left untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddPool {
+    /// The domain of the pool to add
+    pub pool_domain: String,
 }
 
 /// Initialize a new NTP address in a pool

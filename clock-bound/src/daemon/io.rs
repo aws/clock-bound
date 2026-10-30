@@ -20,6 +20,7 @@ pub mod amazon_time_sync;
 use amazon_time_sync::AmazonTimeSync;
 
 pub mod dns;
+use dns::partition_resolver::PartitionResolver;
 
 pub mod in_use_ip_addrs;
 use in_use_ip_addrs::InUseIpAddrs;
@@ -60,6 +61,9 @@ pub struct SourceIO {
     dns_pools: HashMap<String, Pool>,
     /// The VMClock source
     vmclock: Option<Source<VMClock>>,
+    /// One-shot task which detects the AWS partition and requests the public Amazon Time
+    /// Sync pool via `Dns::AddPool`
+    partition_resolver: Option<Source<PartitionResolver>>,
     /// Contains the channel used to communicate clock disruption events.
     clock_disruption_channels: ClockDisruptionChannels,
     /// Shared reference to the current selected clock source
@@ -97,6 +101,7 @@ impl SourceIO {
             dns_pools: HashMap::new(),
             phc: None,
             vmclock: None,
+            partition_resolver: None,
             clock_disruption_channels: ClockDisruptionChannels { sender },
             selected_clock,
             daemon_info,
@@ -195,6 +200,56 @@ impl SourceIO {
         self.dns_pools.insert(pool_domain, dns_pool);
 
         debug!("DnsPool IO constructed");
+    }
+
+    /// Creates a DNS pool and immediately spawns its resolver.
+    ///
+    /// For pools added after [`SourceIO::spawn_all`] (e.g. on `Dns::AddPool`). A pool
+    /// created with [`SourceIO::create_pool`] after `spawn_all` would otherwise never be
+    /// spawned. A pool that already exists is left untouched.
+    ///
+    /// Must not be called after [`SourceIO::shutdown_all`] has started.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub fn spawn_pool(&mut self, pool_domain: String, max_sources: usize) {
+        if self.dns_pools.contains_key(&pool_domain) {
+            warn!("DnsPool IO already exists");
+            return;
+        }
+
+        let mut dns_pool = Pool::construct(
+            pool_domain.clone(),
+            self.dns_message_tx.clone(),
+            self.in_use_ip_addrs.clone(),
+            max_sources,
+        );
+        dns_pool.spawn_resolver(&self.task_tracker);
+        self.dns_pools.insert(pool_domain, dns_pool);
+    }
+
+    /// Initializes the partition resolver task.
+    ///
+    /// Once spawned, it detects the AWS partition and sends a single `Dns::AddPool` for the
+    /// matching public Amazon Time Sync domain. Calling this more than once is a no-op.
+    pub(crate) fn create_partition_resolver(&mut self) {
+        if self.partition_resolver.is_some() {
+            debug!("Partition resolver already registered.");
+            return;
+        }
+
+        let (ctrl_sender, ctrl_receiver) = mpsc::channel::<ControlRequest>(1);
+        let partition_resolver =
+            PartitionResolver::construct(self.dns_message_tx.clone(), ctrl_receiver);
+        self.partition_resolver = Some(Source {
+            state: SourceState::Initialized(partition_resolver),
+            ctrl_sender,
+        });
+        info!("Partition resolver registered.");
+    }
+
+    /// Test-only: whether a partition resolver has been registered.
+    #[cfg(test)]
+    pub(crate) fn has_partition_resolver(&self) -> bool {
+        self.partition_resolver.is_some()
     }
 
     /// Pools getter
@@ -512,6 +567,24 @@ impl SourceIO {
             debug!("Could not spawn a VMClock source. No source data provided.");
         }
 
+        // Spawn partition resolver
+        if let Some(Source {
+            state,
+            ctrl_sender: _,
+        }) = &mut self.partition_resolver
+        {
+            if let SourceState::Initialized(mut partition_resolver) = state.transition_to_running()
+            {
+                self.task_tracker
+                    .spawn(async move { partition_resolver.run().await });
+                debug!("Spawned partition resolver.");
+            } else {
+                warn!("Attempted to spawn the partition resolver when it is currently running.");
+            }
+        } else {
+            debug!("Could not spawn a partition resolver. No source data provided.");
+        }
+
         // Spawn ip addr sources
         for (key, ip_addr_source) in &mut self.ip_addr_sources {
             debug!("Attempting to spawn {key:?} IP addr source.");
@@ -580,6 +653,19 @@ impl SourceIO {
             match ctrl_sender.send(ControlRequest::Shutdown).await {
                 Ok(()) => debug!("Successfully sent shutdown signal to VMClock source."),
                 Err(e) => warn!(?e, "Failed to send shutdown signal to VMClock source."),
+            }
+        }
+
+        // Shutdown partition resolver
+        if let Some(Source {
+            state: _,
+            ctrl_sender,
+        }) = &mut self.partition_resolver
+        {
+            match ctrl_sender.send(ControlRequest::Shutdown).await {
+                Ok(()) => debug!("Successfully sent shutdown signal to partition resolver."),
+                // Expected: the task exits on its own after sending `Dns::AddPool`.
+                Err(e) => debug!(?e, "Partition resolver already exited."),
             }
         }
 
@@ -817,5 +903,82 @@ mod tests {
                 "pool '{domain}' resolver does not share SourceIO's in-use IP tracker"
             );
         }
+    }
+
+    /// Bound on `shutdown_all` in tests so a regression hangs for seconds, not forever.
+    const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    async fn shutdown_all_within_timeout(source_io: &mut SourceIO) {
+        tokio::time::timeout(SHUTDOWN_TIMEOUT, source_io.shutdown_all())
+            .await
+            .expect("shutdown_all did not complete");
+        assert_eq!(source_io.task_count(), 0);
+    }
+
+    #[test]
+    fn create_partition_resolver_registers_initialized_source() {
+        let mut source_io = make_source_io();
+
+        source_io.create_partition_resolver();
+        let source = source_io.partition_resolver.as_ref().expect("registered");
+        assert!(source.state.is_initialized());
+
+        // Calling again is a no-op
+        source_io.create_partition_resolver();
+        assert!(source_io.partition_resolver.is_some());
+        assert!(source_io.pools().is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_all_spawns_partition_resolver() {
+        let mut source_io = make_source_io();
+        source_io.create_partition_resolver();
+
+        source_io.spawn_all();
+        let source = source_io.partition_resolver.as_ref().expect("registered");
+        assert!(source.state.is_running());
+        assert_eq!(source_io.task_count(), 1);
+
+        shutdown_all_within_timeout(&mut source_io).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_after_partition_resolver_exited() {
+        let mut source_io = make_source_io();
+        source_io.create_partition_resolver();
+        source_io.spawn_all();
+
+        shutdown_all_within_timeout(&mut source_io).await;
+        // The task has exited and dropped its ctrl receiver: the second shutdown hits the
+        // send-error path and must neither hang nor panic.
+        shutdown_all_within_timeout(&mut source_io).await;
+    }
+
+    #[tokio::test]
+    async fn spawn_pool_spawns_resolver() {
+        let mut source_io = make_source_io();
+        // Post-run state: tracker closed by `spawn_all`.
+        source_io.spawn_all();
+
+        source_io.spawn_pool("localhost".to_string(), 5);
+        let pool = source_io.pools().get("localhost").expect("pool exists");
+        assert!(pool.resolver_is_running());
+        assert_eq!(source_io.task_count(), 1);
+
+        shutdown_all_within_timeout(&mut source_io).await;
+    }
+
+    #[tokio::test]
+    async fn spawn_pool_duplicate_is_noop() {
+        let mut source_io = make_source_io();
+        source_io.create_pool("localhost".to_string(), 5);
+        source_io.spawn_all();
+        assert_eq!(source_io.task_count(), 1);
+
+        source_io.spawn_pool("localhost".to_string(), 5);
+        assert_eq!(source_io.pools().len(), 1);
+        assert_eq!(source_io.task_count(), 1);
+
+        shutdown_all_within_timeout(&mut source_io).await;
     }
 }

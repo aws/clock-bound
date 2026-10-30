@@ -126,13 +126,17 @@ The io component reads from NTP Sources, the PTP Hardware Clock (PHC), and the V
 
 #### NTP Sources
 
-`clockbound` automatically configures to read from the Amazon Time Sync Service and `time.aws.com` via NTP.
+`clockbound` automatically configures to read from the Amazon Time Sync Service and the public Amazon Time Sync Service via NTP.
 
 For the Amazon time sync service, traffic is sent over `169.254.169.123:123`.
 For more information on the Amazon time sync service, information can be found
 [here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configure-ec2-ntp.html)
 
-For the `time.aws.com` endpoints, traffic is sent to 2 endpoints over the internet. 
+`clockbound` also connects to the [public Amazon Time Sync Service](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configure-time-sync.html).
+On EC2 instances (Nitro and Xen), `clockbound` queries the instance metadata service (IMDSv2) for the AWS partition and uses
+`time.amazonaws.cn` in the `aws-cn` partition, or `time.aws.com` in every other partition.
+On non-EC2 hosts, `time.aws.com` is used immediately.
+
 `clockbound` includes NTP extension field 0xFEC2 (from experimental, reserved range 0xF000–0xFFFF) that carries minimal daemon metadata
 for future extensions. The metadata includes the ClockBound version and an ephemeral random session ID regenerated at each daemon start.
 
