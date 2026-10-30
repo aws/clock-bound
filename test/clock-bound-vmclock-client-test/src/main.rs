@@ -24,7 +24,7 @@ fn main() {
         };
 
         println!(
-            "When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {:?}.",
+            "When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {}.",
             now_result.earliest.tv_sec(),
             now_result.earliest.tv_nsec(),
             now_result.latest.tv_sec(),
@@ -67,9 +67,8 @@ mod tests {
             detail: clock_bound_error_details.to_string(),
         };
 
-        // Verify it runs and does not panic.
-        print_error(&details, &clock_bound_error);
-        assert!(true);
+        // Verify it runs and does not panic; reaching the end of the test is the assertion.
+        print_error(details, &clock_bound_error);
     }
 
     #[test]

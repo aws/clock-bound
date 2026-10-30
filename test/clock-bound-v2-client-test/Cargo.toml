@@ -1,0 +1,27 @@
+[package]
+name = "clock-bound-v2-client-test"
+description = "A Rust test program that uses the ClockBound 2.x client API names, to check that they still compile and work."
+license = "MIT OR Apache-2.0"
+publish = false
+
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+exclude.workspace = true
+keywords.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "clock-bound-v2-client-test"
+path = "src/main.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clock-bound = { path = "../../clock-bound" }
+nix = { version = "0.26", features = ["feature", "time"] }
+
+[dev-dependencies]
+errno = { version = "0.3.0", default-features = false }
+nix = { version = "0.26", features = ["feature", "time"] }

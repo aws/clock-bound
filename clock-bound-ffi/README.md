@@ -9,7 +9,7 @@ This crate implements the FFI for ClockBound. It builds into the libclockbound C
 
 clock-bound-ffi requires ClockBound daemon to be running to work.
 
-See [ClockBound daemon documentation](../clock-bound-d/README.md) for installation instructions.
+See [ClockBound daemon documentation](../docs/clockbound-daemon.md) for installation instructions.
 
 ### Building
 

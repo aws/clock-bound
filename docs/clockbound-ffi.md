@@ -44,7 +44,7 @@ the ClockBound daemon. The example programs make use of the libclockbound C libr
   sudo yum install gcc
   ```
 
-- The ClockBound daemon must be running for the example to work. See the [ClockBound daemon documentation](../../clock-bound-d/README.md)
+- The ClockBound daemon must be running for the example to work. See the [ClockBound daemon documentation](clockbound-daemon.md)
   for details on how to get the ClockBound daemon running.
 
 - `libclockbound` library is required for the example to work, as per instructions above.

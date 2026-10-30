@@ -452,6 +452,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clock-bound-v2-client-test"
+version = "3.0.0-beta.1"
+dependencies = [
+ "clock-bound",
+ "errno",
+ "nix",
+]
+
+[[package]]
 name = "clock-bound-vmclock"
 version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

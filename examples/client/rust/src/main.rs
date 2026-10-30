@@ -4,21 +4,15 @@
     clippy::uninlined_format_args,
     clippy::cast_precision_loss
 )]
-use clock_bound::client::{
-    CLOCKBOUND_SHM_DEFAULT_PATH, ClockBoundClient, ClockBoundError, ClockStatus,
-    VMCLOCK_SHM_DEFAULT_PATH,
-};
+use clock_bound::{Client, ClockStatus, Error, SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH};
 use nix::sys::time::TimeSpec;
 use std::process;
 
 fn main() {
-    let mut clockbound = match ClockBoundClient::new_with_paths(
-        CLOCKBOUND_SHM_DEFAULT_PATH,
-        VMCLOCK_SHM_DEFAULT_PATH,
-    ) {
+    let mut clockbound = match Client::new_with_paths(SHM_DEFAULT_PATH, VMCLOCK_DEFAULT_PATH) {
         Ok(c) => c,
         Err(e) => {
-            print_error("ClockBoundClient::new_with_paths() failed", &e);
+            print_error("Client::new_with_paths() failed", &e);
             process::exit(1);
         }
     };
@@ -26,13 +20,13 @@ fn main() {
     let now_result_first = match clockbound.now() {
         Ok(result) => result,
         Err(e) => {
-            print_error("ClockBoundClient::now() failed", &e);
+            print_error("Client::now() failed", &e);
             process::exit(1);
         }
     };
 
     println!(
-        "When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {:?}.",
+        "When clockbound_now was called true time was somewhere within {}.{:0>9} and {}.{:0>9} seconds since Jan 1 1970. The clock status is {}.",
         now_result_first.earliest.tv_sec(),
         now_result_first.earliest.tv_nsec(),
         now_result_first.latest.tv_sec(),
@@ -47,7 +41,7 @@ fn main() {
         now_result_last = match clockbound.now() {
             Ok(result) => result,
             Err(e) => {
-                print_error("ClockBoundClient::now() failed", &e);
+                print_error("Client::now() failed", &e);
                 process::exit(1);
             }
         };
@@ -57,12 +51,12 @@ fn main() {
         calculate_duration_seconds(&now_result_first.earliest, &now_result_last.earliest);
 
     println!(
-        "It took {duration_seconds} seconds to call clock bound {call_count} times ({} tps))",
+        "It took {duration_seconds} seconds to call clock bound {call_count} times ({} tps)",
         (call_count as f64 / duration_seconds) as i32
     );
 }
 
-fn print_error(detail: &str, error: &ClockBoundError) {
+fn print_error(detail: &str, error: &Error) {
     eprintln!("{detail} {:?}", error);
 }
 
@@ -91,7 +85,7 @@ fn calculate_duration_seconds(start: &TimeSpec, end: &TimeSpec) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clock_bound::client::ClockBoundErrorKind;
+    use clock_bound::ErrorKind;
     use errno::Errno;
 
     #[test]
@@ -100,15 +94,14 @@ mod tests {
         let clock_bound_error_details = "ClockBound daemon not running";
         let errno_number = 9999;
 
-        let clock_bound_error = ClockBoundError {
-            kind: ClockBoundErrorKind::SegmentNotInitialized,
+        let clock_bound_error = Error {
+            kind: ErrorKind::SegmentNotInitialized,
             errno: Errno(errno_number),
             detail: clock_bound_error_details.to_string(),
         };
 
-        // Verify it runs and does not panic.
-        print_error(&details, &clock_bound_error);
-        assert!(true);
+        // Verify it runs and does not panic; reaching the end of the test is the assertion.
+        print_error(details, &clock_bound_error);
     }
 
     #[test]
@@ -132,13 +125,13 @@ mod tests {
         let start = TimeSpec::new(100, 5);
         let end = TimeSpec::new(100, 6);
         let result: f64 = calculate_duration_seconds(&start, &end);
-        assert_eq!(result, 0.000000001_f64);
+        assert_eq!(result, 0.000_000_001_f64);
 
         // Wrap of nanoseconds.
         let start = TimeSpec::new(100, 5);
         let end = TimeSpec::new(101, 0);
         let result: f64 = calculate_duration_seconds(&start, &end);
-        assert_eq!(result, 0.999999995_f64);
+        assert_eq!(result, 0.999_999_995_f64);
 
         // Same timestamp.
         let start = TimeSpec::new(200, 0);

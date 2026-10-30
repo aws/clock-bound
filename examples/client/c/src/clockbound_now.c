@@ -133,7 +133,7 @@ int main(int argc, char *argv[]) {
         }
 
         dur = duration(first.earliest, last.earliest);
-        printf("It took %.9lf seconds to call clock bound %d times (%d tps))\n",
+        printf("It took %.9lf seconds to call clock bound %d times (%d tps)\n",
                 dur, CALL_COUNT, (int) (CALL_COUNT / dur));
 
         // Finally, close clockbound.
