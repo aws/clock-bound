@@ -3,9 +3,10 @@
 // The canonical source of truth remains in the repo's docs/assets/ directory;
 // the copies under public/img/ are gitignored build artifacts.
 //
-// There are currently no assets to copy. This script is kept as a no-op
-// scaffold: add [source, destination] pairs to `assets` to restore the
-// behaviour for any future binary that must be embedded.
+// There are currently no assets to copy (the ClockErrorBound.png figure was
+// replaced by the interactive Clock Error Bound widgets). This script is kept
+// as a no-op scaffold: add [source, destination] pairs to `assets` to restore
+// the behaviour for any future binary that must be embedded.
 import { copyFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';

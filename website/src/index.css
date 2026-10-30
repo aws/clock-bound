@@ -68,4 +68,71 @@
   .container-page {
     @apply mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8;
   }
+
+  /* Prose styling for the docs pages (kept minimal, no plugin dependency) */
+  .doc-prose {
+    @apply max-w-none text-slate-300 leading-relaxed;
+  }
+  .doc-prose h2 {
+    @apply mt-10 mb-4 text-2xl font-bold text-white scroll-mt-24;
+  }
+  .doc-prose h3 {
+    @apply mt-8 mb-3 text-xl font-semibold text-white scroll-mt-24;
+  }
+  .doc-prose p {
+    @apply my-4;
+  }
+  .doc-prose ul {
+    @apply my-4 list-disc space-y-2 pl-6 marker:text-accent;
+  }
+  .doc-prose ol {
+    @apply my-4 list-decimal space-y-2 pl-6 marker:text-accent;
+  }
+  .doc-prose a {
+    @apply text-accent-hover underline underline-offset-2 hover:text-white;
+  }
+  .doc-prose code {
+    @apply rounded bg-base-700 px-1.5 py-0.5 font-mono text-sm text-cyan-glow;
+  }
+  /* Block code: the <pre> owns the background/padding so the highlighted box
+     is one clean rectangle. Reset the inline-code styling on the nested <code>
+     so it doesn't add ragged per-line backgrounds or stray inline padding. */
+  .doc-prose pre {
+    @apply my-4 overflow-x-auto rounded-lg bg-base-700 p-4;
+  }
+  .doc-prose pre code {
+    @apply rounded-none bg-transparent p-0 text-sm text-slate-200;
+  }
+  .doc-prose strong {
+    @apply font-semibold text-white;
+  }
+
+  /* Linkable headings (AnchorHeading, SectionHeading with an id, Getting
+     Started steps) and their "Link to this section" icon (HeadingAnchor).
+     The icon is hidden until the heading is hovered or the link has keyboard
+     focus, and faintly visible on touch screens, which have no hover. The
+     `.doc-prose` selectors outrank `.doc-prose a`, which would otherwise
+     underline and recolor the icon. scroll-mt keeps a linked heading clear of
+     the sticky nav bar. */
+  .anchor-heading {
+    @apply scroll-mt-24;
+  }
+  .heading-anchor,
+  .doc-prose .heading-anchor {
+    @apply inline-block align-middle text-slate-500 no-underline opacity-0 transition-opacity;
+  }
+  .anchor-heading:hover .heading-anchor,
+  .heading-anchor:focus-visible {
+    @apply opacity-100;
+  }
+  .heading-anchor:hover,
+  .doc-prose .heading-anchor:hover {
+    @apply text-accent-hover;
+  }
+  @media (hover: none) {
+    .heading-anchor,
+    .doc-prose .heading-anchor {
+      @apply opacity-60;
+    }
+  }
 }

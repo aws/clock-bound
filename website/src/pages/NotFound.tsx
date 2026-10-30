@@ -1,3 +1,5 @@
+import Button from '../components/Button';
+
 export default function NotFound() {
   return (
     <div className="container-page flex min-h-[60vh] flex-col items-center justify-center text-center">
@@ -8,12 +10,7 @@ export default function NotFound() {
         synchronized ground.
       </p>
       <div className="mt-6">
-        <a
-          href="/"
-          className="inline-flex items-center justify-center rounded-xl bg-accent px-6 py-3 font-medium text-white shadow-glow transition-colors hover:bg-accent-hover"
-        >
-          Back to home
-        </a>
+        <Button href="/">Back to home</Button>
       </div>
     </div>
   );
