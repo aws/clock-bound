@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.vite/
+
+# Build-time asset copies (canonical source lives in ../docs/assets/)
+public/img/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.DS_Store
+*.local
