@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0-rc.0] - 2026-11-02
+
+### Added
+
+- Added the ClockBound website. Check it out at https://aws.github.io/clock-bound/
+- Added `cbctl status`, which prints the clock status, the current time and clock error bound, details of the last
+  clock sync, and whether disruption support is on.
+- Added `cbctl sources`, which shows the state of the daemon's time sources from the latest `sources.log` snapshot.
+- Added `--system-clock` to `cbctl waitsync`. It waits until the system clock (`CLOCK_REALTIME`) is within the clock
+  error bound (or 1 millisecond.. whichever is smaller) of the `clockbound` daemon's time
+- New `sources.log` log stream, enabled with `[logging.sources]` in the configuration file. Every 60 seconds it writes
+  a snapshot of each time source: type, identifier, poll rate, an inferred health status (`SYNCHRONIZED`,
+  `FREE_RUNNING` or `UNKNOWN`), when it was last selected and deselected, lifetime request and response counts, and
+  round-trip time and clock error bound statistics.
+- Added `--version` to the `clockbound` daemon cli.
+
+### Changed
+
+- `cbctl waitsync` now waits indefinitely by default. Before, it timed out after 60 seconds.
+  For old behavior, `--timeout-seconds` still sets a limit.
+- The daemon steps the system clock (on startup) instead of slewing it when the offset is over 100 ms (was 500 ms).
+  This caps the slew rate at about 2.5% and avoids the kernel's "Adjusting tsc more than 11%" warnings. When the
+  system clock is outside this range, the daemon also sets `STA_UNSYNC` in the kernel.
+- An NTP response is now properly logged as unsynchronized if it reports stratum 16 or an unknown leap indicator (RFC 5905).
+- An NTP server that keeps sending unusable responses (for example, reporting that it is unsynchronized) now counts
+  toward replacing a DNS source, the same as a server that doesn't respond. Before, these responses were silently
+  treated as timeouts.
+- Clock sync algorithm tuning: the EC2 link-local NTP source has its own parameters, PHC and link-local parameters
+  were calibrated against month-long EC2 traces, samples are weighted by age, and samples rejected by the RTT filter
+  no longer affect the offset estimate.
+- `synchronization.log` is now written without a buffer, so entries reach disk right away. Before, they could sit in
+  the buffer for several minutes.
+- The `clockbound` daemon detects the AWS partition from IMDS on EC2 instances and uses the matching public Amazon
+  Time Sync Service endpoint (`time.amazonaws.cn` in `aws-cn`, `time.aws.com` everywhere else). If detection does not
+  finish within 10 minutes, the daemon falls back to `time.aws.com`.
+- The local Amazon Time Sync Service source supports IPv6-only hosts.
+- `clockbound.service` no longer runs the `configure_phc` script at startup, because it has system-wide side effects.
+- `clockbound.logrotate` now rotates `sources.log`, and keeps 3 days of `ffevents.log` instead of 7.
+- Added `assets/example-config-logging-only.toml`, a configuration that only turns on logging. It's the recommended
+  starting point for Linux distribution packages.
+
+### Fixed
+
+- Fixed the shared memory writer so `shm0` and `shm1` are written with the stable `repr(C)` layout described in
+  `protocol.md`. Before, the layout could depend on the compiler version or settings.
+- Fixed an integer underflow when PHC counter reads come back out of order.
+
 ## [3.0.0-beta.1] - 2026-10-12
 
 ### Fixed

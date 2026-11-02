@@ -20,10 +20,11 @@ sudo systemctl start clockbound
 ```
 
 ### Building from `crates.io`
-`clockbound` can also be installed via `cargo install`.
+`clockbound` and `cbctl` can also be installed via `cargo install`. The `daemon` feature is required; without it no
+binaries are installed.
 
 ```sh
-cargo install clock-bound --version "3.0.0-alpha.0"
+cargo install clock-bound --version "3.0.0-rc.0" --features daemon
 ```
 
 From there you can run `clockbound` as a privileged user by calling

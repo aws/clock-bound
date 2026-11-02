@@ -99,7 +99,7 @@ Set up your application's `Cargo.toml` so it looks like this:
 
 ```toml
 [dependencies]
-clock-bound = "3.0.0-beta.1"
+clock-bound = "3.0.0-rc.0"
 ```
 
 And then the code:
