@@ -36,7 +36,7 @@ impl FdGuard {
         // SAFETY: `path` is a valid C string.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
         if fd < 0 {
-            return syserror!(format!("Faild to open file at {:?}", path));
+            return syserror!(format!("Failed to open file at {:?}", path));
         }
 
         Ok(FdGuard(fd))
