@@ -7,7 +7,7 @@ Conflicts=ntpd.service systemd-timesyncd.service chronyd.service
 Type=exec
 # Make the vmclock readable by clients
 ExecStartPre=-/usr/bin/chmod a+r /dev/vmclock0
-ExecStart=/usr/bin/clockbound
+ExecStart=/usr/bin/clockbound -c /etc/clockbound.toml
 Restart=on-failure
 RestartSecs=5
 
