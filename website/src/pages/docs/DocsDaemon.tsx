@@ -1,12 +1,11 @@
 import { Link } from 'react-router-dom';
 import DocsLayout from '../../components/DocsLayout';
 import AnchorHeading from '../../components/AnchorHeading';
-import TerminalWindow from '../../components/TerminalWindow';
 
 export default function DocsDaemon() {
   return (
     <DocsLayout
-      title="Daemon"
+      title="Daemon Overview"
       description="The clockbound daemon keeps the system clock synchronized and publishes a bounded timestamp over shared memory."
     >
       <AnchorHeading level={2} id="overview">Overview</AnchorHeading>
@@ -46,7 +45,7 @@ export default function DocsDaemon() {
         The daemon automatically configures itself to read from the Amazon Time
         Sync Service (link-local <code>169.254.169.123:123</code>)
         and{' '} <code>time.aws.com</code> via NTP. Additional NTP sources can be supplied
-        in a configuration file, either as an individual <code>server</code>{' '}
+        in a <Link to="/docs/daemon/configuration#sources">configuration file</Link>, either as an individual <code>server</code>{' '}
         (IPv4, IPv6, or hostname) or as a <code>pool</code> hostname that
         resolves to several servers.
       </p>
@@ -66,30 +65,18 @@ export default function DocsDaemon() {
       <p>
         If <code>/dev/vmclock0</code> is available, the daemon uses it to be
         informed of clock disruptions. See{' '}
-        <a href="/docs/platforms">Platforms</a> for kernel requirements and
+        <Link to="/docs/platforms">Platforms</Link> for kernel requirements and
         permissions.
       </p>
 
       <AnchorHeading level={2} id="configuration">Configuration</AnchorHeading>
       <p>
         Without a configuration file, the daemon runs on built-in defaults and
-        logs to stdout only. An optional TOML file can be supplied with{' '}
-        <code>-c</code>/<code>--configuration</code>:
-      </p>
-      <TerminalWindow
-        title="bash"
-        code={`# Run with a configuration file
-clockbound -c /etc/clockbound/config.toml
-
-# Validate a configuration file without starting the daemon
-clockbound --check-configuration -c /etc/clockbound/config.toml
-
-# Raise the stdout log level from info to debug
-clockbound -v`}
-      />
-      <p className="mt-4">
-        A documented example configuration ships in the repository at{' '}
-        <code>clock-bound/assets/example-config.toml</code>.
+        auto-detected time sources, logging to stdout/stderr only. An optional
+        TOML file, passed with <code>-c</code>/<code>--configuration</code>,
+        turns on log file streams and adds NTP time sources. See{' '}
+        <Link to="/docs/daemon/configuration">Configuration</Link> for every
+        setting.
       </p>
 
       <AnchorHeading level={2} id="cli">Command-line reference</AnchorHeading>
@@ -97,7 +84,8 @@ clockbound -v`}
         <li>
           <code>-c</code>, <code>--configuration &lt;FILE&gt;</code> — load a
           TOML configuration file. A file that cannot be read, parsed, or
-          validated is reported and the daemon exits non-zero.
+          validated is reported on stderr and the daemon exits with code{' '}
+          <code>2</code>.
         </li>
         <li>
           <code>--check-configuration</code> — load and validate the file passed
@@ -117,37 +105,42 @@ clockbound -v`}
         bound, <code>cbctl waitsync</code> to block until the clock is
         synchronized, and <code>cbctl sources</code> to view the state of the
         daemon&apos;s time sources. See the{' '}
-        <Link to="/docs/cbctl">cbctl reference</Link> for details.
+        <Link to="/docs/daemon/cbctl">cbctl reference</Link> for details.
       </p>
 
       <AnchorHeading level={2} id="logging">Logging</AnchorHeading>
       <p>
-        The daemon can write configurable log streams to the configured log
-        directory:
+        The daemon always logs to stdout/stderr. It can also write three log
+        file streams to the configured log directory:
       </p>
       <ul>
         <li>
-          <code>synchronization.log</code> — a human-readable clock
-          synchronization history, snapshotted every minute.
+          <Link to="/docs/daemon/logging/synchronization">
+            <code>synchronization.log</code>
+          </Link>{' '}
+          — clock synchronization information: periodic snapshots of clock
+          quality and summaries of system clock adjustments.
         </li>
         <li>
-          <code>ffevents.log</code> — raw sync data for deterministic expert
-          replay analysis.
+          <Link to="/docs/daemon/logging/sources">
+            <code>sources.log</code>
+          </Link>{' '}
+          — a periodic snapshot summary of all sources.{' '}
+          <code>cbctl sources</code> reads it.
         </li>
         <li>
-          <code>sources.log</code> — a snapshot of every time source&apos;s
-          state, written every minute. <code>cbctl sources</code> reads it.
+          <Link to="/docs/daemon/logging/ffevents">
+            <code>ffevents.log</code>
+          </Link>{' '}
+          — the Feed Forward Events Log: synchronization algorithm data for
+          advanced diagnostics and replay.
         </li>
       </ul>
       <p>
-        Each stream is off by default and is enabled separately in the
-        configuration file (for example, <code>[logging.sources]</code> with{' '}
-        <code>enabled = true</code>). Enabling any stream requires{' '}
-        <code>log_directory</code> to be set under <code>[logging]</code>.
-      </p>
-      <p>
-        The daemon reopens its log files on <code>SIGHUP</code> to support log
-        rotation.
+        Each stream is disabled by default and is enabled separately in the{' '}
+        <Link to="/docs/daemon/configuration#logging">configuration file</Link>.
+        See the <Link to="/docs/daemon/logging">Logging overview</Link> for
+        which log to enable and how to rotate them.
       </p>
     </DocsLayout>
   );

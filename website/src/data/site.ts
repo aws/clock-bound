@@ -44,11 +44,47 @@ export const navLinks = [
   { label: 'Docs', href: '/docs/concepts' },
 ];
 
-export const docsNav = [
-  { label: 'Concepts', href: '/docs/concepts' },
-  { label: 'Daemon', href: '/docs/daemon' },
-  { label: 'cbctl', href: '/docs/cbctl' },
-  { label: 'Clients', href: '/docs/clients' },
-  { label: 'Protocol', href: '/docs/protocol' },
-  { label: 'Platforms', href: '/docs/platforms' },
+export interface DocsNavItem {
+  label: string;
+  href: string;
+  /** Render one level indented under the previous top-level item. */
+  nested?: boolean;
+}
+
+export interface DocsNavGroup {
+  heading: string;
+  items: DocsNavItem[];
+}
+
+// Docs sidebar, rendered by DocsLayout as one labeled group per entry.
+export const docsNav: DocsNavGroup[] = [
+  {
+    heading: 'User Manual',
+    items: [
+      { label: 'Concepts', href: '/docs/concepts' },
+      { label: 'Clients', href: '/docs/clients' },
+      { label: 'Protocol', href: '/docs/protocol' },
+      { label: 'Platforms', href: '/docs/platforms' },
+    ],
+  },
+  {
+    heading: 'Daemon',
+    items: [
+      { label: 'Overview', href: '/docs/daemon' },
+      { label: 'Configuration', href: '/docs/daemon/configuration' },
+      { label: 'Logging Overview', href: '/docs/daemon/logging' },
+      {
+        label: 'Synchronization Log',
+        href: '/docs/daemon/logging/synchronization',
+        nested: true,
+      },
+      { label: 'Sources Log', href: '/docs/daemon/logging/sources', nested: true },
+      {
+        label: 'Feed Forward Events Log',
+        href: '/docs/daemon/logging/ffevents',
+        nested: true,
+      },
+      { label: 'cbctl', href: '/docs/daemon/cbctl' },
+    ],
+  },
 ];

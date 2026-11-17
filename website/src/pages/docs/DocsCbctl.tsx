@@ -3,14 +3,6 @@ import DocsLayout from '../../components/DocsLayout';
 import AnchorHeading from '../../components/AnchorHeading';
 import TerminalWindow from '../../components/TerminalWindow';
 
-// cbctl reference. The `status` and `waitsync` content follows the repository's
-// docs/cbctl.md (draft PR #333). `sources` is intentionally limited to a short
-// description and invocation until its output format is finalized.
-//
-// TODO(human): `cbctl status` and `cbctl sources` are not on `main` yet (draft
-// PRs #330-#333 and the sources.log series). Do not publish this page before
-// those merge.
-
 const statusExample = `Clock status                  SYNCHRONIZED
 Current time                  2026-09-29T17:42:03.094821000Z
   Clock error bound (+/-)     67.60 us
@@ -181,12 +173,20 @@ export default function DocsCbctl() {
         synchronization sources that are configured within the ClockBound
         daemon.
       </p>
-      <TerminalWindow title="bash" code={`cbctl sources`} />
+      <TerminalWindow title="bash" code={`cbctl sources [--log-dir DIR]`} />
       <p>
         It reads the daemon&apos;s <code>sources.log</code>, so the sources log
         stream must be enabled in the daemon configuration. See{' '}
-        <Link to="/docs/daemon#logging">Daemon logging</Link>.
+        <Link to="/docs/daemon/logging/sources">Sources Log</Link>.
       </p>
+      <p>Options:</p>
+      <ul>
+        <li>
+          <code>--log-dir DIR</code>: the directory containing the daemon&apos;s{' '}
+          <code>sources.log</code> file. Defaults to{' '}
+          <code>/var/log/clockbound</code>.
+        </li>
+      </ul>
     </DocsLayout>
   );
 }

@@ -149,10 +149,10 @@ sudo systemctl start clockbound`}
             The daemon is zero-config: it auto-detects reference time sources and
             the platform. For the optional TOML configuration, see the{' '}
             <Link
-              to="/docs/daemon"
+              to="/docs/daemon/configuration"
               className="text-accent-hover underline underline-offset-2 hover:text-white"
             >
-              Daemon reference
+              Configuration reference
             </Link>
             .
           </p>
@@ -185,7 +185,7 @@ sudo systemctl start clockbound`}
             </code>
             , see the{' '}
             <Link
-              to="/docs/cbctl"
+              to="/docs/daemon/cbctl"
               className="text-accent-hover underline underline-offset-2 hover:text-white"
             >
               <span className="font-mono">cbctl</span> reference
