@@ -15,6 +15,11 @@
 //!   ClockBound time window, widened equally on both sides if needed so that it is at least
 //!   2 milliseconds wide in total.
 //!
+//! In both cases the daemon must also be alive: the shared memory segment outlives the daemon,
+//! so a `Synchronized` status could be stale. The command therefore also waits until the daemon
+//! has updated the segment (its `as_of` timestamp changed) since the first read. This can take
+//! a few seconds (longer on hosts that only use NTP pools).
+//!
 //! Before polling, the command validates the environment: on a virtualized (non-metal) EC2
 //! instance the VMClock device is expected to exist. If it is missing, the clock error bound can
 //! never be trusted on this host and the command fails immediately. Bare metal EC2 instances have
@@ -32,9 +37,10 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use clap::Args;
+use clock_bound::cbctl::status::{Snapshot, SnapshotError};
 use clock_bound::daemon::autodetect::Autodetect;
 use clock_bound::daemon::time::Duration as CBDuration;
-use clock_bound::{Client, ClockStatus, Error, SHM_DEFAULT_PATH, TimeWindow, VMCLOCK_DEFAULT_PATH};
+use clock_bound::{ClockStatus, Error, SHM_DEFAULT_PATH, TimeWindow, VMCLOCK_DEFAULT_PATH};
 use nix::sys::time::{TimeSpec, TimeValLike};
 
 /// Exit code when the clock synchronized within the timeout.
@@ -252,9 +258,7 @@ fn wait_for_sync(
 
         // No point sleeping after the last attempt. A `max_tries` of 0 never stops trying.
         if max_tries != 0 && tries >= max_tries {
-            eprintln!(
-                "cbctl waitsync: clock not synchronized after {max_tries} seconds, timing out"
-            );
+            eprintln!("cbctl waitsync: not ready after {max_tries} seconds, timing out");
             return ExitCode::from(EXIT_CODE_TIMEOUT);
         }
 
@@ -277,12 +281,12 @@ fn describe_error(error: &Error) -> String {
     }
 }
 
-/// Reads clock status from the ClockBound daemon shared memory segment.
+/// Reads the clock from the ClockBound daemon shared memory segment.
 ///
-/// The ClockBound client is opened lazily: the daemon may not have started yet when `cbctl
+/// The segment is read on every attempt: the daemon may not have started yet when `cbctl
 /// waitsync` runs (e.g. from an instance activation script at boot), so a failure to open the
-/// segment is a retryable condition rather than an error. Likewise, the client is re-opened on
-/// read failures, to recover from the daemon restarting.
+/// segment is a retryable condition rather than an error. Re-reading from scratch also recovers
+/// from the daemon restarting.
 struct ShmObserver {
     /// Path to the ClockBound daemon shared memory segment.
     clockbound_shm_path: String,
@@ -290,8 +294,8 @@ struct ShmObserver {
     /// Path to the VMClock device shared memory segment.
     vmclock_shm_path: String,
 
-    /// The ClockBound client, created on first successful open of the shared memory segment.
-    client: Option<Client>,
+    /// The `as_of` of the first snapshot read, to tell when the daemon updates the segment.
+    baseline_as_of: Option<TimeSpec>,
 }
 
 impl ShmObserver {
@@ -299,45 +303,54 @@ impl ShmObserver {
         ShmObserver {
             clockbound_shm_path: String::from(clockbound_shm_path),
             vmclock_shm_path: String::from(vmclock_shm_path),
-            client: None,
+            baseline_as_of: None,
         }
     }
 
-    /// Observe the clock, opening (or re-opening) the shared memory segment as needed. When
-    /// `system_clock` is set, the system clock is also checked against the tolerance window.
-    /// Errors carry a human readable reason.
+    /// Observe the clock, reading the shared memory segment. When `system_clock` is set, the
+    /// system clock is also checked against the tolerance window. Errors carry a human readable
+    /// reason.
     ///
     /// In `--system-clock` mode, the system clock is read right after the shared memory segment.
     /// The small gap between the two reads biases the comparison and is accepted.
     fn observe(&mut self, system_clock: bool) -> Result<Observation, String> {
-        let window = self.now()?;
-        if !system_clock {
-            return Ok(Observation::from_clock_status(window.clock_status));
-        }
-        let system_clock = nix::time::clock_gettime(nix::time::ClockId::CLOCK_REALTIME)
-            .map_err(|errno| format!("clock_gettime(CLOCK_REALTIME): {errno}"))?;
-        Ok(SystemClockCheck::new(window, system_clock).observation())
+        let snapshot =
+            Snapshot::read(&self.clockbound_shm_path, &self.vmclock_shm_path).map_err(|error| {
+                match &error {
+                    SnapshotError::ShmUnreadable { cause, .. }
+                    | SnapshotError::VMClockUnreadable { cause, .. } => {
+                        format!("{error} ({}): {}", error.path(), describe_error(cause))
+                    }
+                    _ => format!("{error} ({})", error.path()),
+                }
+            })?;
+        let observation = if system_clock {
+            let system_clock = nix::time::clock_gettime(nix::time::ClockId::CLOCK_REALTIME)
+                .map_err(|errno| format!("clock_gettime(CLOCK_REALTIME): {errno}"))?;
+            SystemClockCheck::new(snapshot.now, system_clock).observation()
+        } else {
+            Observation::from_clock_status(snapshot.now.clock_status)
+        };
+        Ok(self.require_daemon_update(observation, snapshot.as_of))
     }
 
-    /// Read the current time window, opening (or re-opening) the shared memory segment as
-    /// needed. Errors carry a human readable reason.
-    fn now(&mut self) -> Result<TimeWindow, String> {
-        if self.client.is_none() {
-            match Client::new_with_paths(&self.clockbound_shm_path, &self.vmclock_shm_path) {
-                Ok(client) => self.client = Some(client),
-                Err(error) => return Err(describe_error(&error)),
-            }
+    /// Turn a ready `observation` into a not ready one until the daemon has updated the segment.
+    ///
+    /// The segment outlives the daemon, so a `Synchronized` status alone does not prove the
+    /// daemon is alive. The first `as_of` seen is the baseline; the daemon has updated the
+    /// segment once `as_of` differs from it.
+    fn require_daemon_update(&mut self, observation: Observation, as_of: TimeSpec) -> Observation {
+        if self.baseline_as_of.is_none() {
+            self.baseline_as_of = Some(as_of);
         }
-
-        let client = self.client.as_mut().expect("client was just created above");
-
-        match client.now() {
-            Ok(window) => Ok(window),
-            Err(error) => {
-                // Drop the client so the next attempt re-opens the segment from scratch.
-                self.client = None;
-                Err(describe_error(&error))
-            }
+        if self.baseline_as_of != Some(as_of) {
+            return observation;
+        }
+        match observation {
+            Observation::Ready(description) => Observation::NotReady(format!(
+                "{description}, waiting for the daemon to update the shared memory segment"
+            )),
+            Observation::NotReady(description) => Observation::NotReady(description),
         }
     }
 }
@@ -596,6 +609,38 @@ mod test {
         let exit_code = wait_for_sync(5, Duration::ZERO, false, observe);
         assert_eq!(exit_code, ExitCode::from(EXIT_CODE_SYNCHRONIZED));
         assert_eq!(calls.load(Relaxed), 2);
+    }
+
+    /// Assert that a ready observation is held back until `as_of` changes from the first one
+    /// seen, and that observations that are not ready pass through unchanged.
+    #[test]
+    fn require_daemon_update_waits_for_as_of_change() {
+        let first = TimeSpec::new(100, 0);
+        let second = TimeSpec::new(101, 0);
+        let ready = || Observation::Ready(String::from("daemon status: Synchronized"));
+        let not_ready = Observation::NotReady(String::from("daemon status: Unknown"));
+        let mut observer = ShmObserver::new("", "");
+
+        // The first read sets the baseline, and is held back.
+        assert_eq!(
+            observer.require_daemon_update(ready(), first),
+            Observation::NotReady(String::from(
+                "daemon status: Synchronized, waiting for the daemon to update the shared memory segment"
+            ))
+        );
+        assert_eq!(observer.baseline_as_of, Some(first));
+        // Same `as_of`: still held back. Not ready is untouched.
+        assert!(matches!(
+            observer.require_daemon_update(ready(), first),
+            Observation::NotReady(_)
+        ));
+        assert_eq!(
+            observer.require_daemon_update(not_ready.clone(), first),
+            not_ready
+        );
+        // The daemon updated the segment.
+        assert_eq!(observer.require_daemon_update(ready(), second), ready());
+        assert_eq!(observer.baseline_as_of, Some(first));
     }
 
     /// Assert that a describe_error message always includes the error kind, with the detail

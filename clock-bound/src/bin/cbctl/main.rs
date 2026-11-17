@@ -32,6 +32,9 @@ enum Command {
     /// With `--system-clock`, also waits for the system clock (`CLOCK_REALTIME`) to be within the
     /// tolerance window: the ClockBound time window, widened equally on both sides if needed so
     /// that it is at least 2 milliseconds wide in total.
+    ///
+    /// In both cases, it also waits for the daemon to update the shared memory segment after the
+    /// command starts, to confirm the daemon is alive.
     Waitsync(waitsync::WaitsyncArgs),
 
     /// Display the state of the time sources configured with the ClockBound daemon.
